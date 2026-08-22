@@ -1,0 +1,24 @@
+package com.google.android.gms.ads;
+
+/* JADX INFO: loaded from: classes.dex */
+public abstract class AdListener {
+    public void onAdClicked() {
+    }
+
+    public void onAdClosed() {
+    }
+
+    public abstract void onAdFailedToLoad(LoadAdError loadAdError);
+
+    public void onAdImpression() {
+    }
+
+    public void onAdLoaded() {
+    }
+
+    public void onAdOpened() {
+    }
+
+    public void onAdSwipeGestureClicked() {
+    }
+}

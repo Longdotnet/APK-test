@@ -1,0 +1,14 @@
+package com.google.android.gms.internal.p002firebaseauthapi;
+
+/* JADX INFO: loaded from: classes.dex */
+final class zzch extends zzgw {
+    public zzch(Class cls) {
+        super(cls);
+    }
+
+    @Override // com.google.android.gms.internal.p002firebaseauthapi.zzgw
+    public final /* bridge */ /* synthetic */ Object zza(zzaek zzaekVar) {
+        zzjw zzjwVar = (zzjw) zzaekVar;
+        return new zzpy((zzqk) new zzcm().zzl(zzjwVar.zze(), zzqk.class), (zzbm) new zzih().zzl(zzjwVar.zzf(), zzbm.class), zzjwVar.zzf().zzf().zza());
+    }
+}

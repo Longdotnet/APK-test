@@ -1,0 +1,29 @@
+package com.google.android.gms.internal.auth;
+
+import android.accounts.Account;
+import com.google.android.gms.auth.account.WorkAccount;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.PendingResult;
+import com.google.android.gms.common.api.Result;
+import com.google.android.gms.common.api.Status;
+
+/* JADX INFO: loaded from: classes.dex */
+public final class zzal {
+    private static final Status zza = new Status(13);
+
+    public final PendingResult<Object> addWorkAccount(GoogleApiClient googleApiClient, String str) {
+        return googleApiClient.execute(new zzae(this, WorkAccount.API, googleApiClient, str));
+    }
+
+    public final PendingResult<Result> removeWorkAccount(GoogleApiClient googleApiClient, Account account) {
+        return googleApiClient.execute(new zzag(this, WorkAccount.API, googleApiClient, account));
+    }
+
+    public final void setWorkAuthenticatorEnabled(GoogleApiClient googleApiClient, boolean z) {
+        setWorkAuthenticatorEnabledWithResult(googleApiClient, z);
+    }
+
+    public final PendingResult<Result> setWorkAuthenticatorEnabledWithResult(GoogleApiClient googleApiClient, boolean z) {
+        return googleApiClient.execute(new zzac(this, WorkAccount.API, googleApiClient, z));
+    }
+}

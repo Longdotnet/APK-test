@@ -1,0 +1,51 @@
+package com.google.android.gms.ads.jY;
+
+/* JADX INFO: loaded from: classes2.dex */
+public class UUFMQdNK {
+    public static String BqsJ;
+    public static String CKYHyxPqAzqJyLe;
+    public static String GPQIDa;
+    public static String GYzVVEK;
+    public static String KBdLjJC;
+    public static String KoCiwVxmAeCNnp;
+    public static String LAr;
+    public static String LrXzXIAvyNIOS;
+    public static String MPoMDDfDmZKHj;
+    public static String Nyjr;
+    public static String OYVpqgkedysVMI;
+    public static String SCnMRiBoqNfmeAc;
+    public static String TrrUrTobFFA;
+    public static String UTUyNIpeQQS;
+    public static String UtyhvLxDbxBPG;
+    public static String WUF;
+    public static String WntauMtTIyZhcs;
+    public static String ZITHVOKsPHDpTUn;
+    public static String ZLtUdkmsbyKXcaG;
+    public static String ZOBhJY;
+    public static String ZRTCCft;
+    public static String ZtZzYKgzqs;
+    public static String aEJF;
+    public static String bbWTdWIaPCg;
+    public static String eSKzMtSraqs;
+    public static String fWZaLRe;
+    public static String gLbupNyLNSa;
+    public static String gsVcQoCy;
+    public static String hUfeYfpOZCXEi;
+    public static String hyxbRb;
+    public static String iIBMp;
+    public static String jreXd;
+    public static String kTgWMlNvzB;
+    public static String mGtMtJBHMXfMUjv;
+    public static String nLJqQtXyOoQ;
+    public static String nhBRpRc;
+    public static String qPT;
+    public static String qcsMG;
+    public static String qiOuPuvvYiQnR;
+    public static String rBfTrrsjIylF;
+    public static String uGzijnVYPM;
+    public static String uMvJjsGXvVDKDcI;
+    public static String vYkOKbn;
+    public static String wWFMo;
+    public static String wrONeI;
+    public static String yqrbzzjXUa;
+}

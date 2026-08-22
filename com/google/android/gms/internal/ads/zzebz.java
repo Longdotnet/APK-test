@@ -1,0 +1,32 @@
+package com.google.android.gms.internal.ads;
+
+import android.database.sqlite.SQLiteDatabase;
+import java.util.Objects;
+
+/* JADX INFO: loaded from: classes.dex */
+final class zzebz implements zzgdj {
+    final /* synthetic */ zzfge zza;
+
+    public zzebz(zzeca zzecaVar, zzfge zzfgeVar) {
+        this.zza = zzfgeVar;
+        Objects.requireNonNull(zzecaVar);
+    }
+
+    @Override // com.google.android.gms.internal.ads.zzgdj
+    public final void zza(Throwable th) {
+        String strValueOf = String.valueOf(th.getMessage());
+        int i = com.google.android.gms.ads.internal.util.zze.$r8$clinit;
+        com.google.android.gms.ads.internal.util.client.zzo.zzg("Failed to get offline buffered ping database: ".concat(strValueOf));
+    }
+
+    @Override // com.google.android.gms.internal.ads.zzgdj
+    public final /* bridge */ /* synthetic */ void zzb(Object obj) {
+        try {
+            this.zza.zza((SQLiteDatabase) obj);
+        } catch (Exception e) {
+            String strValueOf = String.valueOf(e.getMessage());
+            int i = com.google.android.gms.ads.internal.util.zze.$r8$clinit;
+            com.google.android.gms.ads.internal.util.client.zzo.zzg("Error executing function on offline buffered ping database: ".concat(strValueOf));
+        }
+    }
+}

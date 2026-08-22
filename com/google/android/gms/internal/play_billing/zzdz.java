@@ -1,0 +1,10 @@
+package com.google.android.gms.internal.play_billing;
+
+/* JADX INFO: loaded from: classes.dex */
+interface zzdz {
+    zzec zza();
+
+    boolean zzb();
+
+    int zzc();
+}

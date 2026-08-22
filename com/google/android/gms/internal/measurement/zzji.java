@@ -1,0 +1,18 @@
+package com.google.android.gms.internal.measurement;
+
+/* JADX INFO: loaded from: classes.dex */
+public class zzji {
+    public static final /* synthetic */ int zza = 0;
+    private static volatile int zzb = 100;
+
+    public /* synthetic */ zzji(zzjh zzjhVar) {
+    }
+
+    public static int zzb(int i) {
+        return (-(i & 1)) ^ (i >>> 1);
+    }
+
+    public static long zzc(long j) {
+        return (-(j & 1)) ^ (j >>> 1);
+    }
+}
