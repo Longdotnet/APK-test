@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: tinh-birthday-mobile
+    runtime: static
+    buildCommand: ""
+    staticPublishPath: .
+    pullRequestPreviewsEnabled: true
