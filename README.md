@@ -1,38 +1,141 @@
 # Direct Follower Farm Research Simulator
 
-A provider-aware research simulator for studying the architecture, failure modes, inventory economics, and detection surface of coordinated fake-engagement systems.
+A provider-aware .NET 10 research simulator for studying the architecture, failure modes, inventory economics, replenishment behavior, and detection surface of coordinated fake-engagement systems.
 
-The project now separates the farm core from platform adapters so the architecture can model a third-party platform such as TikTok **without implementing real fake-engagement actions**.
+The project models the architecture commonly seen in mass-account/follower-farm tooling while keeping all mutation inside a closed simulator. TikTok exists only as a read-only capability boundary.
 
 ## Architecture
 
 ```text
-Synthetic Account Factory
-        ↓
-    Account Pool
-        ↓
-  Campaign Engine
-        ↓
-   Provider Router
-        │
-        ├── simulator  → mutable local simulation
-        │
-        └── tiktok     → target/read-only adapter
-        ↓
-      Job Queue
-        ↓
-  Background Workers
-        ↓
- Risk / Health Engine
-        ↓
- Delivery + Refill Metrics
+                     Account Creation Campaign
+                              │
+                              ▼
+                        Identity Factory
+                              │
+                              ▼
+                       Creation Job Queue
+                              │
+                              ▼
+                    AccountFactory Workers
+                              │
+                 ┌────────────┴────────────┐
+                 ▼                         ▼
+        RegistrationProvider         EmailProvider
+                 │                         │
+                 └────────────┬────────────┘
+                              ▼
+                       Account Inventory
+                              │
+                              ▼
+                         Account Pool
+                              │
+                              ▼
+                         Follow Campaign
+                              │
+                              ▼
+                        Follow Job Queue
+                              │
+                              ▼
+                         Follow Workers
+                              │
+                              ▼
+                        SocialProvider
+                              │
+                ┌─────────────┴─────────────┐
+                ▼                           ▼
+          simulator                    tiktok
+       local mutation                read-only
+                │
+                ▼
+                    Risk / Health Engine
+                              │
+                              ▼
+                    Delivery / Refill Metrics
 ```
 
-The key refactor is `ISocialProvider`: campaign, queue and workers no longer depend directly on a concrete simulator implementation.
+## What is implemented
+
+### Account Factory
+
+The account factory is no longer a direct `for` loop that inserts accounts. It has a dedicated asynchronous pipeline:
+
+```text
+CreationCampaign
+    ↓
+RegistrationIdentity × N
+    ↓
+AccountCreationJob × N
+    ↓
+Channel<AccountCreationJob>
+    ↓
+AccountCreationWorker pool
+    ↓
+Registration + verification simulation
+    ↓
+SimAccount
+    ↓
+Account Pool
+```
+
+Creation jobs use this state machine:
+
+```text
+IdentityReady
+      ↓
+RegistrationStarted
+      ↓
+WaitingVerification
+      ↓
+VerificationReceived
+      ↓
+Registered
+```
+
+Failure paths end in `Failed` or `Blocked`.
+
+### Account inventory
+
+Each generated account tracks:
+
+- provider/source
+- synthetic external username
+- region
+- opaque password reference (never a real password)
+- synthetic session state
+- health score
+- risk score
+- action counters
+- created / verified / activated timestamps
+- cooldown and health-check timestamps
+
+### Follow Campaign Engine
+
+A follow campaign selects eligible synthetic inventory, creates one job per requested delivery, and lets background workers execute the jobs through `ISocialProvider`.
+
+Refill jobs use previously unused eligible inventory to replace simulated failures.
+
+### Automatic Replenishment
+
+The replenishment service checks active inventory against a minimum threshold.
+
+Example:
+
+```text
+Minimum active = 10,000
+Current active = 8,400
+Missing        = 1,600
+Batch size     = 2,000
+
+→ create AccountCreationCampaign(quantity=1,600)
+```
+
+This connects account-factory economics with campaign delivery.
 
 ## Provider model
 
-Every provider exposes:
+### Social providers
+
+`ISocialProvider` exposes:
 
 - `Key`
 - `Platform`
@@ -43,12 +146,12 @@ Every provider exposes:
 
 Current providers:
 
-| Provider | Platform | Mode | Mutating engagement |
+| Provider | Platform | Mode | Mutation |
 |---|---|---|---|
-| `simulator` | Simulator | Simulation | Yes, local state only |
-| `tiktok` | TikTok | ReadOnly | No |
+| `simulator` | Simulator | Simulation | local simulation only |
+| `tiktok` | TikTok | ReadOnly | blocked |
 
-The TikTok adapter accepts either:
+The TikTok social adapter can normalize:
 
 ```text
 @longgmilk
@@ -56,49 +159,46 @@ longgmilk
 https://www.tiktok.com/@longgmilk
 ```
 
-and normalizes them to:
+but cannot execute follow/like/comment actions.
 
-```text
-username: longgmilk
-canonicalTarget: https://www.tiktok.com/@longgmilk
+### Registration providers
+
+`IRegistrationProvider` separates account creation from the creation worker.
+
+Current providers:
+
+| Provider | Platform | Mode | Account creation |
+|---|---|---|---|
+| `simulator-registration` | Simulator | Simulation | local synthetic accounts |
+| `tiktok-registration` | TikTok | ReadOnly | blocked |
+
+`tiktok-registration` deliberately performs no network call, browser automation, login, registration, verification handling, or private API action.
+
+### Email providers
+
+`IEmailProvider` abstracts mailbox creation and verification delivery.
+
+Current provider:
+
+| Provider | Mode | Behavior |
+|---|---|---|
+| `simulator-mail` | Simulation | uses reserved `example.invalid` addresses and synthetic verification tokens |
+
+No Gmail, Mail.tm, Kopeechka, temporary-email service, or real mailbox is contacted.
+
+## Configuration
+
+`src/FollowerFarmSimulator/appsettings.json`:
+
+```json
+{
+  "AccountFactory": {
+    "Workers": 8
+  }
+}
 ```
 
-It does not log in to TikTok and does not execute follow/like/comment actions.
-
-## Safety boundary
-
-This repository does **not** implement:
-
-- automated TikTok account registration
-- TikTok credentials/session handling
-- private TikTok API calls
-- browser automation for fake engagement
-- CAPTCHA or OTP bypass
-- proxy/fingerprint evasion
-- real follow/like/comment delivery
-- SMM-provider ordering for fake engagement
-
-When a campaign uses `provider: "tiktok"`, the target is validated and normalized, but the campaign is returned with `Blocked` status and an explicit capability reason.
-
-## Research questions this MVP can answer
-
-- How many synthetic accounts are required to deliver a campaign of N followers?
-- How does account health degrade as jobs are executed?
-- How many accounts move into cooldown, limited, or disabled states?
-- What delivery rate is achieved under configurable simulated failure rates?
-- How many refill jobs are needed to reach the requested campaign quantity?
-- How does worker concurrency affect queue throughput?
-- How can the same campaign core support platform-specific adapters without hard-coding TikTok?
-- How should capability gates prevent a read-only provider from executing mutation jobs?
-
-## Tech
-
-- .NET 10
-- ASP.NET Core Minimal API
-- `BackgroundService` worker pool
-- `System.Threading.Channels` in-memory queue
-- dependency-injected provider adapters
-- concurrent in-memory state for the first MVP
+The account-factory worker count can be changed without changing source code.
 
 ## Run
 
@@ -109,35 +209,53 @@ dotnet run
 
 Use `src/FollowerFarmSimulator/FollowerFarmSimulator.http` from Visual Studio / Rider.
 
-## Demo flow
+## Demo: account creation → inventory → follow campaign
 
-### 1. Inspect providers
+### 1. Inspect provider capabilities
 
 ```http
+GET /api/account-factory/providers
 GET /api/providers
 ```
 
-### 2. Validate/normalize a TikTok target
+### 2. Create 1,000 synthetic accounts through the factory pipeline
 
 ```http
-POST /api/providers/tiktok/normalize-target
+POST /api/account-factory/campaigns
 Content-Type: application/json
 
 {
-  "target": "https://www.tiktok.com/@longgmilk"
+  "provider": "simulator-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN",
+  "quantity": 1000
 }
 ```
 
-### 3. Generate synthetic account inventory
+### 3. Watch creation progress
 
 ```http
-POST /api/accounts/generate
-Content-Type: application/json
-
-{ "count": 10000 }
+GET /api/account-factory/campaigns/{creationCampaignId}
+GET /api/account-factory/stats
+GET /api/account-factory/jobs/recent?take=50
 ```
 
-### 4. Start a local direct-follow simulation
+### 4. Maintain a minimum inventory
+
+```http
+POST /api/account-factory/replenish
+Content-Type: application/json
+
+{
+  "minimumActive": 10000,
+  "batchSize": 2000,
+  "provider": "simulator-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN"
+}
+```
+
+### 5. Use the resulting account pool in a local follow simulation
 
 ```http
 POST /api/campaigns
@@ -151,9 +269,42 @@ Content-Type: application/json
 }
 ```
 
-The campaign allocates eligible synthetic accounts and creates one local simulated follow job per account. Eight background workers consume the queue concurrently.
+### 6. Inspect/refill delivery
 
-### 5. Exercise the TikTok integration boundary
+```http
+GET /api/campaigns/{campaignId}
+POST /api/campaigns/{campaignId}/refill
+GET /api/targets/simulator/demo_target
+```
+
+## TikTok capability boundary
+
+The architecture can carry TikTok as a third-party platform without permitting fake-engagement or mass-registration mutation.
+
+Account creation request:
+
+```http
+POST /api/account-factory/campaigns
+Content-Type: application/json
+
+{
+  "provider": "tiktok-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN",
+  "quantity": 1000
+}
+```
+
+Expected result:
+
+```text
+Platform    TikTok
+Status      Blocked
+Jobs        0
+Reason      provider is read-only
+```
+
+Follow request:
 
 ```http
 POST /api/campaigns
@@ -166,69 +317,47 @@ Content-Type: application/json
 }
 ```
 
-Expected behavior:
+The target is normalized, but no follow jobs are created.
 
-```text
-Platform        TikTok
-CanonicalTarget https://www.tiktok.com/@longgmilk
-Status          Blocked
-BlockReason     provider is read-only
-Jobs            0
-```
+## Simulation outcomes
 
-This demonstrates that the same campaign model can carry a real third-party target while the provider capability boundary prevents fake-engagement execution.
+Registration and verification have configurable-in-code synthetic failure distributions so experiments include rejected registrations, verification timeouts, provider errors, and challenge states.
 
-### 6. Inspect simulated delivery
-
-```http
-GET /api/campaigns/{campaignId}
-GET /api/targets/simulator/demo_target
-```
-
-### 7. Refill simulated failures
-
-```http
-POST /api/campaigns/{campaignId}/refill
-```
-
-## Current simulated outcome distribution
-
-Each local simulator follow action currently has an approximate outcome distribution:
+Follow jobs currently simulate approximately:
 
 | Result | Probability | Effect |
 |---|---:|---|
 | success | 93% | synthetic follower delivered |
-| cooldown | 3% | synthetic account temporarily unavailable |
-| limited | 2.5% | synthetic account moved to limited state |
-| disabled | 1.5% | synthetic account removed from usable inventory |
+| cooldown | 3% | account temporarily unavailable |
+| limited | 2.5% | account moved to limited state |
+| disabled | 1.5% | account removed from usable inventory |
 
-These values are research parameters, not claims about TikTok's real systems.
+These values are research parameters, not measurements or claims about TikTok.
 
-## Account lifecycle
+## Safety boundary
 
-```text
-NEW
- ↓
-ACTIVE ───────────────┐
- ↓                    │
-COOLDOWN ─────────────┘
- ↓
-LIMITED
- ↓
-DISABLED
-```
+This repository does **not** implement:
 
-Each synthetic account tracks health score, risk score, daily action count, last action time, cooldown expiry and lifecycle state.
+- automated TikTok account registration
+- real TikTok credentials or sessions
+- private TikTok API calls or request signing
+- real email/phone verification automation
+- CAPTCHA solving or OTP bypass
+- proxy rotation or fingerprint/device evasion
+- undetected browser automation
+- real follow/like/comment delivery
+- SMM-provider ordering for fake engagement
 
-## Provider-aware roadmap
+The simulator deliberately models the orchestration architecture without enabling those real-world abuse mechanisms.
 
-1. Persist accounts, jobs, campaigns, targets and provider metadata in PostgreSQL/SQL Server.
-2. Add deterministic seeded simulation scenarios for repeatable experiments.
-3. Add configurable simulated provider profiles and retention/drop models.
-4. Add campaign time-series metrics and throughput charts.
-5. Add automatic synthetic inventory replenishment.
-6. Add graph-based coordinated-behavior detection to study how a defender could identify a follower farm.
-7. Add read-only/official platform metadata adapters where supported by platform APIs.
-8. Add load tests for 100K–1M synthetic accounts.
+## Next research phases
 
-Real-platform adapters that automate fake engagement or evade platform safeguards remain out of scope.
+1. Persist accounts, identities, creation jobs, follow jobs, campaigns, and event history in SQL Server/PostgreSQL.
+2. Add deterministic random seeds so experiments are reproducible.
+3. Add configurable registration/follow provider profiles from configuration.
+4. Add time-series metrics: creation throughput, inventory burn rate, campaign throughput, failure/refill rate.
+5. Add a dashboard for creation state, account health, inventory lifecycle, and campaigns.
+6. Add automatic periodic replenishment policies rather than request-triggered replenishment only.
+7. Add graph-based coordinated-behavior detection as a defensive research module.
+8. Add load tests for 100K-1M synthetic identities/accounts.
+9. Add read-only/official platform metadata adapters where a platform explicitly supports them.
