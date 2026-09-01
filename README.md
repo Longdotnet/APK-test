@@ -1,63 +1,159 @@
-# Direct Follower Farm Research Simulator
+# TikTok Follower-Farm Research Platform
 
-A provider-aware .NET 10 research simulator for studying the architecture, failure modes, inventory economics, replenishment behavior, and detection surface of coordinated fake-engagement systems.
+A .NET 10 research project that combines two layers:
 
-The project models the architecture commonly seen in mass-account/follower-farm tooling while keeping all mutation inside a closed simulator. TikTok exists only as a read-only capability boundary.
+1. **Real TikTok integration** through TikTok Login Kit OAuth + official Display API to read an authorized creator account's real profile and recent-video metrics.
+2. **Closed follower-farm simulator** that models account creation, inventory, workers, campaigns, failures, refill, and replenishment without creating real TikTok bot accounts or delivering fake engagement.
+
+The real-data layer validates the pain point. The simulator explains the system mechanics behind the pain point.
+
+## Research question
+
+A creator may observe a mismatch such as:
+
+```text
+Followers: 10,000
+Recent video views: a few hundred
+```
+
+Follower count alone does not prove audience quality. This project therefore measures real TikTok follower/reach/engagement data for an authorized account, then compares those observations with controlled synthetic follower-farm experiments.
+
+A low view-to-follower ratio is treated as an **audience-vs-reach mismatch signal**, never as proof that followers are fake.
 
 ## Architecture
 
 ```text
-                     Account Creation Campaign
-                              │
-                              ▼
-                        Identity Factory
-                              │
-                              ▼
-                       Creation Job Queue
-                              │
-                              ▼
-                    AccountFactory Workers
-                              │
-                 ┌────────────┴────────────┐
-                 ▼                         ▼
-        RegistrationProvider         EmailProvider
-                 │                         │
-                 └────────────┬────────────┘
-                              ▼
-                       Account Inventory
-                              │
-                              ▼
-                         Account Pool
-                              │
-                              ▼
-                         Follow Campaign
-                              │
-                              ▼
-                        Follow Job Queue
-                              │
-                              ▼
-                         Follow Workers
-                              │
-                              ▼
-                        SocialProvider
-                              │
-                ┌─────────────┴─────────────┐
-                ▼                           ▼
-          simulator                    tiktok
-       local mutation                read-only
-                │
-                ▼
-                    Risk / Health Engine
-                              │
-                              ▼
-                    Delivery / Refill Metrics
+                         ┌───────────────────────────────┐
+                         │      REAL TIKTOK ACCOUNT      │
+                         └───────────────┬───────────────┘
+                                         │ user consent
+                                         ▼
+                              TikTok Login Kit OAuth
+                                         │
+                                         ▼
+                           Official TikTok Display API
+                              │                    │
+                              ▼                    ▼
+                       /v2/user/info/       /v2/video/list/
+                              │                    │
+                              └─────────┬──────────┘
+                                        ▼
+                              Audience-vs-Reach Audit
+                                        │
+                                        │ real observations
+                                        ▼
+                    ┌─────────────────────────────────────┐
+                    │       CLOSED RESEARCH SIMULATOR     │
+                    └──────────────────┬──────────────────┘
+                                       │
+                        Account Creation Campaign
+                                       │
+                                       ▼
+                               Identity Factory
+                                       │
+                                       ▼
+                              Creation Job Queue
+                                       │
+                                       ▼
+                           AccountCreation Workers
+                                       │
+                              ┌────────┴────────┐
+                              ▼                 ▼
+                     RegistrationProvider  EmailProvider
+                              │                 │
+                              └────────┬────────┘
+                                       ▼
+                                Account Inventory
+                                       │
+                                       ▼
+                                  Account Pool
+                                       │
+                                       ▼
+                                 Follow Campaign
+                                       │
+                                       ▼
+                                  Follow Workers
+                                       │
+                                       ▼
+                              Simulator SocialProvider
+                                       │
+                                       ▼
+                              Risk / Health / Refill
 ```
 
-## What is implemented
+## Real TikTok integration
 
-### Account Factory
+The project includes `TikTokOfficialClient`, which uses TikTok's current official OAuth and Display API flow.
 
-The account factory is no longer a direct `for` loop that inserts accounts. It has a dedicated asynchronous pipeline:
+Implemented endpoints:
+
+```text
+GET /api/tiktok/config
+GET /api/tiktok/oauth/start
+GET /api/tiktok/oauth/callback
+GET /api/tiktok/connections
+GET /api/tiktok/accounts/{openId}/profile
+GET /api/tiktok/accounts/{openId}/videos?maxCount=20
+GET /api/tiktok/accounts/{openId}/audit?maxCount=20
+```
+
+The real integration reads, when the app has the required approved scopes and the user consents:
+
+- display name / username / avatar / profile link
+- follower count
+- following count
+- total received likes
+- public video count
+- recent video view count
+- recent video like count
+- recent video comment count
+- recent video share count
+
+The audit computes:
+
+- average recent views
+- median recent views
+- view-to-follower ratio
+- recent interaction-per-view ratio
+- descriptive mismatch observations
+
+It does not label an account as fake based on these ratios alone.
+
+### TikTok Developer configuration
+
+Create an app in TikTok for Developers, add Login Kit and the TikTok API/Display API product, then register your Web callback URI:
+
+```text
+https://YOUR_DEPLOYED_HOST/api/tiktok/oauth/callback
+```
+
+Recommended scopes for the experiment:
+
+```text
+user.info.basic
+user.info.profile
+user.info.stats
+video.list
+```
+
+`user.info.stats` is required for follower/following/likes/video counts. `video.list` is required for recent public videos. Additional scopes may require TikTok app review/approval, and the user must authorize them.
+
+Prefer environment variables instead of committing credentials:
+
+```text
+TikTok__ClientKey=YOUR_CLIENT_KEY
+TikTok__ClientSecret=YOUR_CLIENT_SECRET
+TikTok__RedirectUri=https://YOUR_DEPLOYED_HOST/api/tiktok/oauth/callback
+TikTok__Scopes=user.info.basic,user.info.profile,user.info.stats,video.list
+```
+
+The checked-in `appsettings.json` contains empty credential placeholders only.
+
+Full setup guide: `docs/TIKTOK_REAL_INTEGRATION.md`.
+
+## Account Factory simulator
+
+The synthetic account factory is an asynchronous research pipeline rather than a simple insertion loop:
 
 ```text
 CreationCampaign
@@ -93,14 +189,12 @@ Registered
 
 Failure paths end in `Failed` or `Blocked`.
 
-### Account inventory
-
-Each generated account tracks:
+Each synthetic account tracks:
 
 - provider/source
 - synthetic external username
 - region
-- opaque password reference (never a real password)
+- opaque synthetic password reference
 - synthetic session state
 - health score
 - risk score
@@ -108,139 +202,69 @@ Each generated account tracks:
 - created / verified / activated timestamps
 - cooldown and health-check timestamps
 
-### Follow Campaign Engine
-
-A follow campaign selects eligible synthetic inventory, creates one job per requested delivery, and lets background workers execute the jobs through `ISocialProvider`.
-
-Refill jobs use previously unused eligible inventory to replace simulated failures.
-
-### Automatic Replenishment
-
-The replenishment service checks active inventory against a minimum threshold.
-
-Example:
-
-```text
-Minimum active = 10,000
-Current active = 8,400
-Missing        = 1,600
-Batch size     = 2,000
-
-→ create AccountCreationCampaign(quantity=1,600)
-```
-
-This connects account-factory economics with campaign delivery.
-
-## Provider model
+## Provider abstractions
 
 ### Social providers
 
-`ISocialProvider` exposes:
+`ISocialProvider` separates campaign orchestration from platform-specific behavior.
 
-- `Key`
-- `Platform`
-- `Mode`
-- `SupportsMutatingEngagement`
-- `NormalizeTarget(...)`
-- `FollowAsync(...)`
-
-Current providers:
-
-| Provider | Platform | Mode | Mutation |
+| Provider | Platform | Mode | Follow mutation |
 |---|---|---|---|
-| `simulator` | Simulator | Simulation | local simulation only |
+| `simulator` | Simulator | Simulation | local synthetic mutation |
 | `tiktok` | TikTok | ReadOnly | blocked |
 
-The TikTok social adapter can normalize:
-
-```text
-@longgmilk
-longgmilk
-https://www.tiktok.com/@longgmilk
-```
-
-but cannot execute follow/like/comment actions.
+The `tiktok` social provider only normalizes TikTok profile targets. It is intentionally separate from `TikTokOfficialClient`, which performs authorized official read analytics.
 
 ### Registration providers
-
-`IRegistrationProvider` separates account creation from the creation worker.
-
-Current providers:
 
 | Provider | Platform | Mode | Account creation |
 |---|---|---|---|
 | `simulator-registration` | Simulator | Simulation | local synthetic accounts |
 | `tiktok-registration` | TikTok | ReadOnly | blocked |
 
-`tiktok-registration` deliberately performs no network call, browser automation, login, registration, verification handling, or private API action.
+The real TikTok integration does **not** mass-register accounts. `tiktok-registration` remains a capability boundary.
 
 ### Email providers
 
-`IEmailProvider` abstracts mailbox creation and verification delivery.
-
-Current provider:
-
 | Provider | Mode | Behavior |
 |---|---|---|
-| `simulator-mail` | Simulation | uses reserved `example.invalid` addresses and synthetic verification tokens |
+| `simulator-mail` | Simulation | reserved `example.invalid` addresses + synthetic verification artifacts |
 
-No Gmail, Mail.tm, Kopeechka, temporary-email service, or real mailbox is contacted.
+No real temporary-email provider is contacted by the simulator.
 
-## Configuration
+## Follow Campaign simulator
 
-`src/FollowerFarmSimulator/appsettings.json`:
+A follow campaign selects eligible synthetic inventory, creates one job per requested synthetic delivery, and lets background workers execute through `ISocialProvider`.
 
-```json
-{
-  "AccountFactory": {
-    "Workers": 8
-  }
-}
-```
-
-The account-factory worker count can be changed without changing source code.
-
-## Run
-
-```bash
-cd src/FollowerFarmSimulator
-dotnet run
-```
-
-Use `src/FollowerFarmSimulator/FollowerFarmSimulator.http` from Visual Studio / Rider.
-
-## Demo: account creation → inventory → follow campaign
-
-### 1. Inspect provider capabilities
+Example:
 
 ```http
-GET /api/account-factory/providers
-GET /api/providers
-```
-
-### 2. Create 1,000 synthetic accounts through the factory pipeline
-
-```http
-POST /api/account-factory/campaigns
+POST /api/campaigns
 Content-Type: application/json
 
 {
-  "provider": "simulator-registration",
-  "emailProvider": "simulator-mail",
-  "region": "VN",
-  "quantity": 1000
+  "provider": "simulator",
+  "target": "demo_target",
+  "quantity": 1000,
+  "startingFollowers": 100
 }
 ```
 
-### 3. Watch creation progress
+Synthetic failures can place accounts into cooldown, limited, or disabled states. Refill jobs use previously unused eligible inventory to replace missing simulated delivery.
 
-```http
-GET /api/account-factory/campaigns/{creationCampaignId}
-GET /api/account-factory/stats
-GET /api/account-factory/jobs/recent?take=50
+## Automatic replenishment
+
+The replenishment service maintains a target synthetic inventory size.
+
+```text
+Minimum active = 10,000
+Current active = 8,400
+Missing        = 1,600
+
+→ AccountCreationCampaign(quantity=1,600)
 ```
 
-### 4. Maintain a minimum inventory
+Request example:
 
 ```http
 POST /api/account-factory/replenish
@@ -255,109 +279,87 @@ Content-Type: application/json
 }
 ```
 
-### 5. Use the resulting account pool in a local follow simulation
+## Configuration
 
-```http
-POST /api/campaigns
-Content-Type: application/json
+`src/FollowerFarmSimulator/appsettings.json` contains non-secret defaults:
 
+```json
 {
-  "provider": "simulator",
-  "target": "demo_target",
-  "quantity": 1000,
-  "startingFollowers": 100
+  "AccountFactory": {
+    "Workers": 8
+  },
+  "TikTok": {
+    "ClientKey": "",
+    "ClientSecret": "",
+    "RedirectUri": "",
+    "Scopes": "user.info.basic,user.info.profile,user.info.stats,video.list"
+  }
 }
 ```
 
-### 6. Inspect/refill delivery
+Never commit real TikTok credentials.
 
-```http
-GET /api/campaigns/{campaignId}
-POST /api/campaigns/{campaignId}/refill
-GET /api/targets/simulator/demo_target
+## Run
+
+```bash
+cd src/FollowerFarmSimulator
+dotnet run
 ```
 
-## TikTok capability boundary
+Use `src/FollowerFarmSimulator/FollowerFarmSimulator.http` from Visual Studio or Rider.
 
-The architecture can carry TikTok as a third-party platform without permitting fake-engagement or mass-registration mutation.
-
-Account creation request:
-
-```http
-POST /api/account-factory/campaigns
-Content-Type: application/json
-
-{
-  "provider": "tiktok-registration",
-  "emailProvider": "simulator-mail",
-  "region": "VN",
-  "quantity": 1000
-}
-```
-
-Expected result:
+### Real-data demo
 
 ```text
-Platform    TikTok
-Status      Blocked
-Jobs        0
-Reason      provider is read-only
+1. Configure TikTok Developer credentials.
+2. Open GET /api/tiktok/oauth/start in a browser.
+3. Authorize the app on TikTok.
+4. Read the `openId` returned by the callback.
+5. GET /api/tiktok/accounts/{openId}/audit?maxCount=20
 ```
 
-Follow request:
+### Synthetic experiment demo
 
-```http
-POST /api/campaigns
-Content-Type: application/json
-
-{
-  "provider": "tiktok",
-  "target": "https://www.tiktok.com/@longgmilk",
-  "quantity": 1000
-}
+```text
+1. POST /api/account-factory/campaigns to create synthetic inventory.
+2. GET /api/account-factory/stats.
+3. POST /api/campaigns to simulate follower delivery.
+4. GET /api/campaigns/{id} and target stats.
+5. Refill failures and observe inventory burn/replenishment.
 ```
 
-The target is normalized, but no follow jobs are created.
+## Security and safety boundary
 
-## Simulation outcomes
+The real TikTok layer uses user-authorized official OAuth access/refresh tokens and official TikTok APIs. It does not collect TikTok passwords.
 
-Registration and verification have configurable-in-code synthetic failure distributions so experiments include rejected registrations, verification timeouts, provider errors, and challenge states.
+The project does **not** implement:
 
-Follow jobs currently simulate approximately:
-
-| Result | Probability | Effect |
-|---|---:|---|
-| success | 93% | synthetic follower delivered |
-| cooldown | 3% | account temporarily unavailable |
-| limited | 2.5% | account moved to limited state |
-| disabled | 1.5% | account removed from usable inventory |
-
-These values are research parameters, not measurements or claims about TikTok.
-
-## Safety boundary
-
-This repository does **not** implement:
-
-- automated TikTok account registration
-- real TikTok credentials or sessions
-- private TikTok API calls or request signing
-- real email/phone verification automation
+- automated mass creation of real TikTok accounts
+- TikTok password harvesting
+- private TikTok API request signing
+- browser anti-detection for account creation or engagement
 - CAPTCHA solving or OTP bypass
-- proxy rotation or fingerprint/device evasion
-- undetected browser automation
-- real follow/like/comment delivery
+- proxy/fingerprint/device evasion
+- real fake follow/like/comment delivery
 - SMM-provider ordering for fake engagement
 
-The simulator deliberately models the orchestration architecture without enabling those real-world abuse mechanisms.
+OAuth client secrets and refresh tokens are server-side only. The current MVP stores OAuth tokens in memory; a deployed research version should replace that with encrypted persistent storage.
 
-## Next research phases
+## Current limitations
 
-1. Persist accounts, identities, creation jobs, follow jobs, campaigns, and event history in SQL Server/PostgreSQL.
-2. Add deterministic random seeds so experiments are reproducible.
-3. Add configurable registration/follow provider profiles from configuration.
-4. Add time-series metrics: creation throughput, inventory burn rate, campaign throughput, failure/refill rate.
-5. Add a dashboard for creation state, account health, inventory lifecycle, and campaigns.
-6. Add automatic periodic replenishment policies rather than request-triggered replenishment only.
+- TikTok Developer app credentials and approval are required to exercise the real integration.
+- Extra TikTok scopes may require review before follower/video metrics are available.
+- OAuth connections are currently in memory and disappear after restart.
+- Simulator state is also in memory.
+- The mismatch heuristic is descriptive and intentionally does not claim to detect fake followers with certainty.
+
+## Next phases
+
+1. Persist OAuth connections, metrics snapshots, simulator accounts, jobs, campaigns, and events in SQL Server/PostgreSQL.
+2. Encrypt refresh tokens at rest and add connection revocation.
+3. Store daily TikTok metric snapshots to measure follower growth versus real reach over time.
+4. Add time-series charts for follower count, median views, engagement, inventory burn, refill, and creation throughput.
+5. Compare real account observations with reproducible seeded simulator experiments.
+6. Add a dashboard that clearly separates `REAL TIKTOK DATA` from `SIMULATED FARM DATA`.
 7. Add graph-based coordinated-behavior detection as a defensive research module.
 8. Add load tests for 100K-1M synthetic identities/accounts.
-9. Add read-only/official platform metadata adapters where a platform explicitly supports them.
