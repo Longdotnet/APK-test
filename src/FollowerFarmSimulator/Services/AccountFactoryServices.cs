@@ -72,7 +72,9 @@ public sealed class AccountCreationService(
             return campaign;
         }
 
-        campaign.Status = CreationCampaignStatus.Running;
+        // Materialize the full batch before enqueueing so workers cannot mark a campaign
+        // partial while the producer is still creating later jobs in the same batch.
+        var jobs = new List<AccountCreationJob>(quantity);
         for (var i = 0; i < quantity; i++)
         {
             var identity = i == 0 ? firstIdentity : identities.Create(campaign.Region);
@@ -87,8 +89,12 @@ public sealed class AccountCreationService(
                 State = RegistrationState.IdentityReady
             };
             state.CreationJobs[job.Id] = job;
-            await state.CreationQueue.Writer.WriteAsync(job, ct);
+            jobs.Add(job);
         }
+
+        campaign.Status = CreationCampaignStatus.Running;
+        foreach (var job in jobs)
+            await state.CreationQueue.Writer.WriteAsync(job, ct);
 
         return campaign;
     }
