@@ -1,5 +1,6 @@
 using FollowerFarmSimulator.Domain;
 using FollowerFarmSimulator.Infrastructure;
+using FollowerFarmSimulator.Providers;
 
 namespace FollowerFarmSimulator.Services;
 
@@ -26,19 +27,6 @@ public sealed class AccountFactory(FarmState state)
     }
 }
 
-public sealed class SimulatedProvider
-{
-    public SimulatedActionResult Follow(SimAccount account, TargetProfile target)
-    {
-        // Deliberately local-only: no network, browser automation, credentials, or platform API calls.
-        var roll = Random.Shared.NextDouble();
-        if (roll < 0.93) return new(true, "SUCCESS", Random.Shared.Next(1, 4), -Random.Shared.Next(0, 2));
-        if (roll < 0.96) return new(false, "COOLDOWN", 5, -3, TimeSpan.FromSeconds(Random.Shared.Next(10, 31)));
-        if (roll < 0.985) return new(false, "LIMITED", 12, -12);
-        return new(false, "DISABLED", 25, -30);
-    }
-}
-
 public sealed class RiskEngine
 {
     public void Apply(SimAccount account, SimulatedActionResult result)
@@ -62,15 +50,46 @@ public sealed class RiskEngine
     }
 }
 
-public sealed class CampaignService(FarmState state)
+public sealed class CampaignService(FarmState state, ProviderRouter providers)
 {
-    public async Task<Campaign> CreateAsync(string targetUsername, int quantity, long startingFollowers, CancellationToken ct)
+    public async Task<Campaign> CreateAsync(
+        string target,
+        int quantity,
+        long startingFollowers,
+        string providerKey,
+        CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(targetUsername)) throw new ArgumentException("Target is required.");
         if (quantity < 1 || quantity > 100_000) throw new ArgumentOutOfRangeException(nameof(quantity));
 
-        targetUsername = targetUsername.Trim().TrimStart('@');
-        state.Targets.TryAdd(targetUsername, new TargetProfile { Username = targetUsername, Followers = startingFollowers });
+        var provider = providers.GetRequired(providerKey);
+        var descriptor = provider.NormalizeTarget(target);
+        var targetKey = TargetKey(provider.Key, descriptor.Username);
+
+        state.Targets.TryAdd(targetKey, new TargetProfile
+        {
+            Platform = descriptor.Platform,
+            Username = descriptor.Username,
+            CanonicalTarget = descriptor.CanonicalTarget,
+            Followers = startingFollowers
+        });
+
+        var campaign = new Campaign
+        {
+            ProviderKey = provider.Key,
+            Platform = descriptor.Platform,
+            TargetUsername = descriptor.Username,
+            CanonicalTarget = descriptor.CanonicalTarget,
+            Quantity = quantity,
+            Status = CampaignStatus.Queued
+        };
+        state.Campaigns[campaign.Id] = campaign;
+
+        if (!provider.SupportsMutatingEngagement)
+        {
+            campaign.Status = CampaignStatus.Blocked;
+            campaign.BlockReason = $"Provider '{provider.Key}' is {provider.Mode} and does not allow mutating engagement actions.";
+            return campaign;
+        }
 
         var available = state.Accounts.Values
             .Where(IsEligible)
@@ -79,14 +98,22 @@ public sealed class CampaignService(FarmState state)
             .Take(quantity)
             .ToArray();
 
-        if (available.Length == 0) throw new InvalidOperationException("No eligible synthetic accounts. Generate accounts first.");
+        if (available.Length == 0)
+        {
+            state.Campaigns.TryRemove(campaign.Id, out _);
+            throw new InvalidOperationException("No eligible synthetic accounts. Generate accounts first.");
+        }
 
-        var campaign = new Campaign { TargetUsername = targetUsername, Quantity = quantity, Status = CampaignStatus.Running };
-        state.Campaigns[campaign.Id] = campaign;
-
+        campaign.Status = CampaignStatus.Running;
         foreach (var account in available)
         {
-            var job = new FollowJob { CampaignId = campaign.Id, AccountId = account.Id, TargetUsername = targetUsername };
+            var job = new FollowJob
+            {
+                CampaignId = campaign.Id,
+                AccountId = account.Id,
+                TargetUsername = descriptor.Username,
+                ProviderKey = provider.Key
+            };
             state.Jobs[job.Id] = job;
             await state.Queue.Writer.WriteAsync(job, ct);
         }
@@ -101,6 +128,10 @@ public sealed class CampaignService(FarmState state)
     {
         if (!state.Campaigns.TryGetValue(campaignId, out var campaign)) throw new KeyNotFoundException("Campaign not found.");
 
+        var provider = providers.GetRequired(campaign.ProviderKey);
+        if (!provider.SupportsMutatingEngagement)
+            throw new InvalidOperationException($"Provider '{provider.Key}' does not allow refill/mutating engagement actions.");
+
         var missing = Math.Max(0, campaign.Quantity - campaign.Delivered);
         if (missing == 0) return 0;
 
@@ -109,7 +140,13 @@ public sealed class CampaignService(FarmState state)
 
         foreach (var account in replacements)
         {
-            var job = new FollowJob { CampaignId = campaign.Id, AccountId = account.Id, TargetUsername = campaign.TargetUsername };
+            var job = new FollowJob
+            {
+                CampaignId = campaign.Id,
+                AccountId = account.Id,
+                TargetUsername = campaign.TargetUsername,
+                ProviderKey = campaign.ProviderKey
+            };
             state.Jobs[job.Id] = job;
             await state.Queue.Writer.WriteAsync(job, ct);
         }
@@ -118,6 +155,8 @@ public sealed class CampaignService(FarmState state)
         campaign.Status = CampaignStatus.Running;
         return replacements.Length;
     }
+
+    public static string TargetKey(string providerKey, string username) => $"{providerKey}:{username}";
 
     private static bool IsEligible(SimAccount account)
     {
