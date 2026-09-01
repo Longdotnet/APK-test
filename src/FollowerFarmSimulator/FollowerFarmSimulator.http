@@ -1,0 +1,128 @@
+@host = http://localhost:5000
+
+### REAL TIKTOK: check official integration configuration
+GET {{host}}/api/tiktok/config
+
+### REAL TIKTOK: open this URL in a browser to start Login Kit OAuth
+### The configured redirect URI must point to /api/tiktok/oauth/callback and be registered in TikTok Developer Portal.
+GET {{host}}/api/tiktok/oauth/start
+
+### REAL TIKTOK: after OAuth, inspect connected accounts (tokens are never returned)
+GET {{host}}/api/tiktok/connections
+
+### REAL TIKTOK: replace OPEN_ID with the openId returned by the OAuth callback
+GET {{host}}/api/tiktok/accounts/OPEN_ID/profile
+
+### REAL TIKTOK: recent public videos + actual view/like/comment/share metrics
+GET {{host}}/api/tiktok/accounts/OPEN_ID/videos?maxCount=20
+
+### REAL TIKTOK: audience-vs-reach pain audit
+GET {{host}}/api/tiktok/accounts/OPEN_ID/audit?maxCount=20
+
+### Social-provider capabilities
+GET {{host}}/api/providers
+
+### Account-factory provider capabilities
+GET {{host}}/api/account-factory/providers
+
+### Normalize a TikTok profile target (read-only integration boundary)
+POST {{host}}/api/providers/tiktok/normalize-target
+Content-Type: application/json
+
+{
+  "target": "https://www.tiktok.com/@longgmilk"
+}
+
+### Create an account-factory simulation campaign
+POST {{host}}/api/account-factory/campaigns
+Content-Type: application/json
+
+{
+  "provider": "simulator-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN",
+  "quantity": 1000
+}
+
+### TikTok account-creation boundary: accepted as architecture, creation is blocked
+POST {{host}}/api/account-factory/campaigns
+Content-Type: application/json
+
+{
+  "provider": "tiktok-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN",
+  "quantity": 1000
+}
+
+### Replace CREATION_CAMPAIGN_ID after creating a factory campaign
+GET {{host}}/api/account-factory/campaigns/CREATION_CAMPAIGN_ID
+
+### Account-factory/inventory stats
+GET {{host}}/api/account-factory/stats
+
+### Recent account-creation jobs
+GET {{host}}/api/account-factory/jobs/recent?take=50
+
+### Recent synthetic identities
+GET {{host}}/api/account-factory/identities/recent?take=20
+
+### Replenish inventory when active pool falls below threshold
+POST {{host}}/api/account-factory/replenish
+Content-Type: application/json
+
+{
+  "minimumActive": 10000,
+  "batchSize": 2000,
+  "provider": "simulator-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN"
+}
+
+### Direct synthetic seed for load tests (bypasses registration pipeline)
+POST {{host}}/api/accounts/generate
+Content-Type: application/json
+
+{
+  "count": 10000
+}
+
+### Inspect pool
+GET {{host}}/api/accounts/stats
+
+### Create a simulated direct-follow campaign from account inventory
+POST {{host}}/api/campaigns
+Content-Type: application/json
+
+{
+  "provider": "simulator",
+  "target": "demo_target",
+  "quantity": 1000,
+  "startingFollowers": 100
+}
+
+### TikTok social provider campaign: target is accepted/normalized, mutation is deliberately blocked
+POST {{host}}/api/campaigns
+Content-Type: application/json
+
+{
+  "provider": "tiktok",
+  "target": "https://www.tiktok.com/@longgmilk",
+  "quantity": 1000,
+  "startingFollowers": 0
+}
+
+### Replace CAMPAIGN_ID after creating a follow campaign
+GET {{host}}/api/campaigns/CAMPAIGN_ID
+
+### Refill missing simulated delivery with unused eligible accounts
+POST {{host}}/api/campaigns/CAMPAIGN_ID/refill
+
+### Read simulated target count
+GET {{host}}/api/targets/simulator/demo_target
+
+### Read normalized TikTok target state
+GET {{host}}/api/targets/tiktok/longgmilk
+
+### Recent follow jobs
+GET {{host}}/api/jobs/recent?take=50
