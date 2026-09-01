@@ -1,12 +1,13 @@
 using FollowerFarmSimulator.Domain;
 using FollowerFarmSimulator.Infrastructure;
+using FollowerFarmSimulator.Providers;
 using FollowerFarmSimulator.Services;
 
 namespace FollowerFarmSimulator.Workers;
 
 public sealed class FollowWorker(
     FarmState state,
-    SimulatedProvider provider,
+    ProviderRouter providers,
     RiskEngine riskEngine,
     ILogger<FollowWorker> logger) : BackgroundService
 {
@@ -23,15 +24,36 @@ public sealed class FollowWorker(
 
             if (!state.Accounts.TryGetValue(job.AccountId, out var account) ||
                 !state.Campaigns.TryGetValue(job.CampaignId, out var campaign) ||
-                !state.Targets.TryGetValue(job.TargetUsername, out var target))
+                !state.Targets.TryGetValue(CampaignService.TargetKey(job.ProviderKey, job.TargetUsername), out var target))
             {
                 job.Status = JobStatus.Failed;
                 job.ResultCode = "STATE_NOT_FOUND";
                 continue;
             }
 
+            ISocialProvider provider;
+            try
+            {
+                provider = providers.GetRequired(job.ProviderKey);
+            }
+            catch (KeyNotFoundException)
+            {
+                job.Status = JobStatus.Failed;
+                job.ResultCode = "PROVIDER_NOT_FOUND";
+                continue;
+            }
+
+            if (!provider.SupportsMutatingEngagement)
+            {
+                job.Status = JobStatus.Failed;
+                job.ResultCode = "PROVIDER_READ_ONLY";
+                campaign.Status = CampaignStatus.Blocked;
+                campaign.BlockReason = $"Provider '{provider.Key}' is read-only.";
+                continue;
+            }
+
             await Task.Delay(Random.Shared.Next(20, 90), ct); // synthetic execution latency
-            var result = provider.Follow(account, target);
+            var result = await provider.FollowAsync(account, target, ct);
             riskEngine.Apply(account, result);
             job.ResultCode = result.Code;
 
@@ -58,7 +80,13 @@ public sealed class FollowWorker(
                 }
             }
 
-            logger.LogDebug("Worker {WorkerId}: {Account} -> @{Target}: {Code}", workerId, account.Username, target.Username, result.Code);
+            logger.LogDebug(
+                "Worker {WorkerId}: provider={Provider} account={Account} target={Target}: {Code}",
+                workerId,
+                provider.Key,
+                account.Username,
+                target.CanonicalTarget,
+                result.Code);
         }
     }
 }
