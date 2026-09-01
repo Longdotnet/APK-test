@@ -7,10 +7,15 @@ builder.Services.AddSingleton<IServiceRepository, InMemoryServiceRepository>();
 builder.Services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
 builder.Services.AddScoped<OrderService>();
 
-var fakeTikTokBaseUrl = builder.Configuration["FakeTikTok:BaseUrl"] ?? "http://localhost:5081";
-builder.Services.AddHttpClient<IFakeTikTokClient, FakeTikTokClient>(client =>
+var targetServiceBaseUrl = builder.Configuration["TargetService:BaseUrl"] ?? "http://localhost:5081";
+if (!Uri.TryCreate(targetServiceBaseUrl, UriKind.Absolute, out var targetServiceUri))
 {
-    client.BaseAddress = new Uri(fakeTikTokBaseUrl);
+    throw new InvalidOperationException("TargetService:BaseUrl must be an absolute URL.");
+}
+
+builder.Services.AddHttpClient<ITargetServiceClient, TargetServiceClient>(client =>
+{
+    client.BaseAddress = targetServiceUri;
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 
@@ -19,8 +24,9 @@ var app = builder.Build();
 app.MapGet("/", () => Results.Ok(new
 {
     name = "SMM Panel Simulator API",
-    mode = "sandbox-only",
-    warning = "This API never sends follower actions to TikTok. Targets are parsed as labels and delivered only to FakeTikTok.Api."
+    mode = "simulation",
+    targetService = targetServiceUri.ToString(),
+    note = "Profile URLs are parsed as labels. Delivery calls only the configured TargetService simulation contract."
 }));
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));

@@ -5,7 +5,7 @@ namespace Smm.Application;
 public sealed class OrderService(
     IServiceRepository services,
     IOrderRepository orders,
-    IFakeTikTokClient fakeTikTok)
+    ITargetServiceClient targetService)
 {
     public IReadOnlyCollection<Service> GetServices() => services.GetAll();
 
@@ -30,11 +30,11 @@ public sealed class OrderService(
         }
 
         var handle = TargetParser.ParseTikTokHandle(request.Target);
-        var profile = await fakeTikTok.GetProfileAsync(handle, cancellationToken);
+        var profile = await targetService.GetProfileAsync(handle, cancellationToken);
         if (profile is null)
         {
             throw new InvalidOperationException(
-                $"FakeTikTok profile @{handle} does not exist. Seed or create it in the sandbox first.");
+                $"Target simulation profile @{handle} does not exist in the configured TargetService.");
         }
 
         var charge = Math.Round(request.Quantity / 1000m * service.PricePerThousand, 4);
@@ -69,7 +69,12 @@ public sealed class OrderService(
         }
 
         var operationId = $"order:{order.Id}:delivered:{order.Delivered}:amount:{amount}";
-        await fakeTikTok.AddFollowersAsync(order.TargetHandle, amount, operationId, cancellationToken);
+        await targetService.AddSimulatedFollowersAsync(
+            order.TargetHandle,
+            amount,
+            operationId,
+            cancellationToken);
+
         order.ApplyDelivery(amount);
         return order;
     }

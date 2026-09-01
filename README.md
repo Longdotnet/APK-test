@@ -1,61 +1,93 @@
 # SMM Panel Simulator
 
-A sandbox-only SMM panel simulator built with .NET 10. It models the order lifecycle used by follower-delivery panels without sending automation, follow requests, or engagement to TikTok.
+A .NET 10 simulator for studying an SMM-panel order lifecycle without implementing real-platform follower automation.
 
-## Safety boundary
+## Target service model
 
-The target `https://www.tiktok.com/@longgmilk` is used only as input data. `Smm.Api` parses the URL into the handle `longgmilk`, then sends simulated delivery requests only to `FakeTikTok.Api`.
+The value supplied in an order, for example `https://www.tiktok.com/@longgmilk`, is a profile URL/label used to extract the handle `longgmilk`.
 
-There is intentionally no TikTok client, browser automation, credential handling, proxy support, device farm, or real follower-delivery implementation in this repository.
+The service that actually receives simulator delivery calls is **not hard-coded to that hostname**. It is configured separately:
 
-## V0.1 architecture
+```json
+{
+  "TargetService": {
+    "BaseUrl": "http://localhost:5081"
+  }
+}
+```
+
+or with Docker:
+
+```bash
+TARGET_SERVICE_BASE_URL=http://your-service:8080 docker compose up --build
+```
+
+This lets the panel talk to a service you control (local service, staging service, hosts/DNS-mapped environment, etc.) as long as it implements the small simulation contract below.
+
+## TargetService contract
+
+```text
+GET  /api/profiles/{handle}
+POST /api/profiles/{handle}/followers/simulate
+```
+
+Example POST body:
+
+```json
+{
+  "quantity": 2500,
+  "operationId": "order:<id>:delivered:0:amount:2500"
+}
+```
+
+Expected profile response:
+
+```json
+{
+  "username": "longgmilk",
+  "followerCount": 2500
+}
+```
+
+`operationId` is used for idempotency so a retry does not double-apply the same simulated delivery.
+
+## Included sandbox target
+
+The repository still includes `FakeTikTok.Api` as a ready-to-run implementation of the TargetService contract. It is only a default local sandbox and can be replaced by your own service without changing `Smm.Api`.
 
 ```text
 Client
   |
   v
 Smm.Api :5080
-  |  create order / manual delivery
+  |
+  | ITargetServiceClient
   v
-FakeTikTok.Api :5081
-  |  in-memory sandbox profile
-  v
-@longgmilk follower counter
+Configured TargetService
+  |
+  +-- default: FakeTikTok.Api :5081
+  +-- optional: your own simulator service
 ```
 
-Projects:
-
-- `Smm.Domain` - service/order entities and state transitions.
-- `Smm.Application` - order use cases, target parsing, repository/client contracts.
-- `Smm.Infrastructure` - in-memory repositories and HTTP adapter to FakeTikTok.
-- `Smm.Api` - panel API.
-- `FakeTikTok.Api` - local sandbox that owns fake profiles and follower counts.
-
-## Run with Docker
-
-```bash
-docker compose up --build
-```
-
-- SMM API: `http://localhost:5080`
-- FakeTikTok API: `http://localhost:5081`
-
-`FakeTikTok.Api` starts with this profile:
+The included sandbox seeds:
 
 ```text
 @longgmilk
 followers: 0
 ```
 
-## Demo flow
-
-### 1. Check the sandbox profile
+## Run default local setup
 
 ```bash
-curl http://localhost:5081/api/profiles/longgmilk
+docker compose up --build
 ```
 
-### 2. Create a 10,000 follower simulation order
+- SMM API: `http://localhost:5080`
+- Included sandbox TargetService: `http://localhost:5081`
+
+## Demo
+
+### 1. Create a 10,000 follower simulation order
 
 ```bash
 curl -X POST http://localhost:5080/api/orders \
@@ -67,9 +99,7 @@ curl -X POST http://localhost:5080/api/orders \
   }'
 ```
 
-Copy the returned order `id`.
-
-### 3. Deliver the first batch
+### 2. Apply a simulated batch
 
 ```bash
 curl -X POST http://localhost:5080/api/orders/ORDER_ID/deliver \
@@ -77,46 +107,28 @@ curl -X POST http://localhost:5080/api/orders/ORDER_ID/deliver \
   -d '{ "quantity": 2500 }'
 ```
 
-Repeat four times. The order progresses from `Pending` to `Processing`, then `Completed` at 10,000 delivered.
+Repeat until the order reaches `Completed`.
 
-### 4. Verify FakeTikTok only
+### 3. Check the configured target service
+
+With the included sandbox:
 
 ```bash
 curl http://localhost:5081/api/profiles/longgmilk
 ```
 
-Expected after full simulated delivery:
+## Projects
 
-```json
-{
-  "username": "longgmilk",
-  "followerCount": 10000
-}
-```
+- `Smm.Domain` - service/order entities and state transitions.
+- `Smm.Application` - order use cases, target parsing, repositories and target-service contract.
+- `Smm.Infrastructure` - in-memory repositories and `TargetServiceClient` HTTP adapter.
+- `Smm.Api` - panel API.
+- `FakeTikTok.Api` - optional local implementation of the target simulation contract.
 
-The real TikTok profile is never fetched or modified.
+## V0.1 boundaries
 
-## API summary
+This version models order state and follower counters on a service that implements the explicit `/followers/simulate` contract. It contains no browser automation, credential handling, proxy/device-farm code, or implementation for manipulating a third-party social platform.
 
-### Smm.Api
+## Next milestone
 
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/services` | List simulator services |
-| GET | `/api/orders` | List orders |
-| GET | `/api/orders/{id}` | Get one order |
-| POST | `/api/orders` | Create an order |
-| POST | `/api/orders/{id}/deliver` | Manually simulate a delivery batch |
-
-### FakeTikTok.Api
-
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/profiles` | List fake profiles |
-| GET | `/api/profiles/{username}` | Get fake profile |
-| POST | `/api/profiles` | Create fake profile |
-| POST | `/api/profiles/{username}/followers/simulate` | Add sandbox followers, idempotently |
-
-## Next milestones
-
-V0.2 will add an internal queue, background worker, account-pool simulation and timed batch delivery. V0.3 can add a mock provider API and provider-order lifecycle. Drop/refill, wallet, pricing, routing and chaos testing remain later phases.
+V0.2: internal queue, background worker, fake account pool and timed batch delivery against the configured TargetService.

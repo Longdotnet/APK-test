@@ -15,17 +15,22 @@ public interface IOrderRepository
     void Add(SmmOrder order);
 }
 
-public interface IFakeTikTokClient
+/// <summary>
+/// Contract implemented by a user-controlled simulation target service.
+/// The SMM simulator never knows how the target stores data; it only calls
+/// the explicit simulation endpoints below.
+/// </summary>
+public interface ITargetServiceClient
 {
-    Task<FakeProfileSnapshot?> GetProfileAsync(string handle, CancellationToken cancellationToken);
-    Task<FakeProfileSnapshot> AddFollowersAsync(
+    Task<TargetProfileSnapshot?> GetProfileAsync(string handle, CancellationToken cancellationToken);
+    Task<TargetProfileSnapshot> AddSimulatedFollowersAsync(
         string handle,
         int quantity,
         string operationId,
         CancellationToken cancellationToken);
 }
 
-public sealed record FakeProfileSnapshot(string Username, long FollowerCount);
+public sealed record TargetProfileSnapshot(string Username, long FollowerCount);
 
 public sealed record CreateOrderRequest(int ServiceId, string Target, int Quantity);
 

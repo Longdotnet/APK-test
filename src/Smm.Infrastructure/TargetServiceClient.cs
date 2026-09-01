@@ -4,9 +4,15 @@ using Smm.Application;
 
 namespace Smm.Infrastructure;
 
-public sealed class FakeTikTokClient(HttpClient httpClient) : IFakeTikTokClient
+/// <summary>
+/// HTTP adapter for a user-controlled simulation service.
+/// Expected contract:
+/// GET  /api/profiles/{handle}
+/// POST /api/profiles/{handle}/followers/simulate
+/// </summary>
+public sealed class TargetServiceClient(HttpClient httpClient) : ITargetServiceClient
 {
-    public async Task<FakeProfileSnapshot?> GetProfileAsync(
+    public async Task<TargetProfileSnapshot?> GetProfileAsync(
         string handle,
         CancellationToken cancellationToken)
     {
@@ -20,11 +26,11 @@ public sealed class FakeTikTokClient(HttpClient httpClient) : IFakeTikTokClient
         }
 
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<FakeProfileSnapshot>(cancellationToken)
-            ?? throw new InvalidOperationException("FakeTikTok returned an empty profile response.");
+        return await response.Content.ReadFromJsonAsync<TargetProfileSnapshot>(cancellationToken)
+            ?? throw new InvalidOperationException("TargetService returned an empty profile response.");
     }
 
-    public async Task<FakeProfileSnapshot> AddFollowersAsync(
+    public async Task<TargetProfileSnapshot> AddSimulatedFollowersAsync(
         string handle,
         int quantity,
         string operationId,
@@ -36,7 +42,7 @@ public sealed class FakeTikTokClient(HttpClient httpClient) : IFakeTikTokClient
             cancellationToken);
 
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<FakeProfileSnapshot>(cancellationToken)
-            ?? throw new InvalidOperationException("FakeTikTok returned an empty delivery response.");
+        return await response.Content.ReadFromJsonAsync<TargetProfileSnapshot>(cancellationToken)
+            ?? throw new InvalidOperationException("TargetService returned an empty delivery response.");
     }
 }
