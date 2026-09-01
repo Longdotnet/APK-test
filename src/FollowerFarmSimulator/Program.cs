@@ -1,5 +1,6 @@
 using FollowerFarmSimulator.Domain;
 using FollowerFarmSimulator.Infrastructure;
+using FollowerFarmSimulator.Providers;
 using FollowerFarmSimulator.Services;
 using FollowerFarmSimulator.Workers;
 
@@ -7,19 +8,43 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<FarmState>();
 builder.Services.AddSingleton<AccountFactory>();
-builder.Services.AddSingleton<CampaignService>();
-builder.Services.AddSingleton<SimulatedProvider>();
 builder.Services.AddSingleton<RiskEngine>();
+builder.Services.AddSingleton<ISocialProvider, SimulatorProvider>();
+builder.Services.AddSingleton<ISocialProvider, TikTokProvider>();
+builder.Services.AddSingleton<ProviderRouter>();
+builder.Services.AddSingleton<CampaignService>();
 builder.Services.AddHostedService<FollowWorker>();
 
 var app = builder.Build();
 
 app.MapGet("/", () => Results.Ok(new
 {
-    name = "Direct Follower Farm Simulator",
-    mode = "LOCAL_SIMULATION_ONLY",
-    warning = "No TikTok API, browser automation, credentials, proxy rotation, CAPTCHA or OTP bypass is implemented."
+    name = "Direct Follower Farm Research Simulator",
+    mode = "PROVIDER_AWARE_RESEARCH_MODE",
+    warning = "TikTok integration is target/read-only only. No TikTok login, account creation, private API, browser automation, fake-engagement mutation, proxy rotation, CAPTCHA or OTP bypass is implemented."
 }));
+
+app.MapGet("/api/providers", (ProviderRouter providers) => Results.Ok(providers.Describe()));
+
+app.MapPost("/api/providers/{providerKey}/normalize-target", (string providerKey, NormalizeTargetRequest request, ProviderRouter providers) =>
+{
+    try
+    {
+        var provider = providers.GetRequired(providerKey);
+        return Results.Ok(new
+        {
+            provider = provider.Key,
+            platform = provider.Platform.ToString(),
+            mode = provider.Mode.ToString(),
+            supportsMutatingEngagement = provider.SupportsMutatingEngagement,
+            target = provider.NormalizeTarget(request.Target)
+        });
+    }
+    catch (Exception ex) when (ex is ArgumentException or KeyNotFoundException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
 
 app.MapPost("/api/accounts/generate", (GenerateAccountsRequest request, AccountFactory factory) =>
 {
@@ -53,10 +78,18 @@ app.MapPost("/api/campaigns", async (CreateCampaignRequest request, CampaignServ
 {
     try
     {
-        var campaign = await service.CreateAsync(request.Target, request.Quantity, request.StartingFollowers, ct);
-        return Results.Accepted($"/api/campaigns/{campaign.Id}", campaign);
+        var campaign = await service.CreateAsync(
+            request.Target,
+            request.Quantity,
+            request.StartingFollowers,
+            request.Provider,
+            ct);
+
+        return campaign.Status == CampaignStatus.Blocked
+            ? Results.Ok(campaign)
+            : Results.Accepted($"/api/campaigns/{campaign.Id}", campaign);
     }
-    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or KeyNotFoundException)
     {
         return Results.BadRequest(new { error = ex.Message });
     }
@@ -84,15 +117,22 @@ app.MapPost("/api/campaigns/{id:guid}/refill", async (Guid id, CampaignService s
     {
         return Results.NotFound(new { error = ex.Message });
     }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
-app.MapGet("/api/targets/{username}", (string username, FarmState state) =>
+app.MapGet("/api/targets/{providerKey}/{username}", (string providerKey, string username, FarmState state) =>
 {
     username = username.TrimStart('@');
-    return state.Targets.TryGetValue(username, out var target) ? Results.Ok(target) : Results.NotFound();
+    var key = CampaignService.TargetKey(providerKey, username);
+    return state.Targets.TryGetValue(key, out var target) ? Results.Ok(target) : Results.NotFound();
 });
 
 app.MapGet("/api/jobs/recent", (FarmState state, int? take) => Results.Ok(
     state.Jobs.Values.OrderByDescending(x => x.Id).Take(Math.Clamp(take ?? 50, 1, 500))));
 
 app.Run();
+
+public sealed record NormalizeTargetRequest(string Target);
