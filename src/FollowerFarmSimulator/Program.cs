@@ -1,12 +1,15 @@
 using FollowerFarmSimulator.Domain;
 using FollowerFarmSimulator.Infrastructure;
+using FollowerFarmSimulator.Integrations;
 using FollowerFarmSimulator.Providers;
 using FollowerFarmSimulator.Services;
 using FollowerFarmSimulator.Workers;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddHttpClient();
 builder.Services.AddSingleton<FarmState>();
+builder.Services.AddSingleton<TikTokOfficialClient>();
 
 builder.Services.AddSingleton<AccountFactory>();
 builder.Services.AddSingleton<RiskEngine>();
@@ -34,8 +37,106 @@ app.MapGet("/", () => Results.Ok(new
     name = "Direct Follower Farm Research Simulator",
     mode = "PROVIDER_AWARE_RESEARCH_MODE",
     accountFactory = "SIMULATION_ONLY",
-    warning = "TikTok adapters are read-only capability boundaries. No TikTok login, mass registration, private API, browser automation, fake-engagement mutation, proxy/fingerprint evasion, CAPTCHA or OTP bypass is implemented."
+    realTikTok = "OFFICIAL_OAUTH_AND_READ_ANALYTICS",
+    warning = "TikTok mass registration and fake-engagement mutation remain blocked. The official TikTok integration uses OAuth consent to read an authorized account's profile and video metrics."
 }));
+
+// Real TikTok integration: official Login Kit + Display API only.
+app.MapGet("/api/tiktok/config", (TikTokOfficialClient tiktok) => Results.Ok(tiktok.GetConfigurationStatus()));
+
+app.MapGet("/api/tiktok/oauth/start", (TikTokOfficialClient tiktok) =>
+{
+    try
+    {
+        var authorization = tiktok.CreateAuthorizationRequest();
+        return Results.Redirect(authorization.Url);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapGet("/api/tiktok/oauth/callback", async (
+    string? code,
+    string? state,
+    string? error,
+    string? error_description,
+    TikTokOfficialClient tiktok,
+    CancellationToken ct) =>
+{
+    if (!string.IsNullOrWhiteSpace(error))
+        return Results.BadRequest(new { error, description = error_description });
+
+    try
+    {
+        var connection = await tiktok.CompleteAuthorizationAsync(code ?? string.Empty, state ?? string.Empty, ct);
+        return Results.Ok(new
+        {
+            connected = true,
+            connection,
+            next = new
+            {
+                profile = $"/api/tiktok/accounts/{connection.OpenId}/profile",
+                videos = $"/api/tiktok/accounts/{connection.OpenId}/videos",
+                audit = $"/api/tiktok/accounts/{connection.OpenId}/audit"
+            }
+        });
+    }
+    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/api/tiktok/connections", (TikTokOfficialClient tiktok) => Results.Ok(tiktok.ListConnections()));
+
+app.MapGet("/api/tiktok/accounts/{openId}/profile", async (
+    string openId,
+    TikTokOfficialClient tiktok,
+    CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await tiktok.GetProfileAsync(openId, ct));
+    }
+    catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/api/tiktok/accounts/{openId}/videos", async (
+    string openId,
+    int? maxCount,
+    TikTokOfficialClient tiktok,
+    CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await tiktok.GetVideosAsync(openId, Math.Clamp(maxCount ?? 20, 1, 20), ct));
+    }
+    catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or ArgumentOutOfRangeException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/api/tiktok/accounts/{openId}/audit", async (
+    string openId,
+    int? maxCount,
+    TikTokOfficialClient tiktok,
+    CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await tiktok.AuditAsync(openId, Math.Clamp(maxCount ?? 20, 1, 20), ct));
+    }
+    catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or ArgumentOutOfRangeException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
 
 app.MapGet("/api/providers", (ProviderRouter providers) => Results.Ok(providers.Describe()));
 
