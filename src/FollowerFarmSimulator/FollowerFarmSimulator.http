@@ -1,5 +1,24 @@
 @host = http://localhost:5000
 
+### REAL TIKTOK: check official integration configuration
+GET {{host}}/api/tiktok/config
+
+### REAL TIKTOK: open this URL in a browser to start Login Kit OAuth
+### The configured redirect URI must point to /api/tiktok/oauth/callback and be registered in TikTok Developer Portal.
+GET {{host}}/api/tiktok/oauth/start
+
+### REAL TIKTOK: after OAuth, inspect connected accounts (tokens are never returned)
+GET {{host}}/api/tiktok/connections
+
+### REAL TIKTOK: replace OPEN_ID with the openId returned by the OAuth callback
+GET {{host}}/api/tiktok/accounts/OPEN_ID/profile
+
+### REAL TIKTOK: recent public videos + actual view/like/comment/share metrics
+GET {{host}}/api/tiktok/accounts/OPEN_ID/videos?maxCount=20
+
+### REAL TIKTOK: audience-vs-reach pain audit
+GET {{host}}/api/tiktok/accounts/OPEN_ID/audit?maxCount=20
+
 ### Social-provider capabilities
 GET {{host}}/api/providers
 
