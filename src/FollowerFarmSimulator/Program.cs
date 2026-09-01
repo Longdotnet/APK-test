@@ -85,9 +85,10 @@ app.MapPost("/api/campaigns", async (CreateCampaignRequest request, CampaignServ
             request.Provider,
             ct);
 
-        return campaign.Status == CampaignStatus.Blocked
-            ? Results.Ok(campaign)
-            : Results.Accepted($"/api/campaigns/{campaign.Id}", campaign);
+        if (campaign.Status == CampaignStatus.Blocked)
+            return Results.Ok(campaign);
+
+        return Results.Accepted($"/api/campaigns/{campaign.Id}", campaign);
     }
     catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or KeyNotFoundException)
     {
