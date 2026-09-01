@@ -1,7 +1,10 @@
 @host = http://localhost:5000
 
-### Provider capabilities
+### Social-provider capabilities
 GET {{host}}/api/providers
+
+### Account-factory provider capabilities
+GET {{host}}/api/account-factory/providers
 
 ### Normalize a TikTok profile target (read-only integration boundary)
 POST {{host}}/api/providers/tiktok/normalize-target
@@ -11,7 +14,53 @@ Content-Type: application/json
   "target": "https://www.tiktok.com/@longgmilk"
 }
 
-### Create 10,000 synthetic accounts
+### Create an account-factory simulation campaign
+POST {{host}}/api/account-factory/campaigns
+Content-Type: application/json
+
+{
+  "provider": "simulator-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN",
+  "quantity": 1000
+}
+
+### TikTok account-creation boundary: accepted as architecture, creation is blocked
+POST {{host}}/api/account-factory/campaigns
+Content-Type: application/json
+
+{
+  "provider": "tiktok-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN",
+  "quantity": 1000
+}
+
+### Replace CREATION_CAMPAIGN_ID after creating a factory campaign
+GET {{host}}/api/account-factory/campaigns/CREATION_CAMPAIGN_ID
+
+### Account-factory/inventory stats
+GET {{host}}/api/account-factory/stats
+
+### Recent account-creation jobs
+GET {{host}}/api/account-factory/jobs/recent?take=50
+
+### Recent synthetic identities
+GET {{host}}/api/account-factory/identities/recent?take=20
+
+### Replenish inventory when active pool falls below threshold
+POST {{host}}/api/account-factory/replenish
+Content-Type: application/json
+
+{
+  "minimumActive": 10000,
+  "batchSize": 2000,
+  "provider": "simulator-registration",
+  "emailProvider": "simulator-mail",
+  "region": "VN"
+}
+
+### Direct synthetic seed for load tests (bypasses registration pipeline)
 POST {{host}}/api/accounts/generate
 Content-Type: application/json
 
@@ -22,7 +71,7 @@ Content-Type: application/json
 ### Inspect pool
 GET {{host}}/api/accounts/stats
 
-### Create a simulated direct-follow campaign
+### Create a simulated direct-follow campaign from account inventory
 POST {{host}}/api/campaigns
 Content-Type: application/json
 
@@ -33,7 +82,7 @@ Content-Type: application/json
   "startingFollowers": 100
 }
 
-### TikTok provider campaign: target is accepted/normalized, mutation is deliberately blocked
+### TikTok social provider campaign: target is accepted/normalized, mutation is deliberately blocked
 POST {{host}}/api/campaigns
 Content-Type: application/json
 
@@ -44,7 +93,7 @@ Content-Type: application/json
   "startingFollowers": 0
 }
 
-### Replace CAMPAIGN_ID after creating campaign
+### Replace CAMPAIGN_ID after creating a follow campaign
 GET {{host}}/api/campaigns/CAMPAIGN_ID
 
 ### Refill missing simulated delivery with unused eligible accounts
@@ -56,5 +105,5 @@ GET {{host}}/api/targets/simulator/demo_target
 ### Read normalized TikTok target state
 GET {{host}}/api/targets/tiktok/longgmilk
 
-### Recent jobs
+### Recent follow jobs
 GET {{host}}/api/jobs/recent?take=50
