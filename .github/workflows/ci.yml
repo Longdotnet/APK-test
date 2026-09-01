@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build FakeTikTok API
+        run: dotnet build src/FakeTikTok.Api/FakeTikTok.Api.csproj -c Release
+      - name: Build SMM API
+        run: dotnet build src/Smm.Api/Smm.Api.csproj -c Release
