@@ -1,0 +1,18 @@
+services:
+  fake-tiktok:
+    build:
+      context: .
+      dockerfile: src/FakeTikTok.Api/Dockerfile
+    ports:
+      - "5081:8080"
+
+  smm-api:
+    build:
+      context: .
+      dockerfile: src/Smm.Api/Dockerfile
+    environment:
+      TargetService__BaseUrl: ${TARGET_SERVICE_BASE_URL:-http://fake-tiktok:8080}
+    ports:
+      - "5080:8080"
+    depends_on:
+      - fake-tiktok
