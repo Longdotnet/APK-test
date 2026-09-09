@@ -29,8 +29,11 @@ jobs:
       - name: Build deterministic core
         run: dotnet build src/RobloxPiano.Core/RobloxPiano.Core.csproj -c Release
 
-      - name: Run regression harness
+      - name: Run legacy regression harness
         run: dotnet run --project tests/RobloxPiano.RegressionTests/RobloxPiano.RegressionTests.csproj -c Release
+
+      - name: Run playback quality harness
+        run: dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
 
       - name: Build Windows client
         run: dotnet build src/RobloxPiano.App/RobloxPiano.App.csproj -c Release
@@ -62,10 +65,61 @@ jobs:
           & ./artifacts/publish/RobloxPiano.exe --help
           if ($LASTEXITCODE -ne 0) { throw "Published executable smoke test failed" }
 
+      - name: Published EXE quality-report smoke test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/quality | Out-Null
+
+          & ./artifacts/publish/RobloxPiano.exe `
+            samples/smoke/quality-smoke.txt `
+            --dry-run `
+            --start-delay 0 `
+            --quality-report artifacts/quality/smoke.json
+
+          if ($LASTEXITCODE -ne 0) { throw "Published executable quality-report smoke test failed" }
+          if (-not (Test-Path artifacts/quality/smoke.json)) { throw "Quality report was not created" }
+
+          $report = Get-Content artifacts/quality/smoke.json -Raw | ConvertFrom-Json
+          if ($report.schemaVersion -ne 1) { throw "Unexpected quality report schema: $($report.schemaVersion)" }
+          if ($report.plannedEdgeCount -le 0) { throw "Quality report did not contain planned edges" }
+          if ($report.dispatchedEdgeCount -ne $report.plannedEdgeCount) {
+            throw "Published EXE missed edges in dry-run quality smoke test"
+          }
+          if ($report.failureCount -ne 0) { throw "Published EXE reported quality failures" }
+
+      - name: Malformed baseline is a controlled client error
+        shell: pwsh
+        run: |
+          # This invocation intentionally returns non-zero. GitHub's PowerShell
+          # wrapper treats native non-zero exits as terminating errors on modern
+          # pwsh unless this preference is disabled for the assertion.
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          Set-Content -Path artifacts/quality/invalid-baseline.json -Value '{broken-json'
+          & ./artifacts/publish/RobloxPiano.exe `
+            samples/smoke/quality-smoke.txt `
+            --dry-run `
+            --start-delay 0 `
+            --baseline-report artifacts/quality/invalid-baseline.json
+
+          $appExitCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($appExitCode -ne 1) {
+            throw "Malformed baseline must return controlled exit code 1, actual: $appExitCode"
+          }
+
       - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
           name: RobloxPiano-win-x64
           path: artifacts/publish/RobloxPiano.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload CI quality evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: playback-quality-evidence
+          path: artifacts/quality/smoke.json
           if-no-files-found: error
           retention-days: 14
