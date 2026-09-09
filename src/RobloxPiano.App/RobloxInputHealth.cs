@@ -13,7 +13,8 @@ internal sealed record RobloxInputHealthSnapshot(
     RobloxInputCheckVerdict? Verdict,
     DateTimeOffset? CheckedAt,
     string Summary,
-    string NextAction)
+    string NextAction,
+    long? ProcessStartTimeUtcTicks = null)
 {
     public static RobloxInputHealthSnapshot Unknown { get; } = new(
         RobloxInputHealthState.Unknown,
@@ -24,6 +25,18 @@ internal sealed record RobloxInputHealthSnapshot(
         "Run Test Roblox Input before playback so the client can verify this Roblox process accepts the production input path.");
 
     public bool AppliesTo(int processId) => ProcessId == processId;
+
+    public bool AppliesTo(RobloxWindowTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (ProcessId != target.ProcessId || !ProcessStartTimeUtcTicks.HasValue)
+        {
+            return false;
+        }
+
+        return RobloxProcessIdentity.TryCapture(target.ProcessId, out var current)
+            && current.StartTimeUtcTicks == ProcessStartTimeUtcTicks.Value;
+    }
 }
 
 internal static class RobloxInputHealthSession
@@ -35,7 +48,7 @@ internal static class RobloxInputHealthSession
     {
         lock (Gate)
         {
-            if (target is null || !_snapshot.AppliesTo(target.ProcessId))
+            if (target is null || !_snapshot.AppliesTo(target))
             {
                 return RobloxInputHealthSnapshot.Unknown;
             }
@@ -52,6 +65,7 @@ internal static class RobloxInputHealthSession
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(assessment);
 
+        var processIdentity = RobloxProcessIdentity.CaptureOrThrow(target.ProcessId);
         var state = assessment.IsSuccess
             ? RobloxInputHealthState.Confirmed
             : RobloxInputHealthState.Blocked;
@@ -61,7 +75,8 @@ internal static class RobloxInputHealthSession
             assessment.Verdict,
             checkedAt ?? DateTimeOffset.Now,
             assessment.Summary,
-            assessment.NextAction);
+            assessment.NextAction,
+            processIdentity.StartTimeUtcTicks);
 
         lock (Gate)
         {
@@ -69,7 +84,7 @@ internal static class RobloxInputHealthSession
         }
 
         ClientDiagnostics.Log(
-            $"Roblox input health recorded: state={snapshot.State}; targetPid={target.ProcessId}; verdict={snapshot.Verdict}; checkedAt={snapshot.CheckedAt:O}.");
+            $"Roblox input health recorded: state={snapshot.State}; identity={processIdentity}; verdict={snapshot.Verdict}; checkedAt={snapshot.CheckedAt:O}.");
         return snapshot;
     }
 
