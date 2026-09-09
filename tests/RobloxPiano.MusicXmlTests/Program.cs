@@ -5,7 +5,10 @@ var cases = new (string Name, Action Run)[]
     ("chords rests tempo and backup compile deterministically", ChordsRestsTempoAndBackup),
     ("ties compile to one canonical duration", TiesCompile),
     ("out of range notes fail closed", OutOfRangeFails),
-    ("malformed and unsupported notation fail controlled", MalformedFails)
+    ("malformed and unsupported notation fail controlled", MalformedFails),
+    ("conformance rejects silent semantic loss", ConformanceRejectsUnsupportedSemantics),
+    ("conformance detects tempo backup ambiguity", ConformanceDetectsTempoBackupAmbiguity),
+    ("conformance diagnostics are stable and localized", ConformanceDiagnosticsAreStable)
 };
 
 var failures = 0;
@@ -97,6 +100,68 @@ static void MalformedFails()
         <note><grace/><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
         </measure></part></score-partwise>
         """), "Grace notes");
+}
+
+static void ConformanceRejectsUnsupportedSemantics()
+{
+    var xml = """
+        <score-partwise version="4.0">
+          <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+          <part id="P1"><measure number="7">
+            <attributes><divisions>4</divisions></attributes>
+            <note>
+              <pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>
+              <notations><ornaments><trill-mark/></ornaments></notations>
+            </note>
+            <barline><repeat direction="backward"/></barline>
+          </measure></part>
+        </score-partwise>
+        """;
+
+    var report = MusicXmlConformance.Analyze(xml);
+    Require(!report.CanImport, "ornament/repeat score must fail production conformance");
+    Require(report.Errors.Any(item => item.Code == "MXML101"), "repeat diagnostic missing");
+    Require(report.Errors.Any(item => item.Code == "MXML105"), "ornament diagnostic missing");
+    ExpectFormat(() => MusicXmlConformance.ValidateForProductionImport(xml), "MXML101");
+}
+
+static void ConformanceDetectsTempoBackupAmbiguity()
+{
+    var xml = """
+        <score-partwise version="4.0">
+          <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+          <part id="P1"><measure number="3">
+            <attributes><divisions>4</divisions></attributes>
+            <direction><sound tempo="120"/></direction>
+            <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+            <direction><sound tempo="90"/></direction>
+            <backup><duration>4</duration></backup>
+            <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note>
+          </measure></part>
+        </score-partwise>
+        """;
+
+    var report = MusicXmlConformance.Analyze(xml);
+    Require(report.Errors.Any(item => item.Code == "MXML111"), "tempo/backup ambiguity must be rejected");
+}
+
+static void ConformanceDiagnosticsAreStable()
+{
+    var xml = """
+        <score-partwise version="4.0">
+          <part-list><score-part id="Piano"><part-name>Piano</part-name></score-part></part-list>
+          <part id="Piano"><measure number="12">
+            <attributes><divisions>4</divisions><transpose><chromatic>2</chromatic></transpose></attributes>
+            <direction><offset>2</offset><sound tempo="100"/></direction>
+            <note><grace/><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration></note>
+          </measure></part>
+        </score-partwise>
+        """;
+
+    var report = MusicXmlConformance.Analyze(xml);
+    Require(report.Errors.Select(item => item.Code).SequenceEqual(["MXML107", "MXML110", "MXML112"]), "diagnostic order changed");
+    Require(report.Errors.All(item => item.Part == "Piano" && item.Measure == "12"), "diagnostic location missing");
+    ExpectFormat(() => MusicXmlConformance.ValidateForProductionImport(xml), "measure 12");
 }
 
 static void ExpectFormat(Action action, string expected)
