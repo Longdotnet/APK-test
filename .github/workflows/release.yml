@@ -81,6 +81,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.ExpressiveTests/RobloxPiano.ExpressiveTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Expressive sustain regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.MidiTests/RobloxPiano.MidiTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Deterministic MIDI importer regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
 
@@ -156,8 +159,9 @@ jobs:
           6. F6 slower, F7 faster, F8 pause/resume, F9 stop.
 
           Production foundations in this release:
-          - Canonical expressive sustain/pedal state now compiles deterministically into duration-aware playback before the kernel.
-          - Legacy TXT/VPS playback remains unchanged until an importer explicitly supplies expressive controls.
+          - Canonical expressive sustain/pedal state compiles deterministically into duration-aware playback before the kernel.
+          - The deterministic Standard MIDI importer is release-gated in Core; desktop MIDI exposure remains disabled until player integration is complete.
+          - Legacy TXT/VPS playback remains unchanged.
 
           Notes:
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.

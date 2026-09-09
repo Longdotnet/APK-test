@@ -53,6 +53,9 @@ jobs:
       - name: Run expressive sustain regression harness
         run: dotnet run --project tests/RobloxPiano.ExpressiveTests/RobloxPiano.ExpressiveTests.csproj -c Release
 
+      - name: Run deterministic MIDI importer regression harness
+        run: dotnet run --project tests/RobloxPiano.MidiTests/RobloxPiano.MidiTests.csproj -c Release
+
       - name: Run timing calibration regression harness
         run: dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
 
