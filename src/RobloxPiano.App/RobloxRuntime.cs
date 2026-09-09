@@ -98,11 +98,9 @@ internal static class RobloxProcessLocator
                 }
                 catch (InvalidOperationException)
                 {
-                    // Process exited while enumerating.
                 }
                 catch (SystemException)
                 {
-                    // Access to a process can disappear between enumeration and inspection.
                 }
             }
         }
@@ -195,9 +193,9 @@ internal sealed class RobloxTargetFocusGate(RobloxWindowTarget target) : IFocusG
     }
 }
 
-internal sealed record ClientState(string? LastSheetPath, double PreferredSpeed)
+internal sealed record ClientState(string? LastSheetPath, double PreferredSpeed, int InputLatencyMs = 0)
 {
-    public static ClientState Default { get; } = new(null, 1d);
+    public static ClientState Default { get; } = new(null, 1d, 0);
 }
 
 internal static class ClientStateStore
@@ -230,7 +228,11 @@ internal static class ClientStateStore
                 PreferredSpeed = Math.Clamp(
                     state.PreferredSpeed,
                     PlaybackSessionClock.MinimumSpeed,
-                    PlaybackSessionClock.MaximumSpeed)
+                    PlaybackSessionClock.MaximumSpeed),
+                InputLatencyMs = Math.Clamp(
+                    state.InputLatencyMs,
+                    0,
+                    (int)PlaybackTimingProfile.MaximumDispatchLead.TotalMilliseconds)
             };
         }
         catch (Exception exception) when (
@@ -299,7 +301,6 @@ internal static class ClientDiagnostics
         }
         catch
         {
-            // Diagnostics are best effort and must never break playback or client startup.
         }
     }
 }
