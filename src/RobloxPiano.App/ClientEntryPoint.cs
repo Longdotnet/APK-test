@@ -19,6 +19,11 @@ internal static class ClientEntryPoint
             return RunInputCompatibilitySmoke();
         }
 
+        if (args.Length == 1 && args[0].Equals("--roblox-input-probe", StringComparison.OrdinalIgnoreCase))
+        {
+            return RobloxInputFieldProbe.Run();
+        }
+
         return Program.Main(args).GetAwaiter().GetResult();
     }
 
@@ -88,7 +93,7 @@ internal static class ClientEntryPoint
 
             Console.WriteLine(
                 $"Windows input compatibility smoke passed. backend={WindowsKeyboardInputSink.BackendName}; " +
-                "vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; targetSelfExcluded=true.");
+                "vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; targetSelfExcluded=true; fieldProbe=available.");
             return 0;
         }
         catch (Exception exception)
