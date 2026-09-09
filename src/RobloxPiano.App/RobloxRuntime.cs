@@ -196,12 +196,24 @@ internal sealed class RobloxTargetFocusGate : IFocusGate
     public RobloxTargetFocusGate(RobloxWindowTarget target)
     {
         _target = target ?? throw new ArgumentNullException(nameof(target));
+        ClientDiagnostics.Log(
+            $"Roblox runtime focus gate created for PID {_target.ProcessId}; " +
+            $"launchAuthorizationPid={(RobloxPlaybackLaunchAuthorization.AuthorizedProcessIdForTests?.ToString() ?? "none")}.");
     }
 
     public bool IsTargetFocused
     {
         get
         {
+            if (!RobloxPlaybackLaunchAuthorization.IsAuthorized(_target))
+            {
+                ClientDiagnostics.Log(
+                    $"Roblox runtime authorization rejected before input dispatch: targetPid={_target.ProcessId}, " +
+                    $"authorizedPid={(RobloxPlaybackLaunchAuthorization.AuthorizedProcessIdForTests?.ToString() ?? "none")}.");
+                throw new InvalidOperationException(
+                    $"Roblox input authorization changed before playback. Return to the Sheet Library and verify input for Roblox PID {_target.ProcessId}.");
+            }
+
             var foregroundOwnedByTarget = _target.IsForeground;
             lock (_gate)
             {
