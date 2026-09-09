@@ -65,6 +65,9 @@ jobs:
       - name: Run online discovery regression harness
         run: dotnet run --project tests/RobloxPiano.DiscoveryTests/RobloxPiano.DiscoveryTests.csproj -c Release
 
+      - name: Run safe self-update regression harness
+        run: dotnet run --project tests/RobloxPiano.UpdaterTests/RobloxPiano.UpdaterTests.csproj -c Release
+
       - name: Run playback quality harness
         run: dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
 
