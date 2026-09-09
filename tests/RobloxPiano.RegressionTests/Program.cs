@@ -12,7 +12,11 @@ internal static class Program
             ("planner releases before retrigger at equal timestamp", TestPlannerEdgeOrderingAsync),
             ("legacy x2 scales the absolute timeline", TestPlaybackSpeedAsync),
             ("playback always releases held keys on failure", TestReleaseAllOnFailureAsync),
-            ("invalid and experimental metadata cannot silently corrupt baseline", TestValidationAsync)
+            ("invalid and experimental metadata cannot silently corrupt baseline", TestValidationAsync),
+            ("live speed clock rebases without timeline jumps", TestLiveSpeedRebaseAsync),
+            ("live speed delay tracks the requested time-domain", TestLiveSpeedDelayAsync),
+            ("user pause composes with the focus safety gate", TestUserPauseFocusGateAsync),
+            ("client speed limits clamp extreme adjustments", TestSpeedLimitsAsync)
         };
 
         var failures = new List<string>();
@@ -156,6 +160,66 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task TestLiveSpeedRebaseAsync()
+    {
+        var wall = new FakeClock();
+        var session = new PlaybackSessionClock(wall, 1d);
+
+        wall.Advance(TimeSpan.FromMilliseconds(100));
+        Equal(TimeSpan.FromMilliseconds(100), session.Elapsed, "1x elapsed");
+
+        session.SetSpeed(2d);
+        Equal(TimeSpan.FromMilliseconds(100), session.Elapsed, "changing speed must not jump the timeline");
+
+        wall.Advance(TimeSpan.FromMilliseconds(50));
+        Equal(TimeSpan.FromMilliseconds(200), session.Elapsed, "2x segment after rebase");
+
+        session.SetSpeed(0.5d);
+        wall.Advance(TimeSpan.FromMilliseconds(100));
+        Equal(TimeSpan.FromMilliseconds(250), session.Elapsed, "0.5x segment after second rebase");
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestLiveSpeedDelayAsync()
+    {
+        var wall = new FakeClock();
+        var session = new PlaybackSessionClock(wall, 2d);
+
+        await session.DelayUntilAsync(TimeSpan.FromMilliseconds(100), CancellationToken.None);
+
+        Equal(TimeSpan.FromMilliseconds(50), wall.Elapsed, "100ms playback at 2x should consume 50ms wall time");
+        Equal(TimeSpan.FromMilliseconds(100), session.Elapsed, "playback time reaches requested target");
+    }
+
+    private static Task TestUserPauseFocusGateAsync()
+    {
+        var wall = new FakeClock();
+        var session = new PlaybackSessionClock(wall, 1d);
+        var target = new MutableFocusGate { IsFocused = true };
+        var gate = new PlaybackSessionFocusGate(target, session);
+
+        True(gate.IsTargetFocused, "healthy target should be focused");
+        session.Pause();
+        True(!gate.IsTargetFocused, "user pause must enter the same safety gate as focus loss");
+        session.Resume();
+        True(gate.IsTargetFocused, "resume restores focus when Roblox is still foreground");
+        target.IsFocused = false;
+        True(!gate.IsTargetFocused, "real target focus loss still wins after resume");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestSpeedLimitsAsync()
+    {
+        var wall = new FakeClock();
+        var session = new PlaybackSessionClock(wall, 1d);
+
+        Equal(PlaybackSessionClock.MaximumSpeed, session.SetSpeed(100d), "maximum speed clamp");
+        Equal(PlaybackSessionClock.MinimumSpeed, session.SetSpeed(0.01d), "minimum speed clamp");
+        Throws<ArgumentOutOfRangeException>(() => session.SetSpeed(double.NaN), "NaN speed");
+        Throws<ArgumentOutOfRangeException>(() => session.SetSpeed(0d), "zero speed");
+        return Task.CompletedTask;
+    }
+
     private static void Equal<T>(T expected, T actual, string message)
         where T : notnull
     {
@@ -192,6 +256,16 @@ internal static class Program
     {
         public TimeSpan Elapsed { get; private set; }
 
+        public void Advance(TimeSpan amount)
+        {
+            if (amount < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(amount));
+            }
+
+            Elapsed += amount;
+        }
+
         public ValueTask DelayUntilAsync(TimeSpan target, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -207,6 +281,13 @@ internal static class Program
     private sealed class AlwaysFocused : IFocusGate
     {
         public bool IsTargetFocused => true;
+    }
+
+    private sealed class MutableFocusGate : IFocusGate
+    {
+        public bool IsFocused { get; set; }
+
+        public bool IsTargetFocused => IsFocused;
     }
 
     private sealed class RecordingInput(FakeClock clock) : IInputSink
