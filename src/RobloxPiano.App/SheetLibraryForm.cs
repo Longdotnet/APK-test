@@ -5,6 +5,7 @@ namespace RobloxPiano.App;
 internal sealed class SheetLibraryForm : Form
 {
     private readonly SheetLibraryService _library;
+    private readonly OnlineSongDiscoveryController _onlineDiscovery;
     private readonly TextBox _search = new() { PlaceholderText = "Search songs...", Dock = DockStyle.Fill };
     private readonly DataGridView _grid = new()
     {
@@ -37,8 +38,8 @@ internal sealed class SheetLibraryForm : Form
     {
         Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(760, 500);
-        Size = new Size(900, 620);
+        MinimumSize = new Size(760, 540);
+        Size = new Size(920, 700);
         AllowDrop = true;
 
         var localRoot = Path.Combine(
@@ -47,6 +48,7 @@ internal sealed class SheetLibraryForm : Form
             "sheets");
         var portable = Path.Combine(AppContext.BaseDirectory, "sheets");
         _library = new SheetLibraryService(localRoot, portable);
+        _onlineDiscovery = new OnlineSongDiscoveryController(_search, _library, path => RefreshLibrary(path));
 
         BuildLayout();
         RefreshLibrary();
@@ -62,7 +64,11 @@ internal sealed class SheetLibraryForm : Form
         _robloxTimer.Start();
         DragEnter += HandleDragEnter;
         DragDrop += HandleDragDrop;
-        FormClosed += (_, _) => _robloxTimer.Stop();
+        FormClosed += (_, _) =>
+        {
+            _robloxTimer.Stop();
+            _onlineDiscovery.Dispose();
+        };
     }
 
     private void BuildLayout()
@@ -89,14 +95,15 @@ internal sealed class SheetLibraryForm : Form
         var title = new Label { Text = "Roblox Piano", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Choose a song and press Play. Roblox, file type, timing safety and diagnostics are handled automatically.",
+            Text = "Search your Library or the internet, choose a song, and press Play. File type, validation, timing safety and diagnostics stay automatic.",
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         buttons.Controls.AddRange([_playButton, _importButton, _refreshButton]);
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 7 };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 8 };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -108,9 +115,10 @@ internal sealed class SheetLibraryForm : Form
         root.Controls.Add(subtitle, 0, 1);
         root.Controls.Add(_robloxStatus, 0, 2);
         root.Controls.Add(_search, 0, 3);
-        root.Controls.Add(_grid, 0, 4);
-        root.Controls.Add(buttons, 0, 5);
-        root.Controls.Add(_status, 0, 6);
+        root.Controls.Add(_onlineDiscovery.View, 0, 4);
+        root.Controls.Add(_grid, 0, 5);
+        root.Controls.Add(buttons, 0, 6);
+        root.Controls.Add(_status, 0, 7);
         Controls.Add(root);
     }
 
@@ -123,7 +131,7 @@ internal sealed class SheetLibraryForm : Form
             var valid = _entries.Count(entry => entry.Status == SheetValidationStatus.Valid);
             var invalid = _entries.Count - valid;
             _status.Text = invalid == 0
-                ? $"{valid} playable song(s). Drop a file here or use Import Song to add more."
+                ? $"{valid} playable song(s). Search above, drop a file here, or use Import Song to add more."
                 : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
