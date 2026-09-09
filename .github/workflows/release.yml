@@ -87,6 +87,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.MusicXmlTests/RobloxPiano.MusicXmlTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Deterministic MusicXML importer regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.MusicXmlRepeatTests/RobloxPiano.MusicXmlRepeatTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "MusicXML repeat normalization regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
 
@@ -166,20 +169,21 @@ jobs:
           1. Download RobloxPiano.exe and double-click it.
           2. The Sheet Library remains list-first; existing user songs are preserved and starter content is only a first-run convenience.
           3. Search your Library or online MIDI catalog, or import TXT/VPS/MIDI/MusicXML from your computer.
-          4. Open Roblox and enter the piano game, select a local song and press Play.
-          5. Playback stops safely on focus loss or input failure and releases held keys.
+          4. MusicXML files with standard two-pass repeats and first/second endings are normalized automatically before canonical playback.
+          5. Open Roblox and enter the piano game, select a local song and press Play.
+          6. Playback stops safely on focus loss or input failure and releases held keys.
 
-          Production reliability in this release:
-          - WinForms now starts through an explicit synchronous STA entrypoint; published UI smoke creates both Library and playback window handles to catch OLE drag/drop apartment regressions.
-          - Windows SendInput now uses a native-compatible INPUT union size (40 bytes on win-x64) instead of a keyboard-only undersized union that caused SendInput to return 0.
-          - Published release validation includes a deterministic INPUT ABI smoke probe before release creation.
-          - SendInput rejection is converted into a controlled playback failure with diagnostics and privilege/focus guidance instead of escaping as an unhandled Roblox Piano error dialog.
-          - Existing focus guard, cancellation, release-all behavior, Legacy/Legacy x2 baselines, MIDI/MusicXML import and canonical playback contracts remain unchanged.
+          Production capability in this release:
+          - MusicXML two-pass forward/backward repeats are expanded deterministically before canonical timing compilation.
+          - Standard first/second endings and sequential repeats are supported; backward repeats without an explicit forward marker repeat from score start.
+          - Nested repeats, repeat counts other than two, malformed ending ranges and unsupported ending numbers fail closed instead of silently playing the wrong structure.
+          - The desktop/library production loader uses the same repeat-normalization boundary as regression tests; playback remains source-neutral.
+          - Existing tempo-map, measured tuplets, ties, multi-voice timing, Legacy/Legacy x2, MIDI, focus/input safety and Windows ABI contracts remain unchanged.
 
           Notes:
-          - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client now reports this safely instead of crashing the playback UI.
+          - Da capo/dal segno/coda, arbitrary repeat counts, nested repeats and complex ending schemes remain intentionally unsupported rather than guessed.
+          - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client reports this safely.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
-          - Real Roblox client acceptance remains a required field validation in addition to deterministic CI smoke tests.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
 
       - name: Create GitHub Release
