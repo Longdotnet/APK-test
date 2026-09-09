@@ -88,7 +88,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
 
           dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
-          if ($LASTEXITCODE -ne 0) { throw "Sheet library regression harness failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Song library regression harness failed" }
 
           dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Playback quality harness failed" }
@@ -151,17 +151,18 @@ jobs:
           SHA256: $hash
 
           Client flow:
-          1. Download RobloxPiano.exe.
-          2. Double-click it.
-          3. Pick a sheet from the Sheet Library (or import .txt/.vps).
-          4. Start Roblox and press Play.
-          5. Optionally calibrate input latency in milliseconds; 0 preserves legacy timing.
-          6. F6 slower, F7 faster, F8 pause/resume, F9 stop.
+          1. Download RobloxPiano.exe and double-click it.
+          2. Open Roblox and enter the piano game; the Library shows when Roblox is ready.
+          3. Select a song and press Play. TXT/VPS/MID/MIDI are detected automatically.
+          4. Pause, Stop and Seek are available during playback; advanced timing/speed/diagnostics stay hidden unless requested.
+          5. Losing Roblox focus pauses input safely and releases held state automatically.
 
           Production foundations in this release:
-          - Canonical expressive sustain/pedal state compiles deterministically into duration-aware playback before the kernel.
-          - The deterministic Standard MIDI importer is release-gated in Core; desktop MIDI exposure remains disabled until player integration is complete.
-          - Legacy TXT/VPS playback remains unchanged.
+          - Library-first one-click playback with automatic Roblox readiness instead of a technical setup screen.
+          - One source-neutral loader routes TXT/VPS and Standard MIDI into the same canonical PerformanceTrack.
+          - MIDI tempo, note duration and sustain remain deterministic Core facts; UI does not select or own importer/engine behavior.
+          - Legacy TXT/VPS and the Legacy x2 quality baseline remain unchanged.
+          - Technical speed, latency override, hotkeys and diagnostics are retained under Advanced for troubleshooting.
 
           Notes:
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.

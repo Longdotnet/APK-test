@@ -7,12 +7,13 @@ internal static class Program
     public static int Main()
     {
         var failures = new List<string>();
-        Run("scan surfaces valid and invalid sheets", TestScan, failures);
-        Run("portable and managed catalogs deduplicate exact paths", TestPortableScan, failures);
+        Run("scan surfaces valid and invalid songs", TestScan, failures);
+        Run("portable and managed catalogs include deterministic MIDI", TestPortableScan, failures);
         Run("import validates and allocates collision-safe names", TestImport, failures);
+        Run("source-neutral loader routes text and MIDI deterministically", TestSourceNeutralLoader, failures);
         Run("unsupported extension is rejected", TestUnsupportedExtension, failures);
 
-        Console.WriteLine($"Sheet library regressions: {4 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Song library regressions: {5 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -43,40 +44,58 @@ internal static class Program
         using var temp = new TempTree();
         File.WriteAllText(Path.Combine(temp.Managed, "managed.txt"), ValidSheet("Managed"));
         File.WriteAllText(Path.Combine(temp.Portable, "portable.vps"), ValidSheet("Portable"));
-        File.WriteAllText(Path.Combine(temp.Portable, "ignore.mid"), "not-supported-yet");
+        File.WriteAllBytes(Path.Combine(temp.Portable, "midi.mid"), ValidMidi("Portable MIDI"));
 
         var entries = new SheetLibraryService(temp.Managed, temp.Portable).Scan();
-        Equal(2, entries.Count, "managed + portable count");
+        Equal(3, entries.Count, "managed + portable count");
         True(entries.Any(entry => entry.Title == "Managed" && entry.IsManaged), "managed flag");
         True(entries.Any(entry => entry.Title == "Portable" && !entry.IsManaged), "portable flag");
+        True(entries.Any(entry => entry.Title == "Portable MIDI" && !entry.IsManaged), "MIDI should be a normal portable library song");
     }
 
     private static void TestImport()
     {
         using var temp = new TempTree();
-        var source = Path.Combine(temp.Root, "song.txt");
-        File.WriteAllText(source, ValidSheet("Imported"));
+        var source = Path.Combine(temp.Root, "song.mid");
+        File.WriteAllBytes(source, ValidMidi("Imported MIDI"));
 
         var library = new SheetLibraryService(temp.Managed);
         var first = library.Import(source);
         var second = library.Import(source);
 
-        True(first.Path.EndsWith("song.txt", StringComparison.OrdinalIgnoreCase), "first import name");
-        True(second.Path.EndsWith("song (2).txt", StringComparison.OrdinalIgnoreCase), "collision suffix");
+        True(first.Path.EndsWith("song.mid", StringComparison.OrdinalIgnoreCase), "first import name");
+        True(second.Path.EndsWith("song (2).mid", StringComparison.OrdinalIgnoreCase), "collision suffix");
         True(File.Exists(first.Path) && File.Exists(second.Path), "both imports persisted");
-        Equal(SheetValidationStatus.Valid, first.Status, "imported sheet remains valid");
+        Equal(SheetValidationStatus.Valid, first.Status, "imported MIDI remains valid");
 
-        var invalid = Path.Combine(temp.Root, "invalid.txt");
-        File.WriteAllText(invalid, "SUBDIV=0\nt");
+        var invalid = Path.Combine(temp.Root, "invalid.mid");
+        File.WriteAllBytes(invalid, [0x00, 0x01, 0x02]);
         Throws<FormatException>(() => library.Import(invalid), "invalid import");
-        True(!File.Exists(Path.Combine(temp.Managed, "invalid.txt")), "invalid import must not enter library");
+        True(!File.Exists(Path.Combine(temp.Managed, "invalid.mid")), "invalid import must not enter library");
+    }
+
+    private static void TestSourceNeutralLoader()
+    {
+        using var temp = new TempTree();
+        var textPath = Path.Combine(temp.Root, "legacy.vps");
+        var midiPath = Path.Combine(temp.Root, "song.midi");
+        File.WriteAllText(textPath, ValidSheet("Legacy"));
+        File.WriteAllBytes(midiPath, ValidMidi("MIDI"));
+
+        var text = SongSourceLoader.Load(textPath);
+        var midi = SongSourceLoader.Load(midiPath);
+        Equal(SongSourceKind.LegacyText, text.SourceKind, "legacy source kind");
+        Equal(SongSourceKind.Midi, midi.SourceKind, "MIDI source kind");
+        Equal("Legacy", text.Track.Title, "legacy title");
+        Equal("MIDI", midi.Track.Title, "MIDI title");
+        True(text.Track.Events.Count > 0 && midi.Track.Events.Count > 0, "both source types lower to canonical playback events");
     }
 
     private static void TestUnsupportedExtension()
     {
         using var temp = new TempTree();
-        var source = Path.Combine(temp.Root, "song.mid");
-        File.WriteAllText(source, ValidSheet("Wrong extension"));
+        var source = Path.Combine(temp.Root, "song.pdf");
+        File.WriteAllText(source, "not supported");
         Throws<FormatException>(() => new SheetLibraryService(temp.Managed).Import(source), "unsupported extension");
     }
 
@@ -88,6 +107,24 @@ internal static class Program
         CHORD_HOLD=0.5
         t r [ad] . w
         """;
+
+    private static byte[] ValidMidi(string title)
+    {
+        var track = new List<byte>();
+        track.AddRange([0x00, 0xFF, 0x03, (byte)title.Length]);
+        track.AddRange(System.Text.Encoding.ASCII.GetBytes(title));
+        track.AddRange([0x00, 0x90, 60, 100]);
+        track.AddRange([0x83, 0x60, 0x80, 60, 0]);
+        track.AddRange([0x00, 0xFF, 0x2F, 0x00]);
+
+        var bytes = new List<byte>();
+        bytes.AddRange("MThd"u8.ToArray());
+        bytes.AddRange([0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0]);
+        bytes.AddRange("MTrk"u8.ToArray());
+        bytes.AddRange([(byte)(track.Count >> 24), (byte)(track.Count >> 16), (byte)(track.Count >> 8), (byte)track.Count]);
+        bytes.AddRange(track);
+        return bytes.ToArray();
+    }
 
     private static void Run(string name, Action test, ICollection<string> failures)
     {
@@ -154,7 +191,6 @@ internal static class Program
             }
             catch
             {
-                // Best effort test cleanup.
             }
         }
     }
