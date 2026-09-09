@@ -146,24 +146,24 @@ jobs:
           SHA256: $hash
 
           Client flow:
-          1. Download RobloxPiano.exe and double-click it.
-          2. The Sheet Library is list-first: imported songs persist as rows instead of bypassing the Library.
-          3. Open Roblox and enter the target game. If Roblox does not react to playback, use **Test Roblox Input** directly from the Library.
-          4. The input check bypasses MIDI and the scheduler, focuses the selected Roblox Player PID, emits one bounded W hold through the production input sink, and asks whether Roblox visibly reacted.
-          5. Deterministic verdicts distinguish activation/focus problems, Windows input-delivery problems, and the important case where Windows delivered input but Roblox did not consume it.
-          6. Select any playable Library row and press Play once input acceptance is confirmed or the reported blocker is addressed.
+          1. Download RobloxPiano.exe and double-click it; the Sheet Library remains the normal starting point.
+          2. Open Roblox, enter the target piano game, and select a playable Library song.
+          3. On the first Play attempt for a Roblox process, the primary action becomes **Verify Input & Play** and opens the production Roblox input check.
+          4. A successful observation confirms only that exact Roblox PID; subsequent songs can Play directly while the same process remains active.
+          5. A blocked verdict changes the primary action to **Retest Input to Play** and playback cannot launch until the current Roblox process passes the check.
+          6. Restarting or changing Roblox PID discards stale confirmation automatically and requires verification for the new process.
 
           Production capability and reliability in this release:
-          - Roblox input acceptance diagnostics are now available to normal GUI clients; command-line knowledge is no longer required.
-          - The GUI check requires explicit consent and uses the same production key sink, PID focus boundary and release-all safety path as playback.
-          - Windows/native delivery is never presented as proof that Roblox consumed the key. Human observation is an explicit final boundary in the verdict.
-          - Seven deterministic verdict branches provide concrete next actions and are covered by the published executable input compatibility smoke.
-          - The input-check dialog is instantiated by the STA UI smoke so packaging or WinForms startup regressions fail the production gate.
-          - Existing multi-channel MIDI sustain, MIDI range auto-fit, percussion filtering, local collection import, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
+          - Process-scoped input readiness is now an enforced playback preflight instead of advisory diagnostics.
+          - The Library exposes deterministic Open Roblox / Verify Input / Retest Input / Play states without AI or network dependency.
+          - The Roblox target and readiness are resolved again after the input-check dialog and once more immediately before player launch so PID changes cannot reuse stale trust.
+          - Unknown and blocked input states cannot silently launch playback; confirmed readiness allows direct playback for the same Roblox process.
+          - The published executable input compatibility smoke covers no-target, unknown, confirmed, blocked and stale-confirmation/different-PID preflight decisions.
+          - Existing GUI input diagnostics, PID focus boundary, release-all safety, multi-channel MIDI sustain, MIDI range auto-fit, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
 
           Notes:
-          - CI can validate the Windows input contract but cannot itself observe a live Roblox client consuming synthetic input; the GUI check closes that field-validation gap with explicit user observation.
-          - Roblox focus authorization remains bound to the selected Roblox Player PID so top-level HWND recreation within that process does not falsely terminate playback.
+          - Input confirmation remains intentionally in-memory and process-scoped. Closing Roblox or restarting the client requires verification again rather than persisting stale trust.
+          - CI validates the deterministic Windows/input contract but cannot observe a live Roblox client consuming synthetic input; the GUI check still requires explicit human observation.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
