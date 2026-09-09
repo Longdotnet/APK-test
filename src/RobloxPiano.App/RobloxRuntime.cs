@@ -191,34 +191,49 @@ internal sealed class RobloxTargetFocusGate : IFocusGate
     private readonly object _gate = new();
     private readonly RobloxWindowTarget _target;
     private bool? _lastFocused;
+    private long? _foregroundSince;
 
     public RobloxTargetFocusGate(RobloxWindowTarget target)
     {
-        _target = target;
+        _target = target ?? throw new ArgumentNullException(nameof(target));
     }
 
     public bool IsTargetFocused
     {
         get
         {
-            var focused = _target.IsForeground;
+            var foregroundOwnedByTarget = _target.IsForeground;
             lock (_gate)
             {
-                if (_lastFocused == focused)
+                if (!foregroundOwnedByTarget)
                 {
-                    return focused;
+                    _foregroundSince = null;
+                    return ReportState(false, "foreground-lost");
                 }
 
-                _lastFocused = focused;
-                var foreground = ClientNativeMethods.GetForegroundWindow();
-                ClientNativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
-                ClientDiagnostics.Log(
-                    $"Roblox focus gate {(focused ? "ACTIVE" : "INACTIVE")}: targetPid={_target.ProcessId}, " +
-                    $"targetHwnd=0x{_target.WindowHandle.ToInt64():X}, foregroundHwnd=0x{foreground.ToInt64():X}, " +
-                    $"foregroundPid={foregroundPid}.");
-                return focused;
+                _foregroundSince ??= Stopwatch.GetTimestamp();
+                var stableFor = Stopwatch.GetElapsedTime(_foregroundSince.Value);
+                var inputReady = stableFor >= RobloxFieldInputPolicy.StableFocusDuration;
+                return ReportState(inputReady, inputReady ? "stable" : "settling");
             }
         }
+    }
+
+    private bool ReportState(bool focused, string reason)
+    {
+        if (_lastFocused == focused)
+        {
+            return focused;
+        }
+
+        _lastFocused = focused;
+        var foreground = ClientNativeMethods.GetForegroundWindow();
+        ClientNativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
+        ClientDiagnostics.Log(
+            $"Roblox focus gate {(focused ? "ACTIVE" : "INACTIVE")}: reason={reason}, targetPid={_target.ProcessId}, " +
+            $"targetHwnd=0x{_target.WindowHandle.ToInt64():X}, foregroundHwnd=0x{foreground.ToInt64():X}, " +
+            $"foregroundPid={foregroundPid}, stableFocusMs={RobloxFieldInputPolicy.StableFocusDuration.TotalMilliseconds:0}.");
+        return focused;
     }
 }
 

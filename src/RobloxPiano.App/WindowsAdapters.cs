@@ -88,6 +88,7 @@ internal sealed class WindowsInputInjectionException : InvalidOperationException
 internal sealed class WindowsKeyboardInputSink : IInputSink
 {
     internal const string BackendName = "keybd_event";
+    internal static readonly TimeSpan MinimumPhysicalKeyHold = TimeSpan.FromMilliseconds(50);
 
     private const byte ShiftModifier = 0x01;
     private const byte ControlModifier = 0x02;
@@ -99,13 +100,15 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private readonly object _gate = new();
     private readonly HashSet<ushort> _heldKeys = new();
+    private readonly Dictionary<ushort, long> _pressedAt = new();
     private long _dispatchSequence;
 
     public WindowsKeyboardInputSink()
     {
         ClientDiagnostics.Log(
             $"Keyboard input backend initialized: {BackendName} (PowerShell field baseline), " +
-            $"processPid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}.");
+            $"processPid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}, " +
+            $"minimumPhysicalHoldMs={MinimumPhysicalKeyHold.TotalMilliseconds:0}.");
     }
 
     public ValueTask KeyDownAsync(IReadOnlyList<char> keys, CancellationToken cancellationToken)
@@ -124,6 +127,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
                 {
                     SendVirtualKey(stroke.VirtualKey, keyUp: false);
                     _heldKeys.Add(stroke.VirtualKey);
+                    _pressedAt[stroke.VirtualKey] = Stopwatch.GetTimestamp();
                 }
                 finally
                 {
@@ -148,6 +152,11 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             {
                 if (_heldKeys.Remove(stroke.VirtualKey))
                 {
+                    if (_pressedAt.Remove(stroke.VirtualKey, out var pressedAt))
+                    {
+                        WaitForMinimumPhysicalHold(pressedAt);
+                    }
+
                     SendVirtualKey(stroke.VirtualKey, keyUp: true);
                 }
             }
@@ -171,12 +180,37 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             }
 
             _heldKeys.Clear();
+            _pressedAt.Clear();
             TrySendKeyUp(VirtualKeyShift);
             TrySendKeyUp(VirtualKeyControl);
             TrySendKeyUp(VirtualKeyMenu);
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    internal static ushort ResolveVirtualKeyForDiagnostics(char character)
+        => ResolveStroke(character).VirtualKey;
+
+    internal static bool IsVirtualKeyDown(ushort virtualKey)
+    {
+        if (virtualKey > byte.MaxValue)
+        {
+            return false;
+        }
+
+        return (NativeMethods.GetAsyncKeyState(checked((int)virtualKey)) & 0x8000) != 0;
+    }
+
+    internal static TimeSpan RemainingMinimumPhysicalHold(TimeSpan alreadyHeld)
+    {
+        if (alreadyHeld < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(alreadyHeld));
+        }
+
+        var remaining = MinimumPhysicalKeyHold - alreadyHeld;
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
     private void LogDispatch(string action, IReadOnlyList<char> keys, IReadOnlyList<KeyStroke> strokes)
@@ -221,6 +255,16 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         }
 
         return new KeyStroke(virtualKey, modifiers);
+    }
+
+    private static void WaitForMinimumPhysicalHold(long pressedAt)
+    {
+        var elapsed = Stopwatch.GetElapsedTime(pressedAt);
+        var remaining = RemainingMinimumPhysicalHold(elapsed);
+        if (remaining > TimeSpan.Zero)
+        {
+            Thread.Sleep(remaining);
+        }
     }
 
     private static void PressModifiers(byte modifiers)
@@ -313,4 +357,7 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", EntryPoint = "keybd_event")]
     internal static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
 }
