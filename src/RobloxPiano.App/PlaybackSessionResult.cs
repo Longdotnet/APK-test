@@ -6,7 +6,8 @@ internal enum PlaybackSessionResultKind
     Cancelled = 1,
     AuthorizationLost = 2,
     InputFailed = 3,
-    RuntimeFailed = 4
+    SourceFailed = 4,
+    RuntimeFailed = 5
 }
 
 internal sealed record PlaybackSessionResult(
@@ -16,6 +17,12 @@ internal sealed record PlaybackSessionResult(
     Exception? Exception = null)
 {
     public bool ShouldReturnToLibrary => Kind == PlaybackSessionResultKind.AuthorizationLost;
+
+    public static PlaybackSessionResult SourceFailure(Exception exception, TimeSpan position)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return new PlaybackSessionResult(PlaybackSessionResultKind.SourceFailed, position, Exception: exception);
+    }
 }
 
 internal static class PlaybackSessionResultCapture
@@ -97,6 +104,13 @@ internal static class PlaybackSessionPresentationPolicy
                 "Windows input delivery failed. Diagnostics were saved automatically.",
                 "Input delivery failed",
                 "Playback stopped safely because Windows could not emit one or more piano keys. Open Diagnostics for the exact key/input failure, then use Test Roblox Input before trying again.",
+                MessageBoxIcon.Warning,
+                false),
+
+            PlaybackSessionResultKind.SourceFailed => new PlaybackSessionPresentation(
+                "The selected song could not be loaded for playback.",
+                "Song could not be loaded",
+                result.Exception?.Message ?? "The selected song could not be loaded.",
                 MessageBoxIcon.Warning,
                 false),
 
