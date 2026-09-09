@@ -18,8 +18,11 @@ internal static class Program
         await RunAsync("runtime failure becomes RuntimeFailed result", TestRuntimeFailedResultAsync, failures);
         Run("source load failure has deterministic presentation", TestSourceFailedPresentation, failures);
         Run("authorization result preserves Library recovery", TestAuthorizationPresentation, failures);
+        Run("structured diagnostic preserves client and Roblox session context", TestStructuredDiagnosticContext, failures);
+        Run("structured diagnostic JSONL round-trips multiple sessions", TestStructuredDiagnosticJsonLines, failures);
+        Run("structured diagnostic rejects impossible session time", TestStructuredDiagnosticRejectsImpossibleTime, failures);
 
-        Console.WriteLine($"App recovery regressions: {11 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"App recovery regressions: {14 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -148,6 +151,116 @@ internal static class Program
         var presentation = PlaybackSessionPresentationPolicy.Describe(result);
         True(presentation.ReturnToLibrary, "authorization presentation must return to Library");
         Contains(presentation.DialogMessage ?? string.Empty, "Verify Input & Play", "authorization presentation recovery action");
+    }
+
+    private static void TestStructuredDiagnosticContext()
+    {
+        var sourcePath = Path.Combine(Path.GetTempPath(), "wide-range.mid");
+        var state = new ClientState(sourcePath, 1.25d, 17);
+        var started = new DateTimeOffset(2026, 9, 10, 1, 2, 3, TimeSpan.FromHours(7));
+        var ended = started.AddSeconds(12);
+        var result = new PlaybackSessionResult(
+            PlaybackSessionResultKind.AuthorizationLost,
+            TimeSpan.FromSeconds(9.5),
+            RobloxPlaybackAuthorizationFailure.ProcessReplaced,
+            new RobloxPlaybackAuthorizationException(
+                RobloxPlaybackAuthorizationFailure.ProcessReplaced,
+                "PID lifetime changed"));
+
+        var record = PlaybackSessionDiagnostics.CreateRecord(
+            result,
+            state,
+            4242,
+            638930000000000000L,
+            started,
+            ended,
+            "session-1");
+
+        Equal(PlaybackSessionDiagnostics.SchemaVersion, record.SchemaVersion, "diagnostic schema");
+        Equal("session-1", record.SessionId, "session id");
+        Equal("AuthorizationLost", record.ResultKind, "result kind");
+        Equal("ProcessReplaced", record.AuthorizationFailure!, "authorization failure");
+        Equal("MIDI", record.SourceType, "source type");
+        Equal(Path.GetFullPath(sourcePath), record.SourcePath!, "source path");
+        Equal(1.25d, record.PreferredSpeed, "speed");
+        Equal(17, record.InputLatencyMs, "input latency");
+        Equal(4242, record.RobloxProcessId!.Value, "Roblox PID");
+        Equal(638930000000000000L, record.RobloxProcessStartTimeUtcTicks!.Value, "Roblox process lifetime");
+        Equal(9.5d, record.PositionSeconds, "final position");
+        Contains(record.ExceptionType ?? string.Empty, nameof(RobloxPlaybackAuthorizationException), "exception type");
+        Contains(record.ExceptionMessage ?? string.Empty, "lifetime changed", "exception message");
+        Equal(TimeSpan.Zero, record.StartedAtUtc.Offset, "start timestamp normalized to UTC");
+        Equal(TimeSpan.Zero, record.EndedAtUtc.Offset, "end timestamp normalized to UTC");
+    }
+
+    private static void TestStructuredDiagnosticJsonLines()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RobloxPiano-AppRecoveryTests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "sessions.jsonl");
+        try
+        {
+            var state = new ClientState(Path.Combine(directory, "song.musicxml"), 1d, 0);
+            var first = PlaybackSessionDiagnostics.CreateRecord(
+                new PlaybackSessionResult(PlaybackSessionResultKind.Completed, TimeSpan.FromSeconds(15)),
+                state,
+                77,
+                123456L,
+                DateTimeOffset.UnixEpoch,
+                DateTimeOffset.UnixEpoch.AddSeconds(15),
+                "first");
+            var second = PlaybackSessionDiagnostics.CreateRecord(
+                new PlaybackSessionResult(PlaybackSessionResultKind.Cancelled, TimeSpan.FromSeconds(3)),
+                state,
+                77,
+                123456L,
+                DateTimeOffset.UnixEpoch.AddMinutes(1),
+                DateTimeOffset.UnixEpoch.AddMinutes(1).AddSeconds(3),
+                "second");
+
+            PlaybackSessionDiagnostics.AppendRecord(path, first);
+            PlaybackSessionDiagnostics.AppendRecord(path, second);
+
+            var lines = File.ReadAllLines(path);
+            Equal(2, lines.Length, "JSONL record count");
+            var roundTrippedFirst = PlaybackSessionDiagnostics.DeserializeRecord(lines[0]);
+            var roundTrippedSecond = PlaybackSessionDiagnostics.DeserializeRecord(lines[1]);
+            Equal("first", roundTrippedFirst.SessionId, "first JSONL session");
+            Equal("Completed", roundTrippedFirst.ResultKind, "first JSONL result");
+            Equal("MusicXML", roundTrippedFirst.SourceType, "MusicXML source classification");
+            Equal("second", roundTrippedSecond.SessionId, "second JSONL session");
+            Equal("Cancelled", roundTrippedSecond.ResultKind, "second JSONL result");
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static void TestStructuredDiagnosticRejectsImpossibleTime()
+    {
+        var result = new PlaybackSessionResult(PlaybackSessionResultKind.Completed, TimeSpan.Zero);
+        var state = ClientState.Default;
+        var threw = false;
+        try
+        {
+            _ = PlaybackSessionDiagnostics.CreateRecord(
+                result,
+                state,
+                null,
+                null,
+                DateTimeOffset.UnixEpoch.AddSeconds(2),
+                DateTimeOffset.UnixEpoch,
+                "bad-time");
+        }
+        catch (ArgumentException)
+        {
+            threw = true;
+        }
+
+        True(threw, "diagnostics must reject end timestamps before session start");
     }
 
     private static void Run(string name, Action test, ICollection<string> failures)
