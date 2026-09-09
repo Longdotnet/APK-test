@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using RobloxPiano.Core;
+using RobloxPiano.Library;
 
 namespace RobloxPiano.App;
 
@@ -16,22 +17,31 @@ internal sealed class ClientMainForm : Form
     private const uint VirtualKeyF9 = 0x78;
     private const int PositionScale = 1000;
 
-    private readonly TextBox _sheetPath = new() { Dock = DockStyle.Fill, ReadOnly = true };
-    private readonly Label _sheetInfo = CreateStatusLabel("No sheet selected.");
+    private readonly bool _autoStart;
+    private readonly Label _songTitle = CreateStatusLabel("No song selected.");
+    private readonly Label _songInfo = CreateStatusLabel(string.Empty);
     private readonly Label _robloxInfo = CreateStatusLabel("Searching for Roblox...");
     private readonly Label _playbackInfo = CreateStatusLabel("Ready.");
     private readonly Label _speedInfo = CreateStatusLabel("1.00x");
     private readonly Label _positionInfo = CreateStatusLabel("00:00 / 00:00");
     private readonly Label _hotkeyInfo = CreateStatusLabel("Hotkeys: registering...");
-    private readonly Button _browseButton = new() { Text = "Browse sheet...", AutoSize = true };
-    private readonly Button _playButton = new() { Text = "Play", AutoSize = true };
-    private readonly Button _pauseButton = new() { Text = "Pause (F8)", AutoSize = true, Enabled = false };
-    private readonly Button _stopButton = new() { Text = "Stop (F9)", AutoSize = true, Enabled = false };
-    private readonly Button _slowerButton = new() { Text = "Slower (F6)", AutoSize = true };
-    private readonly Button _fasterButton = new() { Text = "Faster (F7)", AutoSize = true };
+    private readonly Label _pathInfo = CreateStatusLabel(string.Empty);
+    private readonly Button _playButton = new()
+    {
+        Text = "Play",
+        AutoSize = true,
+        Font = new Font(SystemFonts.DefaultFont.FontFamily, 12f, FontStyle.Bold),
+        Padding = new Padding(18, 7, 18, 7)
+    };
+    private readonly Button _pauseButton = new() { Text = "Pause", AutoSize = true, Enabled = false, Padding = new Padding(8, 4, 8, 4) };
+    private readonly Button _stopButton = new() { Text = "Stop", AutoSize = true, Enabled = false, Padding = new Padding(8, 4, 8, 4) };
     private readonly Button _backButton = new() { Text = "-10s", AutoSize = true, Enabled = false };
     private readonly Button _forwardButton = new() { Text = "+10s", AutoSize = true, Enabled = false };
-    private readonly Button _logsButton = new() { Text = "Diagnostics", AutoSize = true };
+    private readonly Button _advancedButton = new() { Text = "Advanced ▾", AutoSize = true };
+    private readonly Button _browseButton = new() { Text = "Choose another song...", AutoSize = true };
+    private readonly Button _slowerButton = new() { Text = "Slower (F6)", AutoSize = true };
+    private readonly Button _fasterButton = new() { Text = "Faster (F7)", AutoSize = true };
+    private readonly Button _logsButton = new() { Text = "Open Diagnostics", AutoSize = true };
     private readonly NumericUpDown _latencyMs = new()
     {
         Minimum = 0,
@@ -48,10 +58,17 @@ internal sealed class ClientMainForm : Form
         TickStyle = TickStyle.None,
         Enabled = false
     };
+    private readonly TableLayoutPanel _advancedPanel = new()
+    {
+        Dock = DockStyle.Fill,
+        ColumnCount = 1,
+        AutoSize = true,
+        Visible = false
+    };
     private readonly System.Windows.Forms.Timer _robloxTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer _positionTimer = new() { Interval = 100 };
 
-    private string? _selectedSheetPath;
+    private string? _selectedSongPath;
     private double _preferredSpeed = 1d;
     private TimeSpan _loadedDuration;
     private PlaybackSessionClock? _sessionClock;
@@ -61,32 +78,38 @@ internal sealed class ClientMainForm : Form
     private RobloxWindowTarget? _activeTarget;
     private bool _positionDragging;
     private bool _allowClose;
+    private bool _autoStartAttempted;
 
-    public ClientMainForm()
+    public ClientMainForm(bool autoStart = false)
     {
+        _autoStart = autoStart;
         Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(720, 500);
-        Size = new Size(840, 590);
+        MinimumSize = new Size(700, 430);
+        Size = new Size(820, 540);
         AllowDrop = true;
 
         BuildLayout();
         LoadClientState();
         RefreshRobloxStatus();
 
-        _browseButton.Click += (_, _) => BrowseSheet();
         _playButton.Click += async (_, _) => await StartPlaybackAsync().ConfigureAwait(true);
         _pauseButton.Click += (_, _) => TogglePause();
         _stopButton.Click += (_, _) => StopPlayback();
-        _slowerButton.Click += (_, _) => AdjustSpeed(-0.10d);
-        _fasterButton.Click += (_, _) => AdjustSpeed(0.10d);
         _backButton.Click += (_, _) => SeekRelative(TimeSpan.FromSeconds(-10));
         _forwardButton.Click += (_, _) => SeekRelative(TimeSpan.FromSeconds(10));
+        _advancedButton.Click += (_, _) => ToggleAdvanced();
+        _browseButton.Click += (_, _) => BrowseSong();
+        _slowerButton.Click += (_, _) => AdjustSpeed(-0.10d);
+        _fasterButton.Click += (_, _) => AdjustSpeed(0.10d);
         _logsButton.Click += (_, _) => OpenDiagnosticsDirectory();
         _latencyMs.ValueChanged += (_, _) =>
         {
             SaveClientState();
-            _playbackInfo.Text = $"Input latency compensation set to {(int)_latencyMs.Value} ms for the next playback.";
+            if (_playbackTask is null || _playbackTask.IsCompleted)
+            {
+                _playbackInfo.Text = "Advanced timing preference saved for the next playback.";
+            }
         };
         _positionBar.MouseDown += (_, _) => _positionDragging = true;
         _positionBar.MouseUp += (_, _) => CommitPositionBarSeek();
@@ -98,6 +121,7 @@ internal sealed class ClientMainForm : Form
         DragEnter += HandleDragEnter;
         DragDrop += HandleDragDrop;
         FormClosing += HandleFormClosingAsync;
+        Shown += HandleShownAsync;
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -157,73 +181,61 @@ internal sealed class ClientMainForm : Form
         };
         var subtitle = new Label
         {
-            Text = "Drop a .txt/.vps sheet, press Play, then use F6/F7/F8/F9 while Roblox has focus.",
+            Text = "Your song is ready. Roblox detection, file handling, timing safety and diagnostics run automatically.",
             AutoSize = true,
-            Margin = new Padding(0, 0, 0, 16)
+            MaximumSize = new Size(760, 0),
+            Margin = new Padding(0, 0, 0, 12)
         };
 
-        var sheetRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
-        sheetRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        sheetRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        sheetRow.Controls.Add(_sheetPath, 0, 0);
-        sheetRow.Controls.Add(_browseButton, 1, 0);
+        var songPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, AutoSize = true };
+        songPanel.Controls.Add(_songTitle, 0, 0);
+        songPanel.Controls.Add(_songInfo, 0, 1);
 
-        var sheetPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, AutoSize = true };
-        sheetPanel.Controls.Add(sheetRow, 0, 0);
-        sheetPanel.Controls.Add(_sheetInfo, 0, 1);
-
-        var controls = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = true,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        controls.Controls.AddRange([
-            _playButton,
-            _pauseButton,
-            _stopButton,
-            _slowerButton,
-            _fasterButton,
-            _backButton,
-            _forwardButton,
-            _logsButton
-        ]);
-
-        var speedRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
-        speedRow.Controls.Add(new Label { Text = "Speed:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
-        speedRow.Controls.Add(_speedInfo);
-
-        var latencyRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
-        latencyRow.Controls.Add(new Label { Text = "Input latency compensation:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
-        latencyRow.Controls.Add(_latencyMs);
-        latencyRow.Controls.Add(new Label { Text = "ms (0 = legacy timing)", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
+        var primaryControls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
+        primaryControls.Controls.AddRange([_playButton, _pauseButton, _stopButton, _backButton, _forwardButton]);
 
         var seekPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, AutoSize = true };
         seekPanel.Controls.Add(_positionBar, 0, 0);
         seekPanel.Controls.Add(_positionInfo, 0, 1);
 
-        var playbackPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, AutoSize = true };
-        playbackPanel.Controls.Add(controls, 0, 0);
-        playbackPanel.Controls.Add(speedRow, 0, 1);
-        playbackPanel.Controls.Add(latencyRow, 0, 2);
-        playbackPanel.Controls.Add(seekPanel, 0, 3);
-        playbackPanel.Controls.Add(_playbackInfo, 0, 4);
-        playbackPanel.Controls.Add(_hotkeyInfo, 0, 5);
+        var playbackPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, AutoSize = true };
+        playbackPanel.Controls.Add(primaryControls, 0, 0);
+        playbackPanel.Controls.Add(seekPanel, 0, 1);
+        playbackPanel.Controls.Add(_playbackInfo, 0, 2);
+
+        var speedRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        speedRow.Controls.Add(new Label { Text = "Speed:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
+        speedRow.Controls.Add(_speedInfo);
+        speedRow.Controls.Add(_slowerButton);
+        speedRow.Controls.Add(_fasterButton);
+
+        var latencyRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        latencyRow.Controls.Add(new Label { Text = "Input timing override:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
+        latencyRow.Controls.Add(_latencyMs);
+        latencyRow.Controls.Add(new Label { Text = "ms (0 = default)", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
+
+        var advancedButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        advancedButtons.Controls.AddRange([_browseButton, _logsButton]);
+        _advancedPanel.Controls.Add(speedRow);
+        _advancedPanel.Controls.Add(latencyRow);
+        _advancedPanel.Controls.Add(advancedButtons);
+        _advancedPanel.Controls.Add(_pathInfo);
+        _advancedPanel.Controls.Add(_hotkeyInfo);
 
         var safety = new Label
         {
             AutoSize = true,
-            MaximumSize = new Size(780, 0),
-            Text = "Safety: input is sent only to the selected foreground Roblox process. Losing focus, pause, stop, " +
-                   "seek, cancellation, or an input error releases held keys before playback can continue. Latency compensation only changes dispatch timing; it never changes score truth."
+            MaximumSize = new Size(760, 0),
+            Text = "Playback automatically pauses and releases held input whenever Roblox loses focus, playback stops, or an input error occurs."
         };
 
         root.Controls.Add(title);
         root.Controls.Add(subtitle);
         root.Controls.Add(CreateGroup("Roblox", _robloxInfo));
-        root.Controls.Add(CreateGroup("Sheet", sheetPanel));
-        root.Controls.Add(CreateGroup("Playback / Seek / Calibration", playbackPanel));
+        root.Controls.Add(CreateGroup("Song", songPanel));
+        root.Controls.Add(CreateGroup("Playback", playbackPanel));
+        root.Controls.Add(_advancedButton);
+        root.Controls.Add(_advancedPanel);
         root.Controls.Add(safety);
         Controls.Add(root);
     }
@@ -243,15 +255,29 @@ internal sealed class ClientMainForm : Form
         return group;
     }
 
-    private static Label CreateStatusLabel(string text)
+    private static Label CreateStatusLabel(string text) => new()
     {
-        return new Label
+        Text = text,
+        AutoSize = true,
+        Padding = new Padding(0, 4, 0, 4),
+        MaximumSize = new Size(760, 0)
+    };
+
+    private async void HandleShownAsync(object? sender, EventArgs eventArgs)
+    {
+        if (!_autoStart || _autoStartAttempted)
         {
-            Text = text,
-            AutoSize = true,
-            Padding = new Padding(0, 4, 0, 4),
-            MaximumSize = new Size(780, 0)
-        };
+            return;
+        }
+
+        _autoStartAttempted = true;
+        await StartPlaybackAsync().ConfigureAwait(true);
+    }
+
+    private void ToggleAdvanced()
+    {
+        _advancedPanel.Visible = !_advancedPanel.Visible;
+        _advancedButton.Text = _advancedPanel.Visible ? "Advanced ▴" : "Advanced ▾";
     }
 
     private void LoadClientState()
@@ -263,79 +289,73 @@ internal sealed class ClientMainForm : Form
 
         if (!string.IsNullOrWhiteSpace(state.LastSheetPath) && File.Exists(state.LastSheetPath))
         {
-            TrySelectSheet(state.LastSheetPath, showDialogOnError: false);
+            TrySelectSong(state.LastSheetPath, showDialogOnError: false);
         }
     }
 
     private void SaveClientState()
     {
-        ClientStateStore.Save(new ClientState(_selectedSheetPath, _preferredSpeed, (int)_latencyMs.Value));
+        ClientStateStore.Save(new ClientState(_selectedSongPath, _preferredSpeed, (int)_latencyMs.Value));
     }
 
-    private void BrowseSheet()
+    private void BrowseSong()
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "Choose Roblox Virtual Piano sheet",
-            Filter = "Virtual Piano sheets (*.txt;*.vps)|*.txt;*.vps|Text files (*.txt)|*.txt|All files (*.*)|*.*",
+            Title = "Choose song",
+            Filter = "Supported songs (*.txt;*.vps;*.mid;*.midi)|*.txt;*.vps;*.mid;*.midi|All files (*.*)|*.*",
             CheckFileExists = true,
             Multiselect = false
         };
 
-        if (!string.IsNullOrWhiteSpace(_selectedSheetPath))
+        if (!string.IsNullOrWhiteSpace(_selectedSongPath))
         {
-            dialog.InitialDirectory = Path.GetDirectoryName(_selectedSheetPath);
-            dialog.FileName = Path.GetFileName(_selectedSheetPath);
+            dialog.InitialDirectory = Path.GetDirectoryName(_selectedSongPath);
+            dialog.FileName = Path.GetFileName(_selectedSongPath);
         }
 
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            TrySelectSheet(dialog.FileName, showDialogOnError: true);
+            TrySelectSong(dialog.FileName, showDialogOnError: true);
         }
     }
 
-    private bool TrySelectSheet(string path, bool showDialogOnError)
+    private bool TrySelectSong(string path, bool showDialogOnError)
     {
         try
         {
             var fullPath = Path.GetFullPath(path);
-            if (!File.Exists(fullPath))
-            {
-                throw new FileNotFoundException("Sheet file does not exist.", fullPath);
-            }
-
-            if (!IsSupportedSheetPath(fullPath))
-            {
-                throw new FormatException("Choose a .txt or .vps Virtual Piano sheet.");
-            }
-
-            var track = LegacySheetParser.Parse(File.ReadAllText(fullPath));
-            _selectedSheetPath = fullPath;
+            var loaded = SongSourceLoader.Load(fullPath);
+            var track = loaded.Track;
+            _selectedSongPath = fullPath;
             _loadedDuration = track.TimelineDuration;
-            _sheetPath.Text = fullPath;
-            _sheetInfo.Text = $"{track.Title} — {track.Events.Count} events — " +
-                              $"{track.Bpm.ToString("0.###", CultureInfo.InvariantCulture)} BPM / subdiv {track.Subdivision} — " +
-                              $"{FormatTime(track.TimelineDuration)}";
+            _songTitle.Text = track.Title;
+            _songInfo.Text = $"{track.Events.Count} notes/events • " +
+                             $"{track.Bpm.ToString("0.###", CultureInfo.InvariantCulture)} BPM • " +
+                             FormatTime(track.TimelineDuration);
+            _pathInfo.Text = fullPath;
             _positionBar.Value = 0;
             _positionBar.Enabled = true;
             _backButton.Enabled = true;
             _forwardButton.Enabled = true;
             UpdatePositionLabel(TimeSpan.Zero);
-            _playbackInfo.Text = "Sheet validated. Ready to play from 00:00 or choose a start position.";
+            _playbackInfo.Text = "Ready to play.";
             SaveClientState();
+            RefreshRobloxStatus();
             return true;
         }
         catch (Exception exception) when (
             exception is IOException
             or UnauthorizedAccessException
             or FormatException
-            or ArgumentException)
+            or ArgumentException
+            or OverflowException)
         {
-            ClientDiagnostics.Log($"Sheet selection failed for '{path}': {exception}");
-            _playbackInfo.Text = $"Sheet error: {exception.Message}";
+            ClientDiagnostics.Log($"Song selection failed for '{path}': {exception}");
+            _playbackInfo.Text = $"This song could not be loaded: {exception.Message}";
             if (showDialogOnError)
             {
-                MessageBox.Show(this, exception.Message, "Sheet could not be loaded", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, exception.Message, "Song could not be loaded", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
 
             return false;
@@ -349,31 +369,32 @@ internal sealed class ClientMainForm : Form
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_selectedSheetPath)
-            || !TrySelectSheetPreservingPosition(_selectedSheetPath))
+        if (string.IsNullOrWhiteSpace(_selectedSongPath)
+            || !TrySelectSongPreservingPosition(_selectedSongPath))
         {
+            _playbackInfo.Text = "Choose a playable song first.";
             return;
         }
 
         var target = RobloxProcessLocator.FindPreferred();
         if (target is null)
         {
-            _robloxInfo.Text = "Roblox player not found. Open the game first, then press Play.";
-            MessageBox.Show(this,
-                "RobloxPlayerBeta was not found. Open Roblox and enter the piano game, then press Play again.",
-                "Roblox not found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _robloxInfo.Text = "○ Roblox not detected — open Roblox and enter the piano game.";
+            _playbackInfo.Text = "Play becomes available automatically when Roblox is ready.";
+            UpdatePrimaryAction();
             return;
         }
 
         PerformanceTrack track;
         try
         {
-            track = LegacySheetParser.Parse(await File.ReadAllTextAsync(_selectedSheetPath).ConfigureAwait(true));
+            track = (await SongSourceLoader.LoadAsync(_selectedSongPath).ConfigureAwait(true)).Track;
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or FormatException or ArgumentException)
+            exception is IOException or UnauthorizedAccessException or FormatException or ArgumentException or OverflowException)
         {
-            _playbackInfo.Text = $"Sheet error: {exception.Message}";
+            _playbackInfo.Text = $"This song could not be loaded: {exception.Message}";
+            ClientDiagnostics.Log($"Playback source load failed: {exception}");
             return;
         }
 
@@ -391,14 +412,14 @@ internal sealed class ClientMainForm : Form
         var transport = _transportSession;
 
         SetPlaybackActive(true);
-        _robloxInfo.Text = $"Target: {target}";
         var activated = target.TryActivate();
+        _robloxInfo.Text = "● Roblox connected";
         _playbackInfo.Text = activated
-            ? $"Roblox found. Starting from {FormatTime(initialPosition)} after countdown..."
-            : "Roblox found. Click its window before the countdown finishes.";
+            ? $"Starting {track.Title}..."
+            : "Roblox is ready. Playback waits safely until its window has focus.";
 
         ClientDiagnostics.Log(
-            $"Playback start: sheet='{_selectedSheetPath}', title='{track.Title}', targetPid={target.ProcessId}, " +
+            $"Playback start: song='{_selectedSongPath}', title='{track.Title}', targetPid={target.ProcessId}, " +
             $"speed={sessionClock.Speed:0.00}x, position={initialPosition.TotalSeconds:0.###}s, " +
             $"dispatchLeadMs={timingProfile.DispatchLead.TotalMilliseconds:0}, activation={activated}.");
 
@@ -418,11 +439,16 @@ internal sealed class ClientMainForm : Form
             ClientDiagnostics.Log($"Playback cancelled: title='{track.Title}', position={transport.Position.TotalSeconds:0.###}s.");
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+            exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or OverflowException)
         {
-            _playbackInfo.Text = $"Playback failed: {exception.Message}";
+            _playbackInfo.Text = "Playback had a problem. Diagnostics were saved automatically.";
             ClientDiagnostics.Log($"Playback failed: {exception}");
-            MessageBox.Show(this, exception.Message, "Playback failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(
+                this,
+                "Playback stopped safely. Try Play again. Technical details were saved automatically in Diagnostics.",
+                "Playback stopped",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
         finally
         {
@@ -442,10 +468,10 @@ internal sealed class ClientMainForm : Form
         }
     }
 
-    private bool TrySelectSheetPreservingPosition(string path)
+    private bool TrySelectSongPreservingPosition(string path)
     {
         var oldValue = _positionBar.Value;
-        if (!TrySelectSheet(path, showDialogOnError: true))
+        if (!TrySelectSong(path, showDialogOnError: true))
         {
             return false;
         }
@@ -468,8 +494,8 @@ internal sealed class ClientMainForm : Form
 
         cancellationToken.ThrowIfCancellationRequested();
         _playbackInfo.Text = _sessionClock?.IsUserPaused == true
-            ? "Paused — press F8 to resume."
-            : "Playing — drag timeline or use ±10s to seek. F6/F7 speed, F8 pause, F9 stop.";
+            ? "Paused."
+            : "Playing — playback pauses automatically if Roblox loses focus.";
 
         await transport.PlayAsync(initialPosition, cancellationToken).ConfigureAwait(true);
     }
@@ -481,7 +507,7 @@ internal sealed class ClientMainForm : Form
         {
             cancellationToken.ThrowIfCancellationRequested();
             var seconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
-            _playbackInfo.Text = $"Starting in {seconds}s — switch to Roblox. F9 cancels.";
+            _playbackInfo.Text = $"Starting in {seconds}s...";
             var slice = remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250);
             await Task.Delay(slice, cancellationToken).ConfigureAwait(true);
             remaining -= slice;
@@ -509,8 +535,8 @@ internal sealed class ClientMainForm : Form
         UpdateSpeedLabel();
         SaveClientState();
         _playbackInfo.Text = _playbackTask is not null && !_playbackTask.IsCompleted
-            ? $"Speed changed live to {_preferredSpeed:0.00}x."
-            : $"Ready at {_preferredSpeed:0.00}x.";
+            ? $"Speed {_preferredSpeed:0.00}x."
+            : "Advanced speed preference saved.";
         ClientDiagnostics.Log($"Speed changed to {_preferredSpeed:0.00}x.");
     }
 
@@ -522,10 +548,10 @@ internal sealed class ClientMainForm : Form
         }
 
         var paused = _sessionClock.ToggleUserPause();
-        _pauseButton.Text = paused ? "Resume (F8)" : "Pause (F8)";
+        _pauseButton.Text = paused ? "Resume" : "Pause";
         _playbackInfo.Text = paused
-            ? "Paused safely — held keys are released. Seek is still available."
-            : "Resumed — playback continues from the current transport position.";
+            ? "Paused safely."
+            : "Playing — playback pauses automatically if Roblox loses focus.";
         ClientDiagnostics.Log(paused ? "User paused playback." : "User resumed playback.");
     }
 
@@ -549,9 +575,7 @@ internal sealed class ClientMainForm : Form
         }
 
         var current = _transportSession?.Position ?? PositionFromBar(_loadedDuration);
-        CommitSeek(PlaybackTransport.ClampPosition(
-            new PerformanceTrack("position", 1, 1, TimeSpan.Zero, Array.Empty<PerformanceEvent>(), _loadedDuration),
-            current + delta));
+        CommitSeek(current + delta);
     }
 
     private void CommitPositionBarSeek()
@@ -572,16 +596,15 @@ internal sealed class ClientMainForm : Form
             : position > _loadedDuration ? _loadedDuration : position;
         SetPositionBar(clamped);
 
-        var transport = _transportSession;
-        if (transport is not null)
+        if (_transportSession is not null)
         {
-            transport.Seek(clamped);
-            _playbackInfo.Text = $"Seeking safely to {FormatTime(clamped)} — releasing held keys before re-entry.";
+            _transportSession.Seek(clamped);
+            _playbackInfo.Text = $"Moving to {FormatTime(clamped)}...";
             ClientDiagnostics.Log($"Seek requested: {clamped.TotalSeconds:0.###}s.");
         }
         else
         {
-            _playbackInfo.Text = $"Start position set to {FormatTime(clamped)}.";
+            _playbackInfo.Text = $"Start at {FormatTime(clamped)}.";
         }
     }
 
@@ -592,10 +615,9 @@ internal sealed class ClientMainForm : Form
             return;
         }
 
-        var transport = _transportSession;
-        if (transport is not null)
+        if (_transportSession is not null)
         {
-            SetPositionBar(transport.Position);
+            SetPositionBar(_transportSession.Position);
         }
         else
         {
@@ -637,26 +659,32 @@ internal sealed class ClientMainForm : Form
     }
 
     private static string FormatTime(TimeSpan value)
-    {
-        return value.TotalHours >= 1d ? value.ToString(@"hh\:mm\:ss") : value.ToString(@"mm\:ss");
-    }
+        => value.TotalHours >= 1d ? value.ToString(@"hh\:mm\:ss") : value.ToString(@"mm\:ss");
 
     private void SetPlaybackActive(bool active)
     {
-        _playButton.Enabled = !active;
-        _browseButton.Enabled = !active;
-        _latencyMs.Enabled = !active;
         _pauseButton.Enabled = active;
         _stopButton.Enabled = active;
-        _pauseButton.Text = "Pause (F8)";
+        _pauseButton.Text = "Pause";
+        _browseButton.Enabled = !active;
+        _latencyMs.Enabled = !active;
         _positionBar.Enabled = _loadedDuration > TimeSpan.Zero;
         _backButton.Enabled = _loadedDuration > TimeSpan.Zero;
         _forwardButton.Enabled = _loadedDuration > TimeSpan.Zero;
+        UpdatePrimaryAction();
+    }
+
+    private void UpdatePrimaryAction()
+    {
+        var active = _playbackTask is not null && !_playbackTask.IsCompleted;
+        var robloxReady = _activeTarget?.IsAlive == true || RobloxProcessLocator.FindPreferred() is not null;
+        _playButton.Enabled = !active && !string.IsNullOrWhiteSpace(_selectedSongPath) && robloxReady;
+        _playButton.Text = active ? "Playing" : robloxReady ? "Play" : "Waiting for Roblox";
     }
 
     private void UpdateSpeedLabel()
     {
-        _speedInfo.Text = $"{_preferredSpeed:0.00}x  (range {PlaybackSessionClock.MinimumSpeed:0.##}x–{PlaybackSessionClock.MaximumSpeed:0.##}x)";
+        _speedInfo.Text = $"{_preferredSpeed:0.00}x";
     }
 
     private void RefreshRobloxStatus()
@@ -664,15 +692,17 @@ internal sealed class ClientMainForm : Form
         if (_activeTarget is not null)
         {
             _robloxInfo.Text = _activeTarget.IsAlive
-                ? $"Target: {_activeTarget}"
-                : "Target Roblox process exited. Playback will remain safety-paused.";
+                ? "● Roblox connected"
+                : "○ Roblox closed — playback is safety-paused.";
+            UpdatePrimaryAction();
             return;
         }
 
         var target = RobloxProcessLocator.FindPreferred();
         _robloxInfo.Text = target is null
-            ? "Roblox player not found. Open Roblox before pressing Play."
-            : $"Ready: {target}";
+            ? "○ Roblox not detected — open Roblox and enter the piano game."
+            : "● Roblox ready";
+        UpdatePrimaryAction();
     }
 
     private void RegisterGlobalHotkeys()
@@ -683,8 +713,8 @@ internal sealed class ClientMainForm : Form
         RegisterHotkey(HotkeyF8, VirtualKeyF8, "F8", failures);
         RegisterHotkey(HotkeyF9, VirtualKeyF9, "F9", failures);
         _hotkeyInfo.Text = failures.Count == 0
-            ? "Global hotkeys active: F6 slower • F7 faster • F8 pause/resume • F9 stop"
-            : $"Hotkey warning: {string.Join(", ", failures)} unavailable. On-screen controls still work.";
+            ? "Hotkeys: F6 slower • F7 faster • F8 pause/resume • F9 stop"
+            : $"Unavailable hotkeys: {string.Join(", ", failures)}. On-screen controls still work.";
     }
 
     private void RegisterHotkey(int id, uint virtualKey, string name, ICollection<string> failures)
@@ -708,7 +738,7 @@ internal sealed class ClientMainForm : Form
         if (eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true)
         {
             var files = eventArgs.Data.GetData(DataFormats.FileDrop) as string[];
-            if (files?.Length == 1 && IsSupportedSheetPath(files[0]))
+            if (files?.Length == 1 && SongSourceLoader.IsSupportedPath(files[0]))
             {
                 eventArgs.Effect = DragDropEffects.Copy;
                 return;
@@ -723,15 +753,8 @@ internal sealed class ClientMainForm : Form
         var files = eventArgs.Data?.GetData(DataFormats.FileDrop) as string[];
         if (files?.Length == 1)
         {
-            TrySelectSheet(files[0], showDialogOnError: true);
+            TrySelectSong(files[0], showDialogOnError: true);
         }
-    }
-
-    private static bool IsSupportedSheetPath(string path)
-    {
-        var extension = Path.GetExtension(path);
-        return extension.Equals(".txt", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".vps", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OpenDiagnosticsDirectory()
@@ -744,12 +767,15 @@ internal sealed class ClientMainForm : Form
         catch (Exception exception) when (
             exception is InvalidOperationException or IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            _playbackInfo.Text = $"Could not open diagnostics: {exception.Message}";
+            _playbackInfo.Text = "Diagnostics could not be opened.";
+            ClientDiagnostics.Log($"Open diagnostics failed: {exception}");
         }
     }
 
     private async void HandleFormClosingAsync(object? sender, FormClosingEventArgs eventArgs)
     {
+        _robloxTimer.Stop();
+        _positionTimer.Stop();
         if (_allowClose || _playbackTask is null || _playbackTask.IsCompleted)
         {
             return;
