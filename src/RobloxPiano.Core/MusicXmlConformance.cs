@@ -29,8 +29,8 @@ public sealed record MusicXmlConformanceReport(IReadOnlyList<MusicXmlDiagnostic>
 /// <summary>
 /// Deterministic production gate for MusicXML constructs. Anything that could alter audible
 /// pitch/order/expression but is not modeled by the canonical importer is rejected instead of
-/// being silently ignored. Musical-time direction offsets and tempo+backup are supported by the
-/// tempo-map compiler and therefore are no longer rejected here.
+/// being silently ignored. Musical-time direction offsets, tempo+backup and measured tuplets are
+/// supported because canonical timing is compiled from MusicXML duration values.
 /// </summary>
 public static class MusicXmlConformance
 {
@@ -100,8 +100,7 @@ public static class MusicXmlConformance
     {
         AddUnsupported(measure, "repeat", "MXML101", "Repeats are not expanded by the canonical importer yet.", partId, measureNumber, diagnostics);
         AddUnsupported(measure, "ending", "MXML102", "First/second endings are not expanded by the canonical importer yet.", partId, measureNumber, diagnostics);
-        AddUnsupported(measure, "time-modification", "MXML103", "Tuplet timing is not modeled by the canonical importer yet.", partId, measureNumber, diagnostics);
-        AddUnsupported(measure, "tuplet", "MXML104", "Tuplet notation is not modeled by the canonical importer yet.", partId, measureNumber, diagnostics);
+        AnalyzeTuplets(measure, partId, measureNumber, diagnostics);
         AddUnsupported(measure, "ornaments", "MXML105", "Ornaments are not expanded into deterministic notes yet.", partId, measureNumber, diagnostics);
         AddUnsupported(measure, "pedal", "MXML106", "MusicXML pedal notation is not compiled to canonical sustain yet.", partId, measureNumber, diagnostics);
         AddUnsupported(measure, "grace", "MXML107", "Grace notes are not assigned deterministic measured timing yet.", partId, measureNumber, diagnostics);
@@ -119,6 +118,49 @@ public static class MusicXmlConformance
                 partId));
         }
     }
+
+    private static void AnalyzeTuplets(
+        XElement measure,
+        string? partId,
+        string? measureNumber,
+        List<MusicXmlDiagnostic> diagnostics)
+    {
+        foreach (var timeModification in measure.Descendants().Where(element => element.Name.LocalName == "time-modification"))
+        {
+            var actualNotes = Child(timeModification, "actual-notes")?.Value;
+            var normalNotes = Child(timeModification, "normal-notes")?.Value;
+            if (!IsPositiveInteger(actualNotes) || !IsPositiveInteger(normalNotes))
+            {
+                diagnostics.Add(new MusicXmlDiagnostic(
+                    "MXML103",
+                    MusicXmlDiagnosticSeverity.Error,
+                    "Tuplet time-modification must contain positive integer actual-notes and normal-notes values.",
+                    measureNumber,
+                    partId));
+            }
+        }
+
+        foreach (var tuplet in measure.Descendants().Where(element => element.Name.LocalName == "tuplet"))
+        {
+            var type = tuplet.Attribute("type")?.Value;
+            if (!string.Equals(type, "start", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(type, "stop", StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add(new MusicXmlDiagnostic(
+                    "MXML104",
+                    MusicXmlDiagnosticSeverity.Error,
+                    "Tuplet notation type must be 'start' or 'stop'.",
+                    measureNumber,
+                    partId));
+            }
+        }
+    }
+
+    private static bool IsPositiveInteger(string? value)
+        => int.TryParse(value, out var parsed) && parsed > 0;
+
+    private static XElement? Child(XElement? parent, string localName)
+        => parent?.Elements().FirstOrDefault(element => element.Name.LocalName == localName);
 
     private static void AddUnsupported(
         XElement measure,
