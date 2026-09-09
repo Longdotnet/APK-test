@@ -87,6 +87,7 @@ public sealed class PlaybackTransportSession : IDisposable
     private readonly IMonotonicClock _clock;
     private readonly IInputSink _input;
     private readonly ObservedTransportFocusGate _focus;
+    private readonly PlaybackTimingProfile _timingProfile;
 
     private CancellationTokenSource? _activeSliceCancellation;
     private TimeSpan? _pendingSeek;
@@ -101,7 +102,8 @@ public sealed class PlaybackTransportSession : IDisposable
         PerformanceTrack track,
         IMonotonicClock clock,
         IInputSink input,
-        IFocusGate focus)
+        IFocusGate focus,
+        PlaybackTimingProfile? timingProfile = null)
     {
         _track = track ?? throw new ArgumentNullException(nameof(track));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -111,9 +113,11 @@ public sealed class PlaybackTransportSession : IDisposable
             : new ReferenceCountedInputSink(input);
         ArgumentNullException.ThrowIfNull(focus);
         _focus = new ObservedTransportFocusGate(clock, focus);
+        _timingProfile = timingProfile ?? PlaybackTimingProfile.Neutral;
     }
 
     public TimeSpan Duration => _track.TimelineDuration;
+    public PlaybackTimingProfile TimingProfile => _timingProfile;
 
     public TimeSpan Position
     {
@@ -208,7 +212,8 @@ public sealed class PlaybackTransportSession : IDisposable
                     new PlaybackOptions(
                         Speed: 1d,
                         InitialDelay: TimeSpan.Zero,
-                        FocusPollInterval: DefaultFocusPollInterval),
+                        FocusPollInterval: DefaultFocusPollInterval,
+                        DispatchLead: _timingProfile.DispatchLead),
                     sliceCancellation.Token).ConfigureAwait(false);
 
                 lock (_gate)
