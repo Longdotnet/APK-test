@@ -23,9 +23,29 @@ internal sealed record RobloxWindowTarget(int ProcessId, IntPtr WindowHandle, st
     }
 
     public bool IsForeground
-        => IsAlive
-           && WindowHandle != IntPtr.Zero
-           && ClientNativeMethods.GetForegroundWindow() == WindowHandle;
+    {
+        get
+        {
+            if (!IsAlive)
+            {
+                return false;
+            }
+
+            var foreground = ClientNativeMethods.GetForegroundWindow();
+            if (foreground == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (foreground == WindowHandle)
+            {
+                return true;
+            }
+
+            ClientNativeMethods.GetWindowThreadProcessId(foreground, out var foregroundProcessId);
+            return foregroundProcessId == ProcessId;
+        }
+    }
 
     public bool TryActivate()
     {
@@ -44,9 +64,12 @@ internal sealed record RobloxWindowTarget(int ProcessId, IntPtr WindowHandle, st
 
         Thread.Sleep(250);
         var focused = IsForeground;
+        var foreground = ClientNativeMethods.GetForegroundWindow();
+        ClientNativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
         ClientDiagnostics.Log(
             $"Roblox activation {(focused ? "confirmed" : "requested but not foreground")}: " +
-            $"target={this}, hwnd=0x{WindowHandle.ToInt64():X}.");
+            $"target={this}, targetHwnd=0x{WindowHandle.ToInt64():X}, " +
+            $"foregroundHwnd=0x{foreground.ToInt64():X}, foregroundPid={foregroundPid}.");
         return focused;
     }
 
@@ -163,9 +186,40 @@ internal static class RobloxProcessLocator
         bool IsExactPlayer);
 }
 
-internal sealed class RobloxTargetFocusGate(RobloxWindowTarget target) : IFocusGate
+internal sealed class RobloxTargetFocusGate : IFocusGate
 {
-    public bool IsTargetFocused => target.IsForeground;
+    private readonly object _gate = new();
+    private readonly RobloxWindowTarget _target;
+    private bool? _lastFocused;
+
+    public RobloxTargetFocusGate(RobloxWindowTarget target)
+    {
+        _target = target;
+    }
+
+    public bool IsTargetFocused
+    {
+        get
+        {
+            var focused = _target.IsForeground;
+            lock (_gate)
+            {
+                if (_lastFocused == focused)
+                {
+                    return focused;
+                }
+
+                _lastFocused = focused;
+                var foreground = ClientNativeMethods.GetForegroundWindow();
+                ClientNativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
+                ClientDiagnostics.Log(
+                    $"Roblox focus gate {(focused ? "ACTIVE" : "INACTIVE")}: targetPid={_target.ProcessId}, " +
+                    $"targetHwnd=0x{_target.WindowHandle.ToInt64():X}, foregroundHwnd=0x{foreground.ToInt64():X}, " +
+                    $"foregroundPid={foregroundPid}.");
+                return focused;
+            }
+        }
+    }
 }
 
 internal sealed record ClientState(string? LastSheetPath, double PreferredSpeed, int InputLatencyMs = 0)
