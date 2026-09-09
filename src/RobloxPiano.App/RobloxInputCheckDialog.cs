@@ -28,7 +28,7 @@ internal sealed class RobloxInputCheckDialog : Form
         {
             AutoSize = true,
             MaximumSize = new Size(540, 0),
-            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates four boundaries: Roblox activation, stable focus, Windows key delivery, and Roblox actually reacting. No AI or network is used."
+            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates four boundaries: Roblox activation, stable focus, Windows key delivery, and Roblox actually reacting. A confirmed result authorizes Play for this Roblox process only. No AI or network is used."
         };
         var observation = new Label
         {
@@ -109,6 +109,7 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.NativeDeliveryObserved)
             {
+                RobloxInputHealthSession.Record(target, nativeAssessment);
                 ApplyAssessment(nativeAssessment);
                 return;
             }
@@ -123,15 +124,18 @@ internal sealed class RobloxInputCheckDialog : Form
             var assessment = result.Assess(observed);
             ClientDiagnostics.Log(
                 $"GUI input check final verdict={assessment.Verdict}; robloxReacted={observed}; success={assessment.IsSuccess}.");
+            RobloxInputHealthSession.Record(target, assessment);
             ApplyAssessment(assessment);
         }
         catch (OperationCanceledException)
         {
-            ApplyAssessment(new RobloxInputCheckAssessment(
+            var assessment = new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.FocusUnstable,
                 "The input check was cancelled safely.",
                 "No keys remain held. Run the check again when Roblox is ready.",
-                false));
+                false);
+            RobloxInputHealthSession.Record(target, assessment);
+            ApplyAssessment(assessment);
         }
         catch (Exception exception) when (
             exception is InvalidOperationException
@@ -139,7 +143,13 @@ internal sealed class RobloxInputCheckDialog : Form
             or System.ComponentModel.Win32Exception)
         {
             ClientDiagnostics.Log($"GUI input check failed: {exception}");
-            _status.Text = $"Input check failed: {exception.Message}\nOpen Diagnostics for the native evidence.";
+            var assessment = new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.WindowsKeyStateNotObserved,
+                $"Input check failed: {exception.Message}",
+                "Open Diagnostics, resolve the Windows/input blocker, then rerun Test Roblox Input.",
+                false);
+            RobloxInputHealthSession.Record(target, assessment);
+            ApplyAssessment(assessment);
         }
         finally
         {
