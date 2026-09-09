@@ -164,14 +164,15 @@ jobs:
           5. Pause, Stop and Seek stay simple; advanced timing/speed/diagnostics remain hidden unless requested.
 
           Production foundations in this release:
-          - score-partwise MusicXML supports measured pitch/duration, chords, rests, voices via backup/forward, tempo and simple ties.
+          - score-partwise MusicXML supports measured pitch/duration, chords, rests, voices via backup/forward, tempo, simple ties and measured tuplets.
+          - Tuplet playback timing is authoritative from duration/divisions; malformed ratio or notation metadata fails closed instead of being guessed.
           - MusicXML and MIDI share the same Roblox classic 61-key mapping/range guard and canonical PerformanceTrack playback boundary.
           - Unsupported or malformed notation fails closed instead of being silently guessed; AI/network access is not involved in import truth.
           - Existing zero-config online MIDI discovery and offline Library playback remain unchanged.
           - Legacy TXT/VPS, MIDI canonical playback and the Legacy x2 quality baseline remain unchanged.
 
           Notes:
-          - Grace notes, score-timewise, tuplets/ornaments/repeat interpretation and MusicXML pedal notation are intentionally not guessed yet.
+          - Grace notes, score-timewise, ornaments/repeat interpretation and MusicXML pedal notation are intentionally not guessed yet.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           - Roblox runtime acceptance of SendInput/global hotkeys still requires real-client acceptance testing.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
