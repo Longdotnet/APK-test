@@ -149,21 +149,22 @@ jobs:
           1. Download RobloxPiano.exe and double-click it.
           2. The Sheet Library is list-first: imported songs persist as rows instead of bypassing the Library.
           3. Use Import MIDI for one or many `.mid` / `.midi` files, Import MIDI Folder for a whole MIDI collection, drag/drop files or folders, or use online discovery.
-          4. Valid imported MIDI is lowered through the deterministic MIDI importer before it can enter the managed Library; duplicate content is skipped by SHA-256 identity.
+          4. The Library shows an Import compatibility column before playback. In-range MIDI reports `source preserved`; deterministic range auto-fit and ignored General MIDI drum notes are shown explicitly.
           5. Select any playable Library row and press Play after opening Roblox and entering the piano game.
           6. Roblox Piano restores the selected Roblox window, waits for exact foreground confirmation, then playback runs only while that exact window remains focused.
 
           Production capability and reliability in this release:
-          - The final Roblox keyboard dispatch boundary now matches the earlier field-proven PowerShell implementation: VkKeyScanW plus keybd_event virtual-key down/up events.
-          - key-down uses scan code 0 and flags 0; key-up uses KEYEVENTF_KEYUP; character-scoped Shift/Ctrl/Alt handling remains unchanged.
-          - Exact Roblox MainWindowHandle focus gating, held-note ownership, release-all, pause/seek/cancellation and canonical timing remain unchanged.
-          - Local MIDI import remains a first-class Library workflow with multi-select, folder ingestion, deterministic validation and SHA-256 duplicate suppression from v0.16.0.
-          - Diagnostics record the keybd_event backend so real-client logs can prove which input path is active.
+          - MIDI compatibility behavior introduced in v0.16.2 is now observable instead of silent: source/effective range, automatic semitone adjustment and ignored percussion counts are deterministically inspected.
+          - The production MidiFileImporter remains the only validation/playback truth. Diagnostic inspection is best-effort and cannot make an importer-accepted song fail.
+          - Sheet Library rows surface source-preserved versus adjusted MIDI, batch import counts adjusted songs, search includes compatibility text and diagnostics log the exact decision.
+          - The field-proven VkKeyScanW + keybd_event backend, exact Roblox MainWindowHandle focus gating, held-note ownership, release-all, pause/seek/cancellation and canonical timing remain unchanged.
+          - Local MIDI multi-select/folder import, deterministic validation and SHA-256 duplicate suppression remain unchanged.
 
           Notes:
+          - Range auto-fit is one deterministic global transpose only; MIDI whose melodic span cannot fit the classic 61-key Roblox profile still fails closed.
+          - General MIDI channel 10 percussion is ignored by the production compatibility policy and is now visibly counted in the Library.
           - keybd_event is intentionally used as a field-compatibility baseline; CI cannot prove that Roblox itself consumes a synthetic input event.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
-          - Da capo/dal segno/coda, arbitrary repeat counts, nested repeats and complex ending schemes remain intentionally unsupported rather than guessed.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           - Real Roblox client consumption remains a required field validation in addition to deterministic CI smoke tests.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md

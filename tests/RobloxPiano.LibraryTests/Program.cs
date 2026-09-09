@@ -12,12 +12,13 @@ internal static class Program
         Run("import validates and allocates collision-safe names", TestImport, failures);
         Run("batch MIDI folder import becomes persistent list rows", TestBatchMidiFolderImport, failures);
         Run("batch import skips duplicate content deterministically", TestBatchDuplicateSuppression, failures);
+        Run("MIDI compatibility adjustments remain visible in Library", TestMidiCompatibilityVisibility, failures);
         Run("source-neutral loader routes text and MIDI deterministically", TestSourceNeutralLoader, failures);
         Run("unsupported extension is rejected", TestUnsupportedExtension, failures);
         Run("empty first-run library receives playable starter songs", TestStarterBootstrap, failures);
         Run("starter bootstrap never pollutes an existing library", TestStarterPreservesExistingLibrary, failures);
 
-        Console.WriteLine($"Song library regressions: {9 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Song library regressions: {10 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -121,6 +122,29 @@ internal static class Program
         Equal(1, library.Scan().Count, "Library should still contain only one row for identical MIDI content");
     }
 
+    private static void TestMidiCompatibilityVisibility()
+    {
+        using var temp = new TempTree();
+        var source = Path.Combine(temp.Root, "compat.mid");
+        File.WriteAllBytes(source, CompatibilityMidi());
+
+        var library = new SheetLibraryService(temp.Managed);
+        var result = library.ImportBatch([source]);
+        Equal(1, result.Imported.Count, "compatibility MIDI should still import");
+        Equal(1, result.AdjustedCount, "batch should count compatibility-adjusted imports");
+
+        var row = library.Scan().Single();
+        Equal("MIDI", row.Format, "compatibility metadata must not replace source type");
+        True(row.HasCompatibilityAdjustment, "Library row should mark compatibility adjustment");
+        True(row.Compatibility.Contains("range auto-fit +1 st", StringComparison.Ordinal), "auto-fit should be visible to the client");
+        True(row.Compatibility.Contains("ignored 1 drum note", StringComparison.Ordinal), "percussion filtering should be visible to the client");
+
+        var loaded = SongSourceLoader.Load(row.Path);
+        True(loaded.Metadata?.HasCompatibilityAdjustment == true, "source-neutral load metadata should preserve compatibility visibility");
+        Equal(1, loaded.Metadata!.EffectiveTransposeSemitones!.Value, "effective transpose metadata");
+        Equal(1, loaded.Metadata.IgnoredPercussionNoteOns, "ignored percussion metadata");
+    }
+
     private static void TestSourceNeutralLoader()
     {
         using var temp = new TempTree();
@@ -136,6 +160,8 @@ internal static class Program
         Equal("Legacy", text.Track.Title, "legacy title");
         Equal("MIDI", midi.Track.Title, "MIDI title");
         True(text.Track.Events.Count > 0 && midi.Track.Events.Count > 0, "both source types lower to canonical playback events");
+        True(text.Metadata is null, "legacy load should not invent MIDI compatibility metadata");
+        Equal("source preserved", midi.Metadata?.Summary ?? string.Empty, "in-range MIDI should explicitly report source preservation");
     }
 
     private static void TestUnsupportedExtension()
@@ -193,7 +219,24 @@ internal static class Program
         track.AddRange([0x00, 0x90, 60, 100]);
         track.AddRange([0x83, 0x60, 0x80, 60, 0]);
         track.AddRange([0x00, 0xFF, 0x2F, 0x00]);
+        return BuildMidi(track);
+    }
 
+    private static byte[] CompatibilityMidi()
+    {
+        var track = new List<byte>();
+        track.AddRange([0x00, 0xFF, 0x03, 0x06]);
+        track.AddRange("Compat"u8.ToArray());
+        track.AddRange([0x00, 0x99, 38, 100]);
+        track.AddRange([0x00, 0x90, 35, 100]);
+        track.AddRange([0x78, 0x89, 38, 0]);
+        track.AddRange([0x00, 0x80, 35, 0]);
+        track.AddRange([0x00, 0xFF, 0x2F, 0x00]);
+        return BuildMidi(track);
+    }
+
+    private static byte[] BuildMidi(IReadOnlyCollection<byte> track)
+    {
         var bytes = new List<byte>();
         bytes.AddRange("MThd"u8.ToArray());
         bytes.AddRange([0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0]);
