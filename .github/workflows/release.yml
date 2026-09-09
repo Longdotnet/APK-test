@@ -148,22 +148,22 @@ jobs:
           Client flow:
           1. Download RobloxPiano.exe and double-click it; the Sheet Library remains the normal starting point.
           2. Open Roblox, enter the target piano game, and select a playable Library song.
-          3. On the first Play attempt for a Roblox process, the primary action becomes **Verify Input & Play** and opens the production Roblox input check.
-          4. A successful observation confirms only that exact Roblox PID; subsequent songs can Play directly while the same process remains active.
-          5. A blocked verdict changes the primary action to **Retest Input to Play** and playback cannot launch until the current Roblox process passes the check.
-          6. Restarting or changing Roblox PID discards stale confirmation automatically and requires verification for the new process.
+          3. The first Play attempt for a Roblox process instance requires **Verify Input & Play**.
+          4. A successful observation confirms that exact Roblox process lifetime: PID plus process start identity.
+          5. Subsequent songs can Play directly only while that same process instance remains active.
+          6. Roblox restart, PID change, or same-PID reuse discards stale confirmation and requires verification for the new process instance.
 
           Production capability and reliability in this release:
-          - Process-scoped input readiness is now an enforced playback preflight instead of advisory diagnostics.
-          - The Library exposes deterministic Open Roblox / Verify Input / Retest Input / Play states without AI or network dependency.
-          - The Roblox target and readiness are resolved again after the input-check dialog and once more immediately before player launch so PID changes cannot reuse stale trust.
-          - Unknown and blocked input states cannot silently launch playback; confirmed readiness allows direct playback for the same Roblox process.
-          - The published executable input compatibility smoke covers no-target, unknown, confirmed, blocked and stale-confirmation/different-PID preflight decisions.
-          - Existing GUI input diagnostics, PID focus boundary, release-all safety, multi-channel MIDI sustain, MIDI range auto-fit, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
+          - Input readiness and runtime launch authorization are now process-lifetime scoped instead of PID-only.
+          - Windows process start identity is recorded with the field-verification result and checked again before runtime keyboard dispatch.
+          - Same-PID process reuse fails closed before input dispatch instead of inheriting stale trust.
+          - Missing authorization, an ended Roblox process and a replaced same-PID process are classified deterministically.
+          - The published executable input compatibility smoke covers exact lifetime match, same-PID replacement, ended process and missing/different authorization.
+          - Existing list-first Library UX, GUI input diagnostics, focus safety, release-all, multi-channel MIDI sustain, MIDI range auto-fit, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
 
           Notes:
-          - Input confirmation remains intentionally in-memory and process-scoped. Closing Roblox or restarting the client requires verification again rather than persisting stale trust.
-          - CI validates the deterministic Windows/input contract but cannot observe a live Roblox client consuming synthetic input; the GUI check still requires explicit human observation.
+          - Input confirmation remains intentionally in-memory. Closing Roblox or restarting the client requires verification again rather than persisting stale trust.
+          - CI validates the deterministic Windows/process/input contract but cannot observe a live Roblox client consuming synthetic input; the GUI check still requires explicit human observation.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
