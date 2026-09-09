@@ -87,7 +87,7 @@ internal static class Program
         True(firstRelease >= 0, "seek cancellation must release held state");
         True(reentry > firstRelease, "new slice must re-enter only after release-all");
         True(operations.Contains("up:b"), "clipped crossing note must receive its matching key-up");
-        Equal(trackDuration: TimeSpan.FromMilliseconds(400), session.Duration, "transport duration");
+        Equal(TimeSpan.FromMilliseconds(400), session.Duration, "transport duration");
         Equal(TimeSpan.FromMilliseconds(400), session.Position, "completed position");
     }
 
@@ -106,13 +106,16 @@ internal static class Program
         var beforeLoss = session.Position;
 
         focus.Focused = false;
-        clock.Advance(TimeSpan.FromMilliseconds(200));
+        clock.Advance(TimeSpan.FromMilliseconds(10));
+        await WaitUntilAsync(() => input.Operations.Contains("release-all")).ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromMilliseconds(190));
         await Task.Yield();
         var duringLoss = session.Position;
 
         True(duringLoss - beforeLoss < TimeSpan.FromMilliseconds(30), "position must not consume focus-loss downtime");
 
         cancellation.Cancel();
+        clock.Advance(TimeSpan.FromMilliseconds(20));
         try
         {
             await playTask.ConfigureAwait(false);
@@ -160,11 +163,6 @@ internal static class Program
         {
             throw new InvalidOperationException($"{message}: expected '{expected}', actual '{actual}'.");
         }
-    }
-
-    private static void Equal(TimeSpan trackDuration, TimeSpan actual, string message)
-    {
-        Equal<TimeSpan>(trackDuration, actual, message);
     }
 
     private static void True(bool condition, string message)
