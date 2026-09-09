@@ -21,8 +21,6 @@ public sealed record SheetLibraryEntry(
 
 public sealed class SheetLibraryService
 {
-    private static readonly string[] SupportedExtensions = [".txt", ".vps"];
-
     public SheetLibraryService(string managedDirectory, string? portableDirectory = null)
     {
         ManagedDirectory = Path.GetFullPath(managedDirectory ?? throw new ArgumentNullException(nameof(managedDirectory)));
@@ -59,14 +57,14 @@ public sealed class SheetLibraryService
         var source = Path.GetFullPath(sourcePath);
         if (!File.Exists(source))
         {
-            throw new FileNotFoundException("Sheet file does not exist.", source);
+            throw new FileNotFoundException("Song file does not exist.", source);
         }
 
         EnsureSupported(source);
         var validated = ReadEntry(source, isManaged: false);
         if (validated.Status != SheetValidationStatus.Valid)
         {
-            throw new FormatException(validated.Error ?? "Sheet is invalid.");
+            throw new FormatException(validated.Error ?? "Song is invalid.");
         }
 
         Directory.CreateDirectory(ManagedDirectory);
@@ -79,11 +77,7 @@ public sealed class SheetLibraryService
         return ReadEntry(target, isManaged: true);
     }
 
-    public static bool IsSupportedPath(string path)
-    {
-        var extension = Path.GetExtension(path);
-        return SupportedExtensions.Any(candidate => extension.Equals(candidate, StringComparison.OrdinalIgnoreCase));
-    }
+    public static bool IsSupportedPath(string path) => SongSourceLoader.IsSupportedPath(path);
 
     private void AddDirectory(
         ICollection<SheetLibraryEntry> entries,
@@ -112,7 +106,8 @@ public sealed class SheetLibraryService
     {
         try
         {
-            var track = LegacySheetParser.Parse(File.ReadAllText(path));
+            var loaded = SongSourceLoader.Load(path);
+            var track = loaded.Track;
             return new SheetLibraryEntry(
                 path,
                 Path.GetFileName(path),
@@ -128,7 +123,8 @@ public sealed class SheetLibraryService
             exception is IOException
             or UnauthorizedAccessException
             or FormatException
-            or ArgumentException)
+            or ArgumentException
+            or OverflowException)
         {
             return new SheetLibraryEntry(
                 path,
@@ -163,14 +159,14 @@ public sealed class SheetLibraryService
             }
         }
 
-        throw new IOException("Could not allocate a unique managed sheet filename.");
+        throw new IOException("Could not allocate a unique managed song filename.");
     }
 
     private static void EnsureSupported(string path)
     {
         if (!IsSupportedPath(path))
         {
-            throw new FormatException("Choose a .txt or .vps Virtual Piano sheet.");
+            throw new FormatException("Choose a supported song: .txt, .vps, .mid, or .midi.");
         }
     }
 }
