@@ -162,5 +162,7 @@ internal static class Program
         }
     }
 
-    private sealed class InjectedInputException : Exception;
+    private sealed class InjectedInputException : Exception
+    {
+    }
 }
