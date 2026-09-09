@@ -1,0 +1,201 @@
+name: production-release
+
+on:
+  workflow_run:
+    workflows: ["production-gate"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout validated main commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve immutable release version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props -Raw
+          $version = [string]$props.Project.PropertyGroup.VersionPrefix
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "VersionPrefix must be strict SemVer core (x.y.z), actual: '$version'"
+          }
+
+          $tag = "v$version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "Release version: $tag"
+
+      - name: Guard immutable release identity
+        id: guard
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          $global:LASTEXITCODE = 0
+
+          if ($exists) {
+            "publish=false" >> $env:GITHUB_OUTPUT
+            "Release $env:TAG already exists. Immutable release preserved; bump VersionPrefix for the next client release."
+          }
+          else {
+            "publish=true" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build release candidate
+        if: steps.guard.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          dotnet build src/RobloxPiano.Core/RobloxPiano.Core.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Core build failed" }
+
+          dotnet run --project tests/RobloxPiano.RegressionTests/RobloxPiano.RegressionTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Legacy regression harness failed" }
+
+          dotnet run --project tests/RobloxPiano.TransportTests/RobloxPiano.TransportTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Transport regression harness failed" }
+
+          dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Sheet library regression harness failed" }
+
+          dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Playback quality harness failed" }
+
+      - name: Publish client single EXE
+        if: steps.guard.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          dotnet publish src/RobloxPiano.App/RobloxPiano.App.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=embedded `
+            -o artifacts/release
+
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+
+          $files = @(Get-ChildItem artifacts/release -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'RobloxPiano.exe') {
+            $names = ($files | ForEach-Object Name) -join ', '
+            throw "Release contract failed. Expected only RobloxPiano.exe before checksum, found: $names"
+          }
+
+      - name: Validate published client identity and smoke test
+        if: steps.guard.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $exe = Resolve-Path artifacts/release/RobloxPiano.exe
+          $productVersion = (Get-Item $exe).VersionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($productVersion) -or -not $productVersion.StartsWith($env:VERSION)) {
+            throw "Published ProductVersion '$productVersion' does not match release version '$env:VERSION'."
+          }
+
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw "Published executable smoke test failed" }
+
+      - name: Generate checksum and release evidence
+        if: steps.guard.outputs.publish == 'true'
+        id: evidence
+        shell: pwsh
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $hash = (Get-FileHash artifacts/release/RobloxPiano.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  RobloxPiano.exe" | Set-Content -NoNewline artifacts/release/RobloxPiano.exe.sha256
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+          @"
+          Roblox Piano $env:TAG
+
+          Validated commit: $env:SHA
+          Distribution: self-contained Windows x64 single executable
+          Client dependencies: none required manually
+          SHA256: $hash
+
+          Client flow:
+          1. Download RobloxPiano.exe.
+          2. Double-click it.
+          3. Pick a sheet from the Sheet Library (or import .txt/.vps).
+          4. Start Roblox and press Play.
+          5. F6 slower, F7 faster, F8 pause/resume, F9 stop.
+
+          Notes:
+          - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
+          - Roblox runtime acceptance of SendInput/global hotkeys still requires real-client acceptance testing.
+          "@ | Set-Content artifacts/release/RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        if: steps.guard.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          gh release create $env:TAG `
+            artifacts/release/RobloxPiano.exe `
+            artifacts/release/RobloxPiano.exe.sha256 `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:SHA `
+            --title "Roblox Piano v$env:VERSION" `
+            --notes-file artifacts/release/RELEASE_NOTES.md
+
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release creation failed" }
+
+      - name: Verify release is client-downloadable
+        if: steps.guard.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          EXPECTED_HASH: ${{ steps.evidence.outputs.sha256 }}
+        run: |
+          New-Item -ItemType Directory -Force artifacts/download-check | Out-Null
+          gh release download $env:TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --pattern RobloxPiano.exe `
+            --dir artifacts/download-check
+
+          if ($LASTEXITCODE -ne 0) { throw "Release asset download verification failed" }
+          $downloaded = Get-FileHash artifacts/download-check/RobloxPiano.exe -Algorithm SHA256
+          if ($downloaded.Hash.ToLowerInvariant() -ne $env:EXPECTED_HASH) {
+            throw "Downloaded release asset hash does not match published candidate."
+          }
+
+      - name: Upload release provenance evidence
+        if: steps.guard.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-provenance-${{ steps.version.outputs.tag }}
+          path: |
+            artifacts/release/RobloxPiano.exe.sha256
+            artifacts/release/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 30
