@@ -136,6 +136,7 @@ internal static class ClientEntryPoint
                 expectedSuccess: true);
 
             AssertInputHealthSessionSemantics();
+            AssertPlaybackPreflightSemantics();
 
             if (RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPiano"))
             {
@@ -158,7 +159,7 @@ internal static class ClientEntryPoint
                 $"vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; " +
                 $"minimumPhysicalHoldMs={WindowsKeyboardInputSink.MinimumPhysicalKeyHold.TotalMilliseconds:0}; " +
                 $"stableFocusMs={RobloxFieldInputPolicy.StableFocusDuration.TotalMilliseconds:0}; " +
-                $"guiVerdicts=7; sessionHealth=pid-scoped; targetSelfExcluded=true.");
+                $"guiVerdicts=7; sessionHealth=pid-scoped; playbackPreflight=pid-scoped; targetSelfExcluded=true.");
             return 0;
         }
         catch (Exception exception)
@@ -211,6 +212,56 @@ internal static class ClientEntryPoint
         }
 
         RobloxInputHealthSession.ResetForTests();
+    }
+
+    private static void AssertPlaybackPreflightSemantics()
+    {
+        var target = new RobloxWindowTarget(2001, IntPtr.Zero, "Roblox preflight");
+
+        var noRoblox = RobloxPlaybackPreflight.Evaluate(null, RobloxInputHealthSnapshot.Unknown);
+        if (noRoblox.Action != RobloxPlaybackPreflightAction.OpenRoblox || noRoblox.CanLaunchPlayback)
+        {
+            throw new InvalidOperationException("Playback preflight must not launch without Roblox.");
+        }
+
+        var unknown = RobloxPlaybackPreflight.Evaluate(target, RobloxInputHealthSnapshot.Unknown);
+        if (unknown.Action != RobloxPlaybackPreflightAction.VerifyInput || unknown.CanLaunchPlayback)
+        {
+            throw new InvalidOperationException("Unknown input readiness must require verification before playback.");
+        }
+
+        var confirmedHealth = new RobloxInputHealthSnapshot(
+            RobloxInputHealthState.Confirmed,
+            target.ProcessId,
+            RobloxInputCheckVerdict.Confirmed,
+            DateTimeOffset.UnixEpoch,
+            "confirmed",
+            "proceed");
+        var confirmed = RobloxPlaybackPreflight.Evaluate(target, confirmedHealth);
+        if (confirmed.Action != RobloxPlaybackPreflightAction.Proceed || !confirmed.CanLaunchPlayback)
+        {
+            throw new InvalidOperationException("Confirmed input readiness must allow playback for the same Roblox PID.");
+        }
+
+        var blockedHealth = new RobloxInputHealthSnapshot(
+            RobloxInputHealthState.Blocked,
+            target.ProcessId,
+            RobloxInputCheckVerdict.RobloxDidNotReact,
+            DateTimeOffset.UnixEpoch,
+            "blocked",
+            "retest");
+        var blocked = RobloxPlaybackPreflight.Evaluate(target, blockedHealth);
+        if (blocked.Action != RobloxPlaybackPreflightAction.RetestInput || blocked.CanLaunchPlayback)
+        {
+            throw new InvalidOperationException("Blocked input readiness must require retest before playback.");
+        }
+
+        var staleConfirmed = confirmedHealth with { ProcessId = target.ProcessId + 1 };
+        var stale = RobloxPlaybackPreflight.Evaluate(target, staleConfirmed);
+        if (stale.Action != RobloxPlaybackPreflightAction.VerifyInput || stale.CanLaunchPlayback)
+        {
+            throw new InvalidOperationException("Confirmed readiness from another Roblox PID must never authorize playback.");
+        }
     }
 
     private static void AssertInputVerdict(
