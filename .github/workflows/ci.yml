@@ -35,6 +35,9 @@ jobs:
       - name: Run transport regression harness
         run: dotnet run --project tests/RobloxPiano.TransportTests/RobloxPiano.TransportTests.csproj -c Release
 
+      - name: Run sheet library regression harness
+        run: dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
+
       - name: Run playback quality harness
         run: dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
 

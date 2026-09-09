@@ -58,7 +58,7 @@ internal static class Program
         };
 
         ClientDiagnostics.Log("Interactive client started.");
-        Application.Run(new ClientMainForm());
+        Application.Run(new SheetLibraryForm());
         ClientDiagnostics.Log("Interactive client stopped.");
         GC.KeepAlive(singleInstance);
         return 0;
@@ -177,9 +177,7 @@ internal static class Program
         }
     }
 
-    private static async Task<int> PersistAndCompareQualityAsync(
-        PlaybackQualityReport report,
-        ClientSettings settings)
+    private static async Task<int> PersistAndCompareQualityAsync(PlaybackQualityReport report, ClientSettings settings)
     {
         if (settings.QualityReportPath is not null)
         {
@@ -195,27 +193,20 @@ internal static class Program
         var baselineJson = await File.ReadAllTextAsync(settings.BaselineReportPath).ConfigureAwait(false);
         var baseline = JsonSerializer.Deserialize<PlaybackQualityReport>(baselineJson, QualityJsonOptions)
             ?? throw new FormatException("Baseline quality report is empty or invalid.");
-
         var comparison = PlaybackQualityComparator.Compare(baseline, report);
         Console.WriteLine($"A/B verdict   : {comparison.Verdict}");
         Console.WriteLine($"A/B reason    : {comparison.Reason}");
         Console.WriteLine($"P95 delta     : {comparison.P95DeltaMilliseconds:+0.###;-0.###;0} ms");
         Console.WriteLine($"Max delta     : {comparison.MaxErrorDeltaMilliseconds:+0.###;-0.###;0} ms");
-
         if (!settings.QualityGate)
         {
             return 0;
         }
 
-        return comparison.Verdict is PlaybackComparisonVerdict.Better or PlaybackComparisonVerdict.Equivalent
-            ? 0
-            : 3;
+        return comparison.Verdict is PlaybackComparisonVerdict.Better or PlaybackComparisonVerdict.Equivalent ? 0 : 3;
     }
 
-    private static async Task TryPersistFailureReportAsync(
-        PerformanceTrack? track,
-        PlaybackQualityCollector? collector,
-        ClientSettings settings)
+    private static async Task TryPersistFailureReportAsync(PerformanceTrack? track, PlaybackQualityCollector? collector, ClientSettings settings)
     {
         if (track is null || collector is null || settings.QualityReportPath is null)
         {
@@ -257,14 +248,10 @@ internal static class Program
         Console.WriteLine($"Failures     : {report.FailureCount}, missing edges: {report.MissingEdgeCount}");
     }
 
-    private static bool TryParseArguments(
-        string[] args,
-        out ClientSettings settings,
-        out string? error)
+    private static bool TryParseArguments(string[] args, out ClientSettings settings, out string? error)
     {
         settings = default;
         error = null;
-
         if (args.Length == 0 || args[0] is "-h" or "--help")
         {
             return false;
@@ -289,49 +276,38 @@ internal static class Program
                         error = "--speed requires a finite number greater than zero.";
                         return false;
                     }
-
                     break;
-
                 case "--start-delay":
                     if (!TryReadNonNegativeDouble(args, ref index, out var delay))
                     {
                         error = "--start-delay requires a finite number greater than or equal to zero.";
                         return false;
                     }
-
                     startDelayOverride = delay;
                     break;
-
                 case "--dry-run":
                     dryRun = true;
                     break;
-
                 case "--validate-only":
                     validateOnly = true;
                     break;
-
                 case "--quality-report":
                     if (!TryReadPath(args, ref index, out qualityReportPath))
                     {
                         error = "--quality-report requires an output JSON path.";
                         return false;
                     }
-
                     break;
-
                 case "--baseline-report":
                     if (!TryReadPath(args, ref index, out baselineReportPath))
                     {
                         error = "--baseline-report requires a JSON report path.";
                         return false;
                     }
-
                     break;
-
                 case "--quality-gate":
                     qualityGate = true;
                     break;
-
                 default:
                     error = $"Unknown option '{args[index]}'.";
                     return false;
@@ -343,34 +319,23 @@ internal static class Program
             error = $"Sheet file does not exist: {sheetPath}";
             return false;
         }
-
         if (baselineReportPath is not null && !File.Exists(baselineReportPath))
         {
             error = $"Baseline quality report does not exist: {baselineReportPath}";
             return false;
         }
-
         if (qualityGate && baselineReportPath is null)
         {
             error = "--quality-gate requires --baseline-report.";
             return false;
         }
-
         if (validateOnly && (qualityReportPath is not null || baselineReportPath is not null || qualityGate))
         {
             error = "Quality telemetry requires playback or --dry-run and cannot be combined with --validate-only.";
             return false;
         }
 
-        settings = new ClientSettings(
-            sheetPath,
-            speed,
-            startDelayOverride,
-            dryRun,
-            validateOnly,
-            qualityReportPath,
-            baselineReportPath,
-            qualityGate);
+        settings = new ClientSettings(sheetPath, speed, startDelayOverride, dryRun, validateOnly, qualityReportPath, baselineReportPath, qualityGate);
         return true;
     }
 
@@ -380,7 +345,6 @@ internal static class Program
         {
             return false;
         }
-
         return double.IsFinite(value) && value > 0d;
     }
 
@@ -390,7 +354,6 @@ internal static class Program
         {
             return false;
         }
-
         return double.IsFinite(value) && value >= 0d;
     }
 
@@ -401,7 +364,6 @@ internal static class Program
         {
             return false;
         }
-
         index++;
         return double.TryParse(args[index], NumberStyles.Float, CultureInfo.InvariantCulture, out value);
     }
@@ -413,7 +375,6 @@ internal static class Program
         {
             return false;
         }
-
         index++;
         value = Path.GetFullPath(args[index]);
         return true;
@@ -425,17 +386,11 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Client mode:");
         Console.WriteLine("  Double-click RobloxPiano.exe (or run RobloxPiano.exe --ui)");
-        Console.WriteLine("  F6 slower | F7 faster | F8 pause/resume | F9 stop");
+        Console.WriteLine("  Opens Sheet Library first; F6 slower | F7 faster | F8 pause/resume | F9 stop in player");
         Console.WriteLine();
         Console.WriteLine("Developer/CI mode:");
         Console.WriteLine("  RobloxPiano.exe <sheet.txt> [--speed N] [--start-delay S] [--dry-run] [--validate-only]");
         Console.WriteLine("      [--quality-report report.json] [--baseline-report baseline.json] [--quality-gate]");
-        Console.WriteLine();
-        Console.WriteLine("Examples:");
-        Console.WriteLine("  RobloxPiano.exe song.txt");
-        Console.WriteLine("  RobloxPiano.exe song.txt --speed 2 --quality-report legacy-x2.json");
-        Console.WriteLine("  RobloxPiano.exe song.txt --speed 2 --quality-report candidate.json --baseline-report legacy-x2.json");
-        Console.WriteLine("  RobloxPiano.exe song.txt --validate-only");
         Console.WriteLine();
         Console.WriteLine("Legacy x2 is intentionally preserved as a regression baseline via --speed 2.");
         Console.WriteLine("Quality A/B compares scheduler execution only; it does not claim perceptual or musical similarity.");
