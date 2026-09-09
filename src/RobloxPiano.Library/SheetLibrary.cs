@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using RobloxPiano.Core;
 
 namespace RobloxPiano.Library;
@@ -17,10 +18,32 @@ public sealed record SheetLibraryEntry(
     TimeSpan? Duration,
     SheetValidationStatus Status,
     string? Error,
-    bool IsManaged);
+    bool IsManaged)
+{
+    public string Format => Path.GetExtension(Path).ToLowerInvariant() switch
+    {
+        ".mid" or ".midi" => "MIDI",
+        ".musicxml" or ".xml" => "MusicXML",
+        ".vps" => "VPS",
+        ".txt" => "TXT",
+        _ => Path.GetExtension(Path).TrimStart('.').ToUpperInvariant()
+    };
+}
+
+public sealed record SheetImportFailure(string SourcePath, string Error);
+
+public sealed record SheetImportBatchResult(
+    IReadOnlyList<SheetLibraryEntry> Imported,
+    IReadOnlyList<SheetLibraryEntry> Existing,
+    IReadOnlyList<SheetImportFailure> Failed)
+{
+    public int TotalCandidates => Imported.Count + Existing.Count + Failed.Count;
+}
 
 public sealed class SheetLibraryService
 {
+    private const int MaxBatchCandidates = 2000;
+
     private static readonly (string FileName, string Content)[] StarterSongs =
     [
         ("starter-melody.txt", """
@@ -139,7 +162,162 @@ public sealed class SheetLibraryService
         return ReadEntry(target, isManaged: true);
     }
 
+    public SheetImportBatchResult ImportBatch(IEnumerable<string> sourcePaths)
+    {
+        ArgumentNullException.ThrowIfNull(sourcePaths);
+        Directory.CreateDirectory(ManagedDirectory);
+
+        var failures = new List<SheetImportFailure>();
+        var candidates = ExpandImportCandidates(sourcePaths, failures);
+        if (candidates.Count > MaxBatchCandidates)
+        {
+            throw new InvalidOperationException(
+                $"Import contains {candidates.Count} supported song files. The safety limit is {MaxBatchCandidates} files per batch.");
+        }
+
+        var imported = new List<SheetLibraryEntry>();
+        var existing = new List<SheetLibraryEntry>();
+        var managedByHash = BuildManagedHashIndex();
+
+        foreach (var source in candidates)
+        {
+            try
+            {
+                var validated = ReadEntry(source, isManaged: false);
+                if (validated.Status != SheetValidationStatus.Valid)
+                {
+                    failures.Add(new SheetImportFailure(source, validated.Error ?? "Song is invalid."));
+                    continue;
+                }
+
+                var hash = ComputeContentHash(source);
+                if (managedByHash.TryGetValue(hash, out var duplicate))
+                {
+                    existing.Add(duplicate);
+                    continue;
+                }
+
+                var entry = Import(source);
+                imported.Add(entry);
+                managedByHash[hash] = entry;
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                or UnauthorizedAccessException
+                or FormatException
+                or ArgumentException
+                or OverflowException
+                or InvalidOperationException)
+            {
+                failures.Add(new SheetImportFailure(source, exception.Message));
+            }
+        }
+
+        return new SheetImportBatchResult(imported, existing, failures);
+    }
+
     public static bool IsSupportedPath(string path) => SongSourceLoader.IsSupportedPath(path);
+
+    public static bool IsMidiPath(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".mid", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".midi", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IReadOnlyList<string> ExpandImportCandidates(
+        IEnumerable<string> sourcePaths,
+        ICollection<SheetImportFailure> failures)
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawPath in sourcePaths)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                continue;
+            }
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(rawPath);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                failures.Add(new SheetImportFailure(rawPath, exception.Message));
+                continue;
+            }
+
+            if (File.Exists(fullPath))
+            {
+                if (IsSupportedPath(fullPath))
+                {
+                    candidates.Add(fullPath);
+                }
+                else
+                {
+                    failures.Add(new SheetImportFailure(fullPath, "Unsupported song type."));
+                }
+                continue;
+            }
+
+            if (Directory.Exists(fullPath))
+            {
+                try
+                {
+                    foreach (var file in Directory.EnumerateFiles(fullPath, "*", SearchOption.AllDirectories)
+                                 .Where(IsSupportedPath))
+                    {
+                        candidates.Add(Path.GetFullPath(file));
+                        if (candidates.Count > MaxBatchCandidates)
+                        {
+                            break;
+                        }
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    failures.Add(new SheetImportFailure(fullPath, exception.Message));
+                }
+                continue;
+            }
+
+            failures.Add(new SheetImportFailure(fullPath, "File or folder does not exist."));
+        }
+
+        return candidates.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private Dictionary<string, SheetLibraryEntry> BuildManagedHashIndex()
+    {
+        var result = new Dictionary<string, SheetLibraryEntry>(StringComparer.Ordinal);
+        foreach (var path in Directory.EnumerateFiles(ManagedDirectory, "*", SearchOption.TopDirectoryOnly)
+                     .Where(IsSupportedPath))
+        {
+            try
+            {
+                var entry = ReadEntry(path, isManaged: true);
+                if (entry.Status != SheetValidationStatus.Valid)
+                {
+                    continue;
+                }
+
+                result.TryAdd(ComputeContentHash(path), entry);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // A transiently unreadable existing file must not block importing other songs.
+            }
+        }
+
+        return result;
+    }
+
+    private static string ComputeContentHash(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
 
     private void AddDirectory(
         ICollection<SheetLibraryEntry> entries,
