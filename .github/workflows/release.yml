@@ -90,6 +90,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Song library regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.DiscoveryTests/RobloxPiano.DiscoveryTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Online discovery regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Playback quality harness failed" }
 
@@ -152,21 +155,23 @@ jobs:
 
           Client flow:
           1. Download RobloxPiano.exe and double-click it.
-          2. Open Roblox and enter the piano game; the Library shows when Roblox is ready.
-          3. Select a song and press Play. TXT/VPS/MID/MIDI are detected automatically.
-          4. Pause, Stop and Seek are available during playback; advanced timing/speed/diagnostics stay hidden unless requested.
-          5. Losing Roblox focus pauses input safely and releases held state automatically.
+          2. Search the same box for songs already in your Library or up to 10 online MIDI matches.
+          3. Pick an online result and Add to Library; it is downloaded, validated and stored locally before playback.
+          4. Open Roblox and enter the piano game, select the local song and press Play.
+          5. Pause, Stop and Seek stay simple; advanced timing/speed/diagnostics remain hidden unless requested.
 
           Production foundations in this release:
-          - Library-first one-click playback with automatic Roblox readiness instead of a technical setup screen.
-          - One source-neutral loader routes TXT/VPS and Standard MIDI into the same canonical PerformanceTrack.
-          - MIDI tempo, note duration and sustain remain deterministic Core facts; UI does not select or own importer/engine behavior.
-          - Legacy TXT/VPS and the Legacy x2 quality baseline remain unchanged.
-          - Technical speed, latency override, hotkeys and diagnostics are retained under Advanced for troubleshooting.
+          - Zero-config online discovery uses public Wikimedia Commons and Internet Archive APIs; no API key or client dependency is required.
+          - Provider failure, timeout or network loss never blocks local Library filtering or playback.
+          - Results are deterministically ranked, capped at ten and deduplicated before display.
+          - Downloads are explicit, HTTPS-only, provider-host constrained, size-bounded and validated through the existing MIDI importer before entering the Library.
+          - Recent search metadata can fall back from local cache, while playback remains fully local/offline after import.
+          - Legacy TXT/VPS, MIDI canonical playback and the Legacy x2 quality baseline remain unchanged.
 
           Notes:
+          - Online catalog coverage depends on the public sources and may not include every commercial or Vietnamese trending song.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
-          - Roblox runtime acceptance of SendInput/global hotkeys and the best latency value still require real-client acceptance testing.
+          - Roblox runtime acceptance of SendInput/global hotkeys still requires real-client acceptance testing.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
 
       - name: Create GitHub Release
