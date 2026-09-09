@@ -336,7 +336,8 @@ public static class SongDiscoveryRanker
         var scored = candidates
             .Where(IsSafeCandidate)
             .Select(candidate => candidate with { Score = checked(candidate.Score + CalculateScore(normalizedQuery, queryTokens, candidate)) })
-            .OrderByDescending(candidate => candidate.Score)
+            .OrderByDescending(candidate => Normalize(candidate.Title) == normalizedQuery)
+            .ThenByDescending(candidate => candidate.Score)
             .ThenBy(candidate => candidate.Title, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
 
