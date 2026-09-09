@@ -26,6 +26,18 @@ jobs:
       - name: Show SDK
         run: dotnet --info
 
+      - name: Validate release version contract
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props -Raw
+          $version = [string]$props.Project.PropertyGroup.VersionPrefix
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "VersionPrefix must be strict SemVer core (x.y.z), actual: '$version'"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Validated release version v$version"
+
       - name: Build deterministic core
         run: dotnet build src/RobloxPiano.Core/RobloxPiano.Core.csproj -c Release
 
@@ -63,6 +75,16 @@ jobs:
           if ($files.Count -ne 1 -or $files[0].Name -ne 'RobloxPiano.exe') {
             $names = ($files | ForEach-Object Name) -join ', '
             throw "Distribution contract failed. Expected only RobloxPiano.exe, found: $names"
+          }
+
+      - name: Published EXE version contract
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $productVersion = (Get-Item artifacts/publish/RobloxPiano.exe).VersionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($productVersion) -or -not $productVersion.StartsWith($env:EXPECTED_VERSION)) {
+            throw "Published ProductVersion '$productVersion' does not match VersionPrefix '$env:EXPECTED_VERSION'."
           }
 
       - name: Clean-machine style smoke test
