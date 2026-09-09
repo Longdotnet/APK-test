@@ -93,6 +93,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.DiscoveryTests/RobloxPiano.DiscoveryTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Online discovery regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.UpdaterTests/RobloxPiano.UpdaterTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Safe self-update regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Playback quality harness failed" }
 
@@ -155,22 +158,25 @@ jobs:
 
           Client flow:
           1. Download RobloxPiano.exe and double-click it.
-          2. Search the same box for songs already in your Library or up to 10 online MIDI matches.
-          3. Pick an online result and Add to Library; it is downloaded, validated and stored locally before playback.
-          4. Open Roblox and enter the piano game, select the local song and press Play.
-          5. Pause, Stop and Seek stay simple; advanced timing/speed/diagnostics remain hidden unless requested.
+          2. Search the same box for local Library songs or up to 10 online MIDI matches.
+          3. Add an online result to Library before playback; downloads are validated and stay local afterward.
+          4. When a newer stable Roblox Piano release exists, the Library shows an optional Update & Restart banner.
+          5. Update downloads are SHA-256 verified, atomically replace the installed EXE only after the current process exits, then restart the client.
+          6. If update check/download/replacement fails, the existing executable and offline playback remain usable.
 
           Production foundations in this release:
-          - Zero-config online discovery uses public Wikimedia Commons and Internet Archive APIs; no API key or client dependency is required.
-          - Provider failure, timeout or network loss never blocks local Library filtering or playback.
-          - Results are deterministically ranked, capped at ten and deduplicated before display.
-          - Downloads are explicit, HTTPS-only, provider-host constrained, size-bounded and validated through the existing MIDI importer before entering the Library.
-          - Recent search metadata can fall back from local cache, while playback remains fully local/offline after import.
-          - Legacy TXT/VPS, MIDI canonical playback and the Legacy x2 quality baseline remain unchanged.
+          - Safe self-update is optional and isolated from deterministic Library/playback behavior.
+          - Latest-release metadata must be a stable immutable GitHub release targeting a 40-character commit SHA.
+          - Both RobloxPiano.exe and RobloxPiano.exe.sha256 are mandatory update assets.
+          - Release checksum and GitHub asset digest must agree when the digest is available.
+          - Redirects are restricted to trusted GitHub release asset hosts and update downloads are size-bounded.
+          - A verified staged copy is re-hashed before atomic replacement; the previous executable remains intact on pre-replacement verification failure.
+          - The shipped EXE itself performs the temporary updater role, so no PowerShell, batch file, runtime, installer or helper binary is required.
+          - Online discovery, MIDI canonical playback, Legacy TXT/VPS and the Legacy x2 quality baseline remain unchanged.
 
           Notes:
-          - Online catalog coverage depends on the public sources and may not include every commercial or Vietnamese trending song.
-          - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
+          - Automatic replacement is enabled only when running the real installed RobloxPiano.exe, never dotnet.exe/dev-host execution.
+          - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.
           - Roblox runtime acceptance of SendInput/global hotkeys still requires real-client acceptance testing.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
 
