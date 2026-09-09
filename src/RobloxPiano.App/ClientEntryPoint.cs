@@ -70,9 +70,25 @@ internal static class ClientEntryPoint
                 throw new InvalidOperationException("Roblox field-baseline key-up event is invalid.");
             }
 
+            if (RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPiano"))
+            {
+                throw new InvalidOperationException("RobloxPiano client must never be classified as the Roblox player target.");
+            }
+
+            if (!RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPlayerBeta")
+                || !RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPlayer"))
+            {
+                throw new InvalidOperationException("Known Roblox player process names must remain targetable.");
+            }
+
+            if (RobloxProcessLocator.IsRobloxPlayerProcess("RobloxStudioBeta"))
+            {
+                throw new InvalidOperationException("Roblox Studio must not be classified as a player target.");
+            }
+
             Console.WriteLine(
                 $"Windows input compatibility smoke passed. backend={WindowsKeyboardInputSink.BackendName}; " +
-                "vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP.");
+                "vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; targetSelfExcluded=true.");
             return 0;
         }
         catch (Exception exception)
