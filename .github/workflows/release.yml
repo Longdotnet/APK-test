@@ -36,7 +36,6 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+$') {
             throw "VersionPrefix must be strict SemVer core (x.y.z), actual: '$version'"
           }
-
           $tag = "v$version"
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
@@ -53,12 +52,10 @@ jobs:
           gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
           $exists = ($LASTEXITCODE -eq 0)
           $global:LASTEXITCODE = 0
-
           if ($exists) {
             "publish=false" >> $env:GITHUB_OUTPUT
             "Release $env:TAG already exists. Immutable release preserved; bump VersionPrefix for the next client release."
-          }
-          else {
+          } else {
             "publish=true" >> $env:GITHUB_OUTPUT
           }
 
@@ -68,37 +65,26 @@ jobs:
         run: |
           dotnet build src/RobloxPiano.Core/RobloxPiano.Core.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Core build failed" }
-
           dotnet run --project tests/RobloxPiano.RegressionTests/RobloxPiano.RegressionTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Legacy regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.TransportTests/RobloxPiano.TransportTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Transport regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.InputStateTests/RobloxPiano.InputStateTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Held-input ownership regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.ExpressiveTests/RobloxPiano.ExpressiveTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Expressive sustain regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.MidiTests/RobloxPiano.MidiTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Deterministic MIDI importer regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.MusicXmlTests/RobloxPiano.MusicXmlTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Deterministic MusicXML importer regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.MusicXmlRepeatTests/RobloxPiano.MusicXmlRepeatTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "MusicXML repeat normalization regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Song library regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.DiscoveryTests/RobloxPiano.DiscoveryTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Online discovery regression harness failed" }
-
           dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Playback quality harness failed" }
 
@@ -115,9 +101,7 @@ jobs:
             -p:EnableCompressionInSingleFile=true `
             -p:DebugType=embedded `
             -o artifacts/release
-
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
-
           $files = @(Get-ChildItem artifacts/release -File)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'RobloxPiano.exe') {
             $names = ($files | ForEach-Object Name) -join ', '
@@ -135,15 +119,12 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($productVersion) -or -not $productVersion.StartsWith($env:VERSION)) {
             throw "Published ProductVersion '$productVersion' does not match release version '$env:VERSION'."
           }
-
           & $exe --help
           if ($LASTEXITCODE -ne 0) { throw "Published executable smoke test failed" }
-
           & $exe --ui-smoke
           if ($LASTEXITCODE -ne 0) { throw "Published executable STA UI startup smoke test failed" }
-
           & $exe --input-abi-smoke
-          if ($LASTEXITCODE -ne 0) { throw "Published executable Windows INPUT ABI smoke test failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Published executable Windows INPUT compatibility smoke test failed" }
 
       - name: Generate checksum and release evidence
         if: steps.guard.outputs.publish == 'true'
@@ -156,7 +137,6 @@ jobs:
           $hash = (Get-FileHash artifacts/release/RobloxPiano.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  RobloxPiano.exe" | Set-Content -NoNewline artifacts/release/RobloxPiano.exe.sha256
           "sha256=$hash" >> $env:GITHUB_OUTPUT
-
           @"
           Roblox Piano $env:TAG
 
@@ -171,19 +151,23 @@ jobs:
           3. Search your Library or online MIDI catalog, or import TXT/VPS/MIDI/MusicXML from your computer.
           4. MusicXML files with standard two-pass repeats and first/second endings are normalized automatically before canonical playback.
           5. Open Roblox and enter the piano game, select a local song and press Play.
-          6. Playback stops safely on focus loss or input failure and releases held keys.
+          6. Roblox Piano restores the selected Roblox window, waits for exact foreground confirmation, then playback runs only while that exact window remains focused.
 
-          Production capability in this release:
-          - MusicXML two-pass forward/backward repeats are expanded deterministically before canonical timing compilation.
-          - Standard first/second endings and sequential repeats are supported; backward repeats without an explicit forward marker repeat from score start.
-          - Nested repeats, repeat counts other than two, malformed ending ranges and unsupported ending numbers fail closed instead of silently playing the wrong structure.
-          - The desktop/library production loader uses the same repeat-normalization boundary as regression tests; playback remains source-neutral.
-          - Existing tempo-map, measured tuplets, ties, multi-voice timing, Legacy/Legacy x2, MIDI, focus/input safety and Windows ABI contracts remain unchanged.
+          Production capability and reliability in this release:
+          - MusicXML two-pass forward/backward repeats, standard first/second endings and sequential repeats remain supported from v0.15.0.
+          - Unsupported repeat structures still fail closed rather than silently playing the wrong score.
+          - Real-client feedback showed that Windows accepting SendInput is not enough: v0.14.3 could succeed while Roblox consumed no notes.
+          - Keyboard dispatch now uses virtual-key SendInput semantics matching the previously working PowerShell prototype instead of scan-code packets.
+          - Mixed chords keep source order and apply Shift/Ctrl/Alt only around the corresponding character key-down.
+          - Interactive focus safety is bound to the exact Roblox MainWindowHandle; activation uses SetForegroundWindow plus a bounded 250 ms settle/confirmation window.
+          - The corrected native INPUT ABI remains in place; the published smoke probe verifies both ABI size and virtual-key packet semantics.
+          - Existing cancellation, release-all behavior, Legacy/Legacy x2 baselines, MIDI/MusicXML timing and canonical playback contracts remain unchanged.
 
           Notes:
           - Da capo/dal segno/coda, arbitrary repeat counts, nested repeats and complex ending schemes remain intentionally unsupported rather than guessed.
           - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client reports this safely.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
+          - Real Roblox client consumption remains a required field validation in addition to deterministic CI smoke tests.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
 
       - name: Create GitHub Release
@@ -202,7 +186,6 @@ jobs:
             --target $env:SHA `
             --title "Roblox Piano v$env:VERSION" `
             --notes-file artifacts/release/RELEASE_NOTES.md
-
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release creation failed" }
 
       - name: Verify release is client-downloadable
@@ -218,7 +201,6 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --pattern RobloxPiano.exe `
             --dir artifacts/download-check
-
           if ($LASTEXITCODE -ne 0) { throw "Release asset download verification failed" }
           $downloaded = Get-FileHash artifacts/download-check/RobloxPiano.exe -Algorithm SHA256
           if ($downloaded.Hash.ToLowerInvariant() -ne $env:EXPECTED_HASH) {
