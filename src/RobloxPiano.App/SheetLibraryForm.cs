@@ -29,10 +29,12 @@ internal sealed class SheetLibraryForm : Form
         Padding = new Padding(14, 5, 14, 5)
     };
     private readonly Button _importButton = new() { Text = "Import Song...", AutoSize = true };
+    private readonly Button _openFolderButton = new() { Text = "Open Library Folder", AutoSize = true };
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
     private readonly System.Windows.Forms.Timer _robloxTimer = new() { Interval = 1000 };
     private IReadOnlyList<SheetLibraryEntry> _entries = Array.Empty<SheetLibraryEntry>();
     private bool _robloxReady;
+    private bool _dragDropEnabled;
 
     public SheetLibraryForm()
     {
@@ -40,7 +42,6 @@ internal sealed class SheetLibraryForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 540);
         Size = new Size(920, 700);
-        AllowDrop = true;
 
         var localRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -50,20 +51,21 @@ internal sealed class SheetLibraryForm : Form
         _library = new SheetLibraryService(localRoot, portable);
         _onlineDiscovery = new OnlineSongDiscoveryController(_search, _library, path => RefreshLibrary(path));
 
+        TrySeedStarterLibrary();
         BuildLayout();
+        TryEnableDragDrop();
         RefreshLibrary();
         RefreshRobloxStatus();
 
         _search.TextChanged += (_, _) => ApplyFilter();
         _refreshButton.Click += (_, _) => RefreshLibrary();
         _importButton.Click += (_, _) => ImportWithPicker();
+        _openFolderButton.Click += (_, _) => OpenLibraryFolder();
         _playButton.Click += (_, _) => PlaySelected();
         _grid.CellDoubleClick += (_, _) => PlaySelected();
         _grid.SelectionChanged += (_, _) => UpdatePrimaryAction();
         _robloxTimer.Tick += (_, _) => RefreshRobloxStatus();
         _robloxTimer.Start();
-        DragEnter += HandleDragEnter;
-        DragDrop += HandleDragDrop;
         FormClosed += (_, _) =>
         {
             _robloxTimer.Stop();
@@ -100,7 +102,7 @@ internal sealed class SheetLibraryForm : Form
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_playButton, _importButton, _refreshButton]);
+        buttons.Controls.AddRange([_playButton, _importButton, _openFolderButton, _refreshButton]);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 8 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -122,6 +124,42 @@ internal sealed class SheetLibraryForm : Form
         Controls.Add(root);
     }
 
+    private void TrySeedStarterLibrary()
+    {
+        try
+        {
+            var created = StarterLibrarySeeder.EnsureSeeded(_library);
+            if (created > 0)
+            {
+                ClientDiagnostics.Log($"Seeded {created} offline starter song(s) into '{_library.ManagedDirectory}'.");
+            }
+        }
+        catch (Exception exception)
+        {
+            // Starter content is a convenience, never a startup dependency. An unwritable profile
+            // or damaged local folder must not prevent Import Song / online discovery from working.
+            ClientDiagnostics.Log($"Starter library seed skipped: {exception}");
+        }
+    }
+
+    private void TryEnableDragDrop()
+    {
+        try
+        {
+            AllowDrop = true;
+            DragEnter += HandleDragEnter;
+            DragDrop += HandleDragDrop;
+            _dragDropEnabled = true;
+        }
+        catch (Exception exception)
+        {
+            // Windows OLE drag/drop can be unavailable because of apartment/desktop/elevation
+            // conditions. It is an optional import helper, so fail soft and retain file picker.
+            _dragDropEnabled = false;
+            ClientDiagnostics.Log($"Drag/drop unavailable; Import Song remains enabled: {exception}");
+        }
+    }
+
     private void RefreshLibrary(string? selectPath = null)
     {
         try
@@ -130,8 +168,11 @@ internal sealed class SheetLibraryForm : Form
             ApplyFilter(selectPath);
             var valid = _entries.Count(entry => entry.Status == SheetValidationStatus.Valid);
             var invalid = _entries.Count - valid;
+            var importHint = _dragDropEnabled
+                ? "Search above, drop a file here, or use Import Song to add more."
+                : "Search above or use Import Song to add more. Drag/drop is unavailable on this Windows session.";
             _status.Text = invalid == 0
-                ? $"{valid} playable song(s). Search above, drop a file here, or use Import Song to add more."
+                ? $"{valid} playable song(s). {importHint}"
                 : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
@@ -199,6 +240,29 @@ internal sealed class SheetLibraryForm : Form
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             ImportFiles(dialog.FileNames);
+        }
+    }
+
+    private void OpenLibraryFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(_library.ManagedDirectory);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _library.ManagedDirectory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception exception)
+        {
+            ClientDiagnostics.Log($"Could not open library folder '{_library.ManagedDirectory}': {exception}");
+            MessageBox.Show(
+                this,
+                $"Library folder:\n{_library.ManagedDirectory}\n\n{exception.Message}",
+                "Could not open Library folder",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
     }
 
