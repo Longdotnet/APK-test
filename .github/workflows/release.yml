@@ -147,23 +147,22 @@ jobs:
 
           Client flow:
           1. Download RobloxPiano.exe and double-click it.
-          2. The Sheet Library remains list-first; existing user songs are preserved and starter content is only a first-run convenience.
-          3. Search your Library or online MIDI catalog, or import TXT/VPS/MIDI/MusicXML from your computer.
-          4. MusicXML files with standard two-pass repeats and first/second endings are normalized automatically before canonical playback.
-          5. Open Roblox and enter the piano game, select a local song and press Play.
+          2. The Sheet Library is list-first: imported songs persist as rows instead of bypassing the Library.
+          3. Use Import MIDI for one or many `.mid` / `.midi` files, Import MIDI Folder for a whole MIDI collection, drag/drop files or folders, or use online discovery.
+          4. Valid imported MIDI is lowered through the deterministic MIDI importer before it can enter the managed Library; duplicate content is skipped by SHA-256 identity.
+          5. Select any playable Library row and press Play after opening Roblox and entering the piano game.
           6. Roblox Piano restores the selected Roblox window, waits for exact foreground confirmation, then playback runs only while that exact window remains focused.
 
           Production capability and reliability in this release:
-          - MusicXML two-pass forward/backward repeats, standard first/second endings and sequential repeats remain supported from v0.15.0.
-          - Unsupported repeat structures still fail closed rather than silently playing the wrong score.
-          - Real-client feedback showed that Windows accepting SendInput is not enough: v0.14.3 could succeed while Roblox consumed no notes.
-          - Keyboard dispatch now uses virtual-key SendInput semantics matching the previously working PowerShell prototype instead of scan-code packets.
-          - Mixed chords keep source order and apply Shift/Ctrl/Alt only around the corresponding character key-down.
-          - Interactive focus safety is bound to the exact Roblox MainWindowHandle; activation uses SetForegroundWindow plus a bounded 250 ms settle/confirmation window.
-          - The corrected native INPUT ABI remains in place; the published smoke probe verifies both ABI size and virtual-key packet semantics.
-          - Existing cancellation, release-all behavior, Legacy/Legacy x2 baselines, MIDI/MusicXML timing and canonical playback contracts remain unchanged.
+          - Local MIDI import is now a first-class Library workflow with multi-select, folder ingestion and persistent list rows.
+          - A Type column surfaces MIDI / MusicXML / VPS / TXT source format and Library search can match source type.
+          - Batch import normalizes and sorts candidates deterministically, validates before copy and enforces a 2000-file safety bound.
+          - Identical valid song bytes are deduplicated against the managed Library with SHA-256 instead of producing numbered duplicate rows.
+          - Invalid MIDI remains outside the playable Library and failed batch candidates are summarized without aborting successful imports.
+          - Existing MusicXML repeat normalization, Legacy/Legacy x2, canonical timing, pause/seek/cancellation, exact-window focus, virtual-key input and release-all behavior remain unchanged.
 
           Notes:
+          - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
           - Da capo/dal segno/coda, arbitrary repeat counts, nested repeats and complex ending schemes remain intentionally unsupported rather than guessed.
           - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client reports this safely.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.

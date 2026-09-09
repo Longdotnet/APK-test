@@ -28,7 +28,9 @@ internal sealed class SheetLibraryForm : Form
         Font = new Font(SystemFonts.DefaultFont.FontFamily, 11f, FontStyle.Bold),
         Padding = new Padding(14, 5, 14, 5)
     };
-    private readonly Button _importButton = new() { Text = "Import Song...", AutoSize = true };
+    private readonly Button _importMidiButton = new() { Text = "Import MIDI...", AutoSize = true };
+    private readonly Button _importMidiFolderButton = new() { Text = "Import MIDI Folder...", AutoSize = true };
+    private readonly Button _importButton = new() { Text = "Import Other...", AutoSize = true };
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
     private readonly System.Windows.Forms.Timer _robloxTimer = new() { Interval = 1000 };
     private IReadOnlyList<SheetLibraryEntry> _entries = Array.Empty<SheetLibraryEntry>();
@@ -39,8 +41,8 @@ internal sealed class SheetLibraryForm : Form
     {
         Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(760, 540);
-        Size = new Size(920, 700);
+        MinimumSize = new Size(800, 560);
+        Size = new Size(980, 720);
 
         var localRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -57,7 +59,9 @@ internal sealed class SheetLibraryForm : Form
 
         _search.TextChanged += (_, _) => ApplyFilter();
         _refreshButton.Click += (_, _) => RefreshLibrary();
-        _importButton.Click += (_, _) => ImportWithPicker();
+        _importMidiButton.Click += (_, _) => ImportMidiWithPicker();
+        _importMidiFolderButton.Click += (_, _) => ImportMidiFolder();
+        _importButton.Click += (_, _) => ImportOtherWithPicker();
         _playButton.Click += (_, _) => PlaySelected();
         _grid.CellDoubleClick += (_, _) => PlaySelected();
         _grid.SelectionChanged += (_, _) => UpdatePrimaryAction();
@@ -73,8 +77,9 @@ internal sealed class SheetLibraryForm : Form
 
     private void BuildLayout()
     {
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SheetLibraryEntry.Title), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 48 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "BPM", DataPropertyName = nameof(SheetLibraryEntry.Bpm), Width = 75 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SheetLibraryEntry.Title), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 46 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SheetLibraryEntry.Format), Width = 85 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "BPM", DataPropertyName = nameof(SheetLibraryEntry.Bpm), Width = 70 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Duration", Name = "Duration", Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", DataPropertyName = nameof(SheetLibraryEntry.Status), Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(SheetLibraryEntry.FileName), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 28 });
@@ -95,12 +100,12 @@ internal sealed class SheetLibraryForm : Form
         var title = new Label { Text = "Roblox Piano", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Search your Library or the internet, choose a song, and press Play. File type, validation, timing safety and diagnostics stay automatic.",
+            Text = "Import one MIDI, many MIDI files, or an entire MIDI folder. Every valid song becomes a persistent Library row; duplicates are skipped automatically.",
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_playButton, _importButton, _refreshButton]);
+        buttons.Controls.AddRange([_playButton, _importMidiButton, _importMidiFolderButton, _importButton, _refreshButton]);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 8 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -148,18 +153,18 @@ internal sealed class SheetLibraryForm : Form
         catch (InvalidOperationException exception)
         {
             _dragDropAvailable = false;
-            ClientDiagnostics.Log($"Shell drag/drop unavailable; Import Song remains available: {exception}");
+            ClientDiagnostics.Log($"Shell drag/drop unavailable; import buttons remain available: {exception}");
         }
         catch (System.ComponentModel.Win32Exception exception)
         {
             _dragDropAvailable = false;
-            ClientDiagnostics.Log($"Shell drag/drop unavailable; Import Song remains available: {exception}");
+            ClientDiagnostics.Log($"Shell drag/drop unavailable; import buttons remain available: {exception}");
         }
 
         RefreshLibrary();
     }
 
-    private void RefreshLibrary(string? selectPath = null)
+    private void RefreshLibrary(string? selectPath = null, string? statusOverride = null)
     {
         try
         {
@@ -168,11 +173,11 @@ internal sealed class SheetLibraryForm : Form
             var valid = _entries.Count(entry => entry.Status == SheetValidationStatus.Valid);
             var invalid = _entries.Count - valid;
             var importHint = _dragDropAvailable
-                ? "Search above, drop a file here, or use Import Song to add more."
-                : "Search above or use Import Song to add more.";
-            _status.Text = invalid == 0
+                ? "Drop MIDI files/folders here or use Import MIDI."
+                : "Use Import MIDI or Import MIDI Folder to add songs.";
+            _status.Text = statusOverride ?? (invalid == 0
                 ? $"{valid} playable song(s). {importHint}"
-                : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.";
+                : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -200,7 +205,8 @@ internal sealed class SheetLibraryForm : Form
             ? _entries
             : _entries.Where(entry =>
                 entry.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)
-                || entry.FileName.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
+                || entry.FileName.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+                || entry.Format.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
 
         _grid.DataSource = filtered.ToList();
         if (selectPath is not null)
@@ -227,38 +233,126 @@ internal sealed class SheetLibraryForm : Form
         _playButton.Text = !playable ? "Select a Song" : _robloxReady ? "Play" : "Open Roblox to Play";
     }
 
-    private void ImportWithPicker()
+    private void ImportMidiWithPicker()
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "Import song",
+            Title = "Import MIDI into Library",
+            Filter = "MIDI songs (*.mid;*.midi)|*.mid;*.midi|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = true
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            ImportPaths(dialog.FileNames);
+        }
+    }
+
+    private void ImportMidiFolder()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Choose a folder. MIDI files inside it and its subfolders will be imported into the Library list.",
+            ShowNewFolderButton = false
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            var midiFiles = Directory
+                .EnumerateFiles(dialog.SelectedPath, "*", SearchOption.AllDirectories)
+                .Where(SheetLibraryService.IsMidiPath)
+                .Take(2001)
+                .ToArray();
+
+            if (midiFiles.Length == 0)
+            {
+                RefreshLibrary(statusOverride: "No .mid or .midi files were found in that folder.");
+                return;
+            }
+
+            ImportPaths(midiFiles);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"MIDI folder discovery failed: {exception}");
+            MessageBox.Show(this, exception.Message, "MIDI folder could not be read", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void ImportOtherWithPicker()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import song into Library",
             Filter = "Supported songs (*.txt;*.vps;*.mid;*.midi;*.musicxml;*.xml)|*.txt;*.vps;*.mid;*.midi;*.musicxml;*.xml|All files (*.*)|*.*",
             CheckFileExists = true,
             Multiselect = true
         };
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            ImportFiles(dialog.FileNames);
+            ImportPaths(dialog.FileNames);
         }
     }
 
-    private void ImportFiles(IEnumerable<string> files)
+    private void ImportPaths(IEnumerable<string> paths)
     {
-        string? lastImported = null;
-        foreach (var file in files)
+        try
         {
-            try
+            var result = _library.ImportBatch(paths);
+            foreach (var entry in result.Imported)
             {
-                lastImported = _library.Import(file).Path;
-                ClientDiagnostics.Log($"Song imported: source='{file}', managed='{lastImported}'.");
+                ClientDiagnostics.Log($"Song imported into Library: managed='{entry.Path}', type={entry.Format}.");
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException or ArgumentException or OverflowException)
+            foreach (var duplicate in result.Existing)
             {
-                ClientDiagnostics.Log($"Song import failed for '{file}': {exception}");
-                MessageBox.Show(this, $"{Path.GetFileName(file)}\n\n{exception.Message}", "Song could not be imported", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ClientDiagnostics.Log($"Song import skipped duplicate content: managed='{duplicate.Path}'.");
+            }
+            foreach (var failure in result.Failed)
+            {
+                ClientDiagnostics.Log($"Song import failed: source='{failure.SourcePath}', error='{failure.Error}'.");
+            }
+
+            var selectPath = result.Imported.LastOrDefault()?.Path ?? result.Existing.LastOrDefault()?.Path;
+            var summary = $"Imported {result.Imported.Count} new song(s) into the Library";
+            if (result.Existing.Count > 0)
+            {
+                summary += $", skipped {result.Existing.Count} duplicate(s)";
+            }
+            if (result.Failed.Count > 0)
+            {
+                summary += $", {result.Failed.Count} failed";
+            }
+            summary += ".";
+
+            RefreshLibrary(selectPath, summary);
+
+            if (result.Failed.Count > 0)
+            {
+                var details = string.Join(
+                    Environment.NewLine,
+                    result.Failed.Take(6).Select(failure => $"• {Path.GetFileName(failure.SourcePath)} — {failure.Error}"));
+                if (result.Failed.Count > 6)
+                {
+                    details += $"{Environment.NewLine}…and {result.Failed.Count - 6} more. See diagnostics for details.";
+                }
+
+                MessageBox.Show(
+                    this,
+                    $"Some files were not added to the Library:{Environment.NewLine}{Environment.NewLine}{details}",
+                    "Import completed with warnings",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
             }
         }
-        RefreshLibrary(lastImported);
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"Batch song import failed: {exception}");
+            MessageBox.Show(this, exception.Message, "Import could not complete", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void PlaySelected()
@@ -297,9 +391,9 @@ internal sealed class SheetLibraryForm : Form
 
     private void HandleDragEnter(object? sender, DragEventArgs eventArgs)
     {
-        if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] files
-            && files.Length > 0
-            && files.All(SheetLibraryService.IsSupportedPath))
+        if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] paths
+            && paths.Length > 0
+            && paths.All(path => Directory.Exists(path) || (File.Exists(path) && SheetLibraryService.IsSupportedPath(path))))
         {
             eventArgs.Effect = DragDropEffects.Copy;
             return;
@@ -309,9 +403,9 @@ internal sealed class SheetLibraryForm : Form
 
     private void HandleDragDrop(object? sender, DragEventArgs eventArgs)
     {
-        if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] files)
+        if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
-            ImportFiles(files);
+            ImportPaths(paths);
         }
     }
 

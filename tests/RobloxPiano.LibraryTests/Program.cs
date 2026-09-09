@@ -10,12 +10,14 @@ internal static class Program
         Run("scan surfaces valid and invalid songs", TestScan, failures);
         Run("portable and managed catalogs include deterministic MIDI", TestPortableScan, failures);
         Run("import validates and allocates collision-safe names", TestImport, failures);
+        Run("batch MIDI folder import becomes persistent list rows", TestBatchMidiFolderImport, failures);
+        Run("batch import skips duplicate content deterministically", TestBatchDuplicateSuppression, failures);
         Run("source-neutral loader routes text and MIDI deterministically", TestSourceNeutralLoader, failures);
         Run("unsupported extension is rejected", TestUnsupportedExtension, failures);
         Run("empty first-run library receives playable starter songs", TestStarterBootstrap, failures);
         Run("starter bootstrap never pollutes an existing library", TestStarterPreservesExistingLibrary, failures);
 
-        Console.WriteLine($"Song library regressions: {7 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Song library regressions: {9 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -34,6 +36,7 @@ internal static class Program
         var valid = entries.Single(entry => entry.FileName == "valid.txt");
         Equal(SheetValidationStatus.Valid, valid.Status, "valid status");
         Equal("Valid Song", valid.Title, "metadata title");
+        Equal("TXT", valid.Format, "format label");
         True(valid.Duration > TimeSpan.Zero, "duration should be parsed");
 
         var broken = entries.Single(entry => entry.FileName == "broken.txt");
@@ -52,7 +55,7 @@ internal static class Program
         Equal(3, entries.Count, "managed + portable count");
         True(entries.Any(entry => entry.Title == "Managed" && entry.IsManaged), "managed flag");
         True(entries.Any(entry => entry.Title == "Portable" && !entry.IsManaged), "portable flag");
-        True(entries.Any(entry => entry.Title == "Portable MIDI" && !entry.IsManaged), "MIDI should be a normal portable library song");
+        True(entries.Any(entry => entry.Title == "Portable MIDI" && !entry.IsManaged && entry.Format == "MIDI"), "MIDI should be a normal portable library song");
     }
 
     private static void TestImport()
@@ -74,6 +77,48 @@ internal static class Program
         File.WriteAllBytes(invalid, [0x00, 0x01, 0x02]);
         Throws<FormatException>(() => library.Import(invalid), "invalid import");
         True(!File.Exists(Path.Combine(temp.Managed, "invalid.mid")), "invalid import must not enter library");
+    }
+
+    private static void TestBatchMidiFolderImport()
+    {
+        using var temp = new TempTree();
+        var collection = Path.Combine(temp.Root, "collection");
+        var nested = Path.Combine(collection, "nested");
+        Directory.CreateDirectory(nested);
+        File.WriteAllBytes(Path.Combine(collection, "alpha.mid"), ValidMidi("Alpha"));
+        File.WriteAllBytes(Path.Combine(nested, "beta.midi"), ValidMidi("Beta"));
+        File.WriteAllText(Path.Combine(collection, "ignore.mp3"), "not a supported source");
+
+        var library = new SheetLibraryService(temp.Managed);
+        var result = library.ImportBatch([collection]);
+
+        Equal(2, result.Imported.Count, "two supported MIDI files should import recursively");
+        Equal(0, result.Existing.Count, "first batch has no duplicates");
+        Equal(0, result.Failed.Count, "unsupported files inside a folder are ignored, not treated as failed song candidates");
+
+        var rows = library.Scan();
+        Equal(2, rows.Count, "imported MIDI collection must become two persistent Library rows");
+        True(rows.All(entry => entry.Format == "MIDI" && entry.Status == SheetValidationStatus.Valid), "every imported MIDI row should be playable");
+        True(rows.Any(entry => entry.Title == "Alpha") && rows.Any(entry => entry.Title == "Beta"), "MIDI titles should survive lowering into the list");
+    }
+
+    private static void TestBatchDuplicateSuppression()
+    {
+        using var temp = new TempTree();
+        var firstSource = Path.Combine(temp.Root, "first.mid");
+        var duplicateSource = Path.Combine(temp.Root, "different-name.mid");
+        var bytes = ValidMidi("Same Song");
+        File.WriteAllBytes(firstSource, bytes);
+        File.WriteAllBytes(duplicateSource, bytes);
+
+        var library = new SheetLibraryService(temp.Managed);
+        var first = library.ImportBatch([firstSource]);
+        var second = library.ImportBatch([duplicateSource, firstSource]);
+
+        Equal(1, first.Imported.Count, "first batch should import one song");
+        Equal(0, second.Imported.Count, "same content must never create numbered duplicate rows in batch mode");
+        Equal(1, second.Existing.Count, "duplicate candidates collapse to one deterministic source candidate then resolve to the existing row");
+        Equal(1, library.Scan().Count, "Library should still contain only one row for identical MIDI content");
     }
 
     private static void TestSourceNeutralLoader()
