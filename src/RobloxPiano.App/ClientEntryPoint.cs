@@ -135,6 +135,8 @@ internal static class ClientEntryPoint
                 RobloxInputCheckVerdict.Confirmed,
                 expectedSuccess: true);
 
+            AssertInputHealthSessionSemantics();
+
             if (RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPiano"))
             {
                 throw new InvalidOperationException("RobloxPiano client must never be classified as the Roblox player target.");
@@ -156,7 +158,7 @@ internal static class ClientEntryPoint
                 $"vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; " +
                 $"minimumPhysicalHoldMs={WindowsKeyboardInputSink.MinimumPhysicalKeyHold.TotalMilliseconds:0}; " +
                 $"stableFocusMs={RobloxFieldInputPolicy.StableFocusDuration.TotalMilliseconds:0}; " +
-                $"guiVerdicts=7; targetSelfExcluded=true.");
+                $"guiVerdicts=7; sessionHealth=pid-scoped; targetSelfExcluded=true.");
             return 0;
         }
         catch (Exception exception)
@@ -164,6 +166,51 @@ internal static class ClientEntryPoint
             Console.Error.WriteLine($"Windows input compatibility smoke failed: {exception}");
             return 7;
         }
+    }
+
+    private static void AssertInputHealthSessionSemantics()
+    {
+        RobloxInputHealthSession.ResetForTests();
+        var first = new RobloxWindowTarget(1001, IntPtr.Zero, "Roblox A");
+        var second = new RobloxWindowTarget(1002, IntPtr.Zero, "Roblox B");
+
+        if (RobloxInputHealthSession.GetFor(first).State != RobloxInputHealthState.Unknown)
+        {
+            throw new InvalidOperationException("New Roblox sessions must start with unknown input readiness.");
+        }
+
+        var confirmed = new RobloxInputCheckAssessment(
+            RobloxInputCheckVerdict.Confirmed,
+            "Roblox reacted to the production input probe.",
+            "Playback may proceed.",
+            true);
+        RobloxInputHealthSession.Record(first, confirmed, DateTimeOffset.UnixEpoch);
+
+        var firstHealth = RobloxInputHealthSession.GetFor(first);
+        if (firstHealth.State != RobloxInputHealthState.Confirmed
+            || firstHealth.ProcessId != first.ProcessId
+            || firstHealth.Verdict != RobloxInputCheckVerdict.Confirmed)
+        {
+            throw new InvalidOperationException("Confirmed input readiness must remain attached to the tested Roblox PID.");
+        }
+
+        if (RobloxInputHealthSession.GetFor(second).State != RobloxInputHealthState.Unknown)
+        {
+            throw new InvalidOperationException("Input readiness must not leak to a different Roblox PID.");
+        }
+
+        var blocked = new RobloxInputCheckAssessment(
+            RobloxInputCheckVerdict.RobloxDidNotReact,
+            "Windows delivered input but Roblox did not react.",
+            "Resolve the Roblox/client input blocker and rerun the check.",
+            false);
+        RobloxInputHealthSession.Record(first, blocked, DateTimeOffset.UnixEpoch.AddSeconds(1));
+        if (RobloxInputHealthSession.GetFor(first).State != RobloxInputHealthState.Blocked)
+        {
+            throw new InvalidOperationException("A failed field observation must replace stale confirmed readiness for the same PID.");
+        }
+
+        RobloxInputHealthSession.ResetForTests();
     }
 
     private static void AssertInputVerdict(
