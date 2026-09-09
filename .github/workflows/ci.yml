@@ -90,6 +90,11 @@ jobs:
       - name: Malformed baseline is a controlled client error
         shell: pwsh
         run: |
+          # This invocation intentionally returns non-zero. GitHub's PowerShell
+          # wrapper treats native non-zero exits as terminating errors on modern
+          # pwsh unless this preference is disabled for the assertion.
+          $PSNativeCommandUseErrorActionPreference = $false
+
           Set-Content -Path artifacts/quality/invalid-baseline.json -Value '{broken-json'
           & ./artifacts/publish/RobloxPiano.exe `
             samples/smoke/quality-smoke.txt `
