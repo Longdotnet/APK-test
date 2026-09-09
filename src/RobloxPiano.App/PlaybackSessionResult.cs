@@ -21,7 +21,10 @@ internal sealed record PlaybackSessionResult(
     public static PlaybackSessionResult SourceFailure(Exception exception, TimeSpan position)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        return new PlaybackSessionResult(PlaybackSessionResultKind.SourceFailed, position, Exception: exception);
+        var result = new PlaybackSessionResult(PlaybackSessionResultKind.SourceFailed, position, Exception: exception);
+        var now = DateTimeOffset.UtcNow;
+        PlaybackSessionDiagnostics.Persist(result, now, now);
+        return result;
     }
 }
 
@@ -34,18 +37,21 @@ internal static class PlaybackSessionResultCapture
         ArgumentNullException.ThrowIfNull(runSession);
         ArgumentNullException.ThrowIfNull(positionProvider);
 
+        var startedAtUtc = DateTimeOffset.UtcNow;
+        PlaybackSessionResult result;
+
         try
         {
             await runSession().ConfigureAwait(true);
-            return new PlaybackSessionResult(PlaybackSessionResultKind.Completed, positionProvider());
+            result = new PlaybackSessionResult(PlaybackSessionResultKind.Completed, positionProvider());
         }
         catch (OperationCanceledException exception)
         {
-            return new PlaybackSessionResult(PlaybackSessionResultKind.Cancelled, positionProvider(), Exception: exception);
+            result = new PlaybackSessionResult(PlaybackSessionResultKind.Cancelled, positionProvider(), Exception: exception);
         }
         catch (RobloxPlaybackAuthorizationException exception)
         {
-            return new PlaybackSessionResult(
+            result = new PlaybackSessionResult(
                 PlaybackSessionResultKind.AuthorizationLost,
                 positionProvider(),
                 exception.Failure,
@@ -53,7 +59,7 @@ internal static class PlaybackSessionResultCapture
         }
         catch (WindowsInputInjectionException exception)
         {
-            return new PlaybackSessionResult(PlaybackSessionResultKind.InputFailed, positionProvider(), Exception: exception);
+            result = new PlaybackSessionResult(PlaybackSessionResultKind.InputFailed, positionProvider(), Exception: exception);
         }
         catch (Exception exception) when (
             exception is IOException
@@ -62,8 +68,11 @@ internal static class PlaybackSessionResultCapture
             or ArgumentException
             or OverflowException)
         {
-            return new PlaybackSessionResult(PlaybackSessionResultKind.RuntimeFailed, positionProvider(), Exception: exception);
+            result = new PlaybackSessionResult(PlaybackSessionResultKind.RuntimeFailed, positionProvider(), Exception: exception);
         }
+
+        PlaybackSessionDiagnostics.Persist(result, startedAtUtc, DateTimeOffset.UtcNow);
+        return result;
     }
 }
 
