@@ -50,6 +50,9 @@ jobs:
       - name: Run held-input ownership regression harness
         run: dotnet run --project tests/RobloxPiano.InputStateTests/RobloxPiano.InputStateTests.csproj -c Release
 
+      - name: Run expressive sustain regression harness
+        run: dotnet run --project tests/RobloxPiano.ExpressiveTests/RobloxPiano.ExpressiveTests.csproj -c Release
+
       - name: Run timing calibration regression harness
         run: dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
 
