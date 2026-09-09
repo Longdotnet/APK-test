@@ -7,8 +7,7 @@ internal sealed class RobloxInputCheckDialog : Form
     private readonly Label _status = new()
     {
         AutoSize = true,
-        MaximumSize = new Size(520, 0),
-        Text = "This check bypasses MIDI and the scheduler. It focuses Roblox and holds W briefly using the exact production input path."
+        MaximumSize = new Size(520, 0)
     };
     private readonly Button _run = new() { Text = "Run Input Check", AutoSize = true };
     private readonly Button _diagnostics = new() { Text = "Open Diagnostics", AutoSize = true };
@@ -19,7 +18,7 @@ internal sealed class RobloxInputCheckDialog : Form
         Text = "Roblox Input Check";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(600, 300);
-        Size = new Size(640, 330);
+        Size = new Size(640, 350);
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
@@ -28,7 +27,7 @@ internal sealed class RobloxInputCheckDialog : Form
         {
             AutoSize = true,
             MaximumSize = new Size(540, 0),
-            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates four boundaries: Roblox activation, stable focus, Windows key delivery, and Roblox actually reacting. No AI or network is used."
+            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates Roblox activation, stable focus, Windows key delivery, and Roblox actually reacting. A confirmed result belongs only to the current Roblox process. No AI or network is used."
         };
         var observation = new Label
         {
@@ -62,6 +61,28 @@ internal sealed class RobloxInputCheckDialog : Form
         _diagnostics.Click += (_, _) => OpenDiagnostics();
         AcceptButton = _run;
         CancelButton = _close;
+        RefreshSessionStatus();
+    }
+
+    private void RefreshSessionStatus()
+    {
+        var target = RobloxProcessLocator.FindPreferred();
+        if (target is null)
+        {
+            _status.Text = "○ Roblox Player is not currently available. Open Roblox to establish input readiness.";
+            return;
+        }
+
+        var health = RobloxInputHealthSession.GetFor(target);
+        _status.Text = health.State switch
+        {
+            RobloxInputHealthState.Confirmed =>
+                $"✓ Input confirmed for Roblox PID {target.ProcessId}. This confirmation is discarded automatically when the Roblox process changes.",
+            RobloxInputHealthState.Blocked =>
+                $"⚠ Input is blocked for Roblox PID {target.ProcessId}: {health.Summary}\n\nNext: {health.NextAction}",
+            _ =>
+                $"○ Input readiness is unknown for Roblox PID {target.ProcessId}. Run the check before trusting playback in this Roblox session."
+        };
     }
 
     private async Task RunCheckAsync()
@@ -109,6 +130,7 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.NativeDeliveryObserved)
             {
+                RobloxInputHealthSession.Record(target, nativeAssessment);
                 ApplyAssessment(nativeAssessment);
                 return;
             }
@@ -123,15 +145,18 @@ internal sealed class RobloxInputCheckDialog : Form
             var assessment = result.Assess(observed);
             ClientDiagnostics.Log(
                 $"GUI input check final verdict={assessment.Verdict}; robloxReacted={observed}; success={assessment.IsSuccess}.");
+            RobloxInputHealthSession.Record(target, assessment);
             ApplyAssessment(assessment);
         }
         catch (OperationCanceledException)
         {
-            ApplyAssessment(new RobloxInputCheckAssessment(
+            var assessment = new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.FocusUnstable,
                 "The input check was cancelled safely.",
                 "No keys remain held. Run the check again when Roblox is ready.",
-                false));
+                false);
+            RobloxInputHealthSession.Record(target, assessment);
+            ApplyAssessment(assessment);
         }
         catch (Exception exception) when (
             exception is InvalidOperationException
@@ -139,7 +164,13 @@ internal sealed class RobloxInputCheckDialog : Form
             or System.ComponentModel.Win32Exception)
         {
             ClientDiagnostics.Log($"GUI input check failed: {exception}");
-            _status.Text = $"Input check failed: {exception.Message}\nOpen Diagnostics for the native evidence.";
+            var assessment = new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.WindowsKeyStateNotObserved,
+                $"Input check failed: {exception.Message}",
+                "Open Diagnostics, resolve the Windows/input blocker, then rerun Test Roblox Input.",
+                false);
+            RobloxInputHealthSession.Record(target, assessment);
+            ApplyAssessment(assessment);
         }
         finally
         {
