@@ -17,15 +17,25 @@ internal sealed class SheetLibraryForm : Form
         AllowUserToDeleteRows = false,
         RowHeadersVisible = false
     };
+    private readonly Label _robloxStatus = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
     private readonly Label _status = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
-    private readonly Button _openButton = new() { Text = "Open player", AutoSize = true };
-    private readonly Button _importButton = new() { Text = "Add sheet...", AutoSize = true };
+    private readonly Button _playButton = new()
+    {
+        Text = "Play",
+        AutoSize = true,
+        Enabled = false,
+        Font = new Font(SystemFonts.DefaultFont.FontFamily, 11f, FontStyle.Bold),
+        Padding = new Padding(14, 5, 14, 5)
+    };
+    private readonly Button _importButton = new() { Text = "Import Song...", AutoSize = true };
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
+    private readonly System.Windows.Forms.Timer _robloxTimer = new() { Interval = 1000 };
     private IReadOnlyList<SheetLibraryEntry> _entries = Array.Empty<SheetLibraryEntry>();
+    private bool _robloxReady;
 
     public SheetLibraryForm()
     {
-        Text = "Roblox Piano — Sheet Library";
+        Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 500);
         Size = new Size(900, 620);
@@ -40,23 +50,28 @@ internal sealed class SheetLibraryForm : Form
 
         BuildLayout();
         RefreshLibrary();
+        RefreshRobloxStatus();
 
         _search.TextChanged += (_, _) => ApplyFilter();
         _refreshButton.Click += (_, _) => RefreshLibrary();
         _importButton.Click += (_, _) => ImportWithPicker();
-        _openButton.Click += (_, _) => OpenSelectedPlayer();
-        _grid.CellDoubleClick += (_, _) => OpenSelectedPlayer();
+        _playButton.Click += (_, _) => PlaySelected();
+        _grid.CellDoubleClick += (_, _) => PlaySelected();
+        _grid.SelectionChanged += (_, _) => UpdatePrimaryAction();
+        _robloxTimer.Tick += (_, _) => RefreshRobloxStatus();
+        _robloxTimer.Start();
         DragEnter += HandleDragEnter;
         DragDrop += HandleDragDrop;
+        FormClosed += (_, _) => _robloxTimer.Stop();
     }
 
     private void BuildLayout()
     {
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SheetLibraryEntry.Title), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 45 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SheetLibraryEntry.Title), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 48 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "BPM", DataPropertyName = nameof(SheetLibraryEntry.Bpm), Width = 75 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Duration", Name = "Duration", Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", DataPropertyName = nameof(SheetLibraryEntry.Status), Width = 90 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(SheetLibraryEntry.FileName), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 30 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(SheetLibraryEntry.FileName), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 28 });
         _grid.CellFormatting += (_, e) =>
         {
             if (e.RowIndex < 0 || _grid.Rows[e.RowIndex].DataBoundItem is not SheetLibraryEntry entry)
@@ -71,17 +86,18 @@ internal sealed class SheetLibraryForm : Form
             }
         };
 
-        var title = new Label { Text = "Sheet Library", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
+        var title = new Label { Text = "Roblox Piano", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Choose a song from your library. Add sheet imports and validates it; drag-drop does the same.",
+            Text = "Choose a song and press Play. Roblox, file type, timing safety and diagnostics are handled automatically.",
             AutoSize = true,
-            Padding = new Padding(0, 0, 0, 10)
+            Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_openButton, _importButton, _refreshButton]);
+        buttons.Controls.AddRange([_playButton, _importButton, _refreshButton]);
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 6 };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 7 };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -90,10 +106,11 @@ internal sealed class SheetLibraryForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(title, 0, 0);
         root.Controls.Add(subtitle, 0, 1);
-        root.Controls.Add(_search, 0, 2);
-        root.Controls.Add(_grid, 0, 3);
-        root.Controls.Add(buttons, 0, 4);
-        root.Controls.Add(_status, 0, 5);
+        root.Controls.Add(_robloxStatus, 0, 2);
+        root.Controls.Add(_search, 0, 3);
+        root.Controls.Add(_grid, 0, 4);
+        root.Controls.Add(buttons, 0, 5);
+        root.Controls.Add(_status, 0, 6);
         Controls.Add(root);
     }
 
@@ -106,14 +123,26 @@ internal sealed class SheetLibraryForm : Form
             var valid = _entries.Count(entry => entry.Status == SheetValidationStatus.Valid);
             var invalid = _entries.Count - valid;
             _status.Text = invalid == 0
-                ? $"{valid} playable sheet(s). Managed library: {_library.ManagedDirectory}"
-                : $"{valid} playable, {invalid} invalid sheet(s). Invalid files stay visible for repair instead of being silently ignored.";
+                ? $"{valid} playable song(s). Drop a file here or use Import Song to add more."
+                : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            ClientDiagnostics.Log($"Sheet library scan failed: {exception}");
+            ClientDiagnostics.Log($"Song library scan failed: {exception}");
             _status.Text = $"Library error: {exception.Message}";
         }
+
+        UpdatePrimaryAction();
+    }
+
+    private void RefreshRobloxStatus()
+    {
+        var target = RobloxProcessLocator.FindPreferred();
+        _robloxReady = target is not null;
+        _robloxStatus.Text = target is null
+            ? "○ Roblox not detected — open Roblox and enter the piano game."
+            : "● Roblox ready — select a song and press Play.";
+        UpdatePrimaryAction();
     }
 
     private void ApplyFilter(string? selectPath = null)
@@ -138,14 +167,24 @@ internal sealed class SheetLibraryForm : Form
                 }
             }
         }
+
+        UpdatePrimaryAction();
+    }
+
+    private void UpdatePrimaryAction()
+    {
+        var selected = _grid.CurrentRow?.DataBoundItem as SheetLibraryEntry;
+        var playable = selected?.Status == SheetValidationStatus.Valid;
+        _playButton.Enabled = playable && _robloxReady;
+        _playButton.Text = !playable ? "Select a Song" : _robloxReady ? "Play" : "Open Roblox to Play";
     }
 
     private void ImportWithPicker()
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "Add Roblox Piano sheet",
-            Filter = "Virtual Piano sheets (*.txt;*.vps)|*.txt;*.vps|All files (*.*)|*.*",
+            Title = "Import song",
+            Filter = "Supported songs (*.txt;*.vps;*.mid;*.midi)|*.txt;*.vps;*.mid;*.midi|All files (*.*)|*.*",
             CheckFileExists = true,
             Multiselect = true
         };
@@ -163,18 +202,18 @@ internal sealed class SheetLibraryForm : Form
             try
             {
                 lastImported = _library.Import(file).Path;
-                ClientDiagnostics.Log($"Sheet imported: source='{file}', managed='{lastImported}'.");
+                ClientDiagnostics.Log($"Song imported: source='{file}', managed='{lastImported}'.");
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException or ArgumentException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException or ArgumentException or OverflowException)
             {
-                ClientDiagnostics.Log($"Sheet import failed for '{file}': {exception}");
-                MessageBox.Show(this, $"{Path.GetFileName(file)}\n\n{exception.Message}", "Sheet could not be imported", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ClientDiagnostics.Log($"Song import failed for '{file}': {exception}");
+                MessageBox.Show(this, $"{Path.GetFileName(file)}\n\n{exception.Message}", "Song could not be imported", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
         RefreshLibrary(lastImported);
     }
 
-    private void OpenSelectedPlayer()
+    private void PlaySelected()
     {
         if (_grid.CurrentRow?.DataBoundItem is not SheetLibraryEntry entry)
         {
@@ -182,13 +221,18 @@ internal sealed class SheetLibraryForm : Form
         }
         if (entry.Status != SheetValidationStatus.Valid)
         {
-            MessageBox.Show(this, entry.Error ?? "This sheet is invalid.", "Sheet needs repair", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _status.Text = entry.Error ?? "This song needs repair before it can play.";
+            return;
+        }
+        if (!_robloxReady)
+        {
+            _robloxStatus.Text = "○ Open Roblox and enter the piano game; Play becomes available automatically.";
             return;
         }
 
         var state = ClientStateStore.Load();
         ClientStateStore.Save(state with { LastSheetPath = entry.Path });
-        using var player = new ClientMainForm();
+        using var player = new ClientMainForm(autoStart: true);
         Hide();
         try
         {
@@ -198,6 +242,7 @@ internal sealed class SheetLibraryForm : Form
         {
             Show();
             Activate();
+            RefreshRobloxStatus();
             RefreshLibrary(entry.Path);
         }
     }
