@@ -12,8 +12,10 @@ internal static class Program
         Run("import validates and allocates collision-safe names", TestImport, failures);
         Run("source-neutral loader routes text and MIDI deterministically", TestSourceNeutralLoader, failures);
         Run("unsupported extension is rejected", TestUnsupportedExtension, failures);
+        Run("empty library seeds deterministic offline starter songs", TestStarterSeed, failures);
+        Run("starter seed never overwrites an existing catalog", TestStarterSeedPreservesExisting, failures);
 
-        Console.WriteLine($"Song library regressions: {5 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Song library regressions: {7 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -97,6 +99,36 @@ internal static class Program
         var source = Path.Combine(temp.Root, "song.pdf");
         File.WriteAllText(source, "not supported");
         Throws<FormatException>(() => new SheetLibraryService(temp.Managed).Import(source), "unsupported extension");
+    }
+
+    private static void TestStarterSeed()
+    {
+        using var temp = new TempTree();
+        var library = new SheetLibraryService(temp.Managed, temp.Portable);
+
+        var created = StarterLibrarySeeder.EnsureSeeded(library);
+        Equal(2, created, "starter file count");
+
+        var entries = library.Scan();
+        Equal(2, entries.Count, "seeded catalog count");
+        True(entries.All(entry => entry.Status == SheetValidationStatus.Valid), "every starter song must validate");
+        True(entries.All(entry => entry.IsManaged), "starter songs belong to the managed client library");
+        True(entries.Any(entry => entry.Title == "Starter Warmup"), "warmup starter missing");
+        True(entries.Any(entry => entry.Title == "Starter Chord Practice"), "chord starter missing");
+        Equal(0, StarterLibrarySeeder.EnsureSeeded(library), "seeding must be idempotent after first run");
+    }
+
+    private static void TestStarterSeedPreservesExisting()
+    {
+        using var temp = new TempTree();
+        File.WriteAllText(Path.Combine(temp.Portable, "mine.txt"), ValidSheet("My Existing Song"));
+        var library = new SheetLibraryService(temp.Managed, temp.Portable);
+
+        Equal(0, StarterLibrarySeeder.EnsureSeeded(library), "non-empty catalog must not be modified");
+        var entries = library.Scan();
+        Equal(1, entries.Count, "existing catalog count");
+        Equal("My Existing Song", entries[0].Title, "existing song must remain the only entry");
+        True(!Directory.EnumerateFiles(temp.Managed).Any(), "managed library must remain untouched when a portable catalog already exists");
     }
 
     private static string ValidSheet(string title) => $"""
