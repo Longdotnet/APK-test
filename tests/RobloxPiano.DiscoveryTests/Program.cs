@@ -263,7 +263,7 @@ internal static class Program
         throw new InvalidOperationException($"{message}: expected {typeof(T).Name}.");
     }
 
-    private static void Equal<T>(T expected, T actual, string message) where T : notnull
+    private static void Equal<T>(T expected, T actual, string message)
     {
         if (!EqualityComparer<T>.Default.Equals(expected, actual))
         {
