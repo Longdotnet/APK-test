@@ -21,7 +21,7 @@ public sealed record SheetLibraryEntry(
 
 public sealed class SheetLibraryService
 {
-    private static readonly string[] SupportedExtensions = [".txt", ".vps"];
+    private static readonly string[] SupportedExtensions = [".txt", ".vps", ".mid", ".midi"];
 
     public SheetLibraryService(string managedDirectory, string? portableDirectory = null)
     {
@@ -79,6 +79,26 @@ public sealed class SheetLibraryService
         return ReadEntry(target, isManaged: true);
     }
 
+    public static PerformanceTrack LoadTrack(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path);
+        var extension = Path.GetExtension(fullPath);
+        if (extension.Equals(".mid", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".midi", StringComparison.OrdinalIgnoreCase))
+        {
+            return MidiFileImporter.ImportCompiled(File.ReadAllBytes(fullPath));
+        }
+
+        if (extension.Equals(".txt", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".vps", StringComparison.OrdinalIgnoreCase))
+        {
+            return LegacySheetParser.Parse(File.ReadAllText(fullPath));
+        }
+
+        throw new FormatException("Choose a .txt, .vps, .mid, or .midi performance file.");
+    }
+
     public static bool IsSupportedPath(string path)
     {
         var extension = Path.GetExtension(path);
@@ -112,7 +132,7 @@ public sealed class SheetLibraryService
     {
         try
         {
-            var track = LegacySheetParser.Parse(File.ReadAllText(path));
+            var track = LoadTrack(path);
             return new SheetLibraryEntry(
                 path,
                 Path.GetFileName(path),
@@ -128,7 +148,8 @@ public sealed class SheetLibraryService
             exception is IOException
             or UnauthorizedAccessException
             or FormatException
-            or ArgumentException)
+            or ArgumentException
+            or OverflowException)
         {
             return new SheetLibraryEntry(
                 path,
@@ -170,7 +191,7 @@ public sealed class SheetLibraryService
     {
         if (!IsSupportedPath(path))
         {
-            throw new FormatException("Choose a .txt or .vps Virtual Piano sheet.");
+            throw new FormatException("Choose a .txt, .vps, .mid, or .midi performance file.");
         }
     }
 }
