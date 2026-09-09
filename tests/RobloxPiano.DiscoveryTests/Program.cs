@@ -11,10 +11,12 @@ internal static class Program
         var tests = new (string Name, Func<Task> Run)[]
         {
             ("aggregator ranks, deduplicates, limits to ten, and isolates provider failure", TestRankingAndFailureIsolationAsync),
-            ("provider outage falls back to cached discovery results", TestCacheFallbackAsync),
+            ("provider outage falls back to cached discovery results without score inflation", TestCacheFallbackAsync),
             ("Wikimedia Commons provider parses direct MIDI results", TestWikimediaProviderAsync),
             ("Internet Archive provider resolves item metadata to MIDI downloads", TestInternetArchiveProviderAsync),
-            ("online import validates content and deduplicates identical local bytes", TestOnlineImportAndDedupAsync),
+            ("online import validates content, keeps clean filenames, and deduplicates bytes", TestOnlineImportAndDedupAsync),
+            ("Internet Archive controlled download redirects are accepted", TestArchiveRedirectAsync),
+            ("untrusted download redirects are rejected before import", TestUntrustedRedirectAsync),
             ("oversized online download is rejected before entering the library", TestOversizedDownloadAsync),
             ("malformed online MIDI never enters the library", TestMalformedDownloadAsync),
             ("JSON discovery cache round-trips candidates", TestJsonCacheRoundTripAsync)
@@ -68,9 +70,11 @@ internal static class Program
 
         var offline = new SongDiscoveryService([new ThrowingProvider()], cache, TimeSpan.FromMilliseconds(50));
         var fallback = await offline.SearchAsync("see tinh", 10);
+        var secondFallback = await offline.SearchAsync("see tinh", 10);
         True(fallback.UsedCache, "provider outage should use recent cache");
         Equal(1, fallback.Candidates.Count, "cached result count");
         True(fallback.Candidates[0].IsCached, "cached candidate should be marked for UI transparency");
+        Equal(fallback.Candidates[0].Score, secondFallback.Candidates[0].Score, "offline reranking must not accumulate score");
     }
 
     private static async Task TestWikimediaProviderAsync()
@@ -98,11 +102,11 @@ internal static class Program
                     ]
                   }
                 }
-                """ );
+                """);
         }));
 
         var provider = new WikimediaCommonsMidiProvider(http);
-        var results = await provider.SearchAsync("fur elise", 10, CancellationToken.None);
+        var results = await provider.SearchAsync("fur \"elise\"", 10, CancellationToken.None);
         Equal(1, results.Count, "Commons MIDI result count");
         Equal("Fur Elise piano", results[0].Title, "clean Commons title");
         Equal("sha1:abc123", results[0].ContentIdentity, "Commons content identity");
@@ -144,7 +148,7 @@ internal static class Program
         var provider = new InternetArchiveMidiProvider(http);
         var results = await provider.SearchAsync("moonlight sonata", 10, CancellationToken.None);
         Equal(1, results.Count, "Archive MIDI result count");
-        Equal("Moonlight Sonata — moonlight", results[0].Title, "Archive item/file title");
+        Equal("Moonlight Sonata", results[0].Title, "single Archive MIDI should use item title");
         Equal("Beethoven", results[0].Artist, "Archive creator");
         Equal("sha1:deadbeef", results[0].ContentIdentity, "Archive hash identity");
         True(results[0].DownloadUri.AbsoluteUri.Contains("/download/item1/moonlight.mid", StringComparison.Ordinal), "Archive direct download URL");
@@ -154,7 +158,7 @@ internal static class Program
     {
         using var temp = new TempTree();
         var midi = ValidMidi("Online Song");
-        using var http = new HttpClient(new DelegateHandler(_ => BinaryResponse(midi)));
+        using var http = new HttpClient(new DelegateHandler(_ => BinaryResponse(midi, "https://upload.wikimedia.org/test/song.mid")));
         var library = new SheetLibraryService(temp.Managed);
         var importer = new OnlineSongImportService(http, library, temp.Downloads);
         var candidate = Candidate("Online Song", "sha1:online");
@@ -166,7 +170,38 @@ internal static class Program
         True(second.AlreadyPresent, "identical downloaded bytes should reuse local library entry");
         Equal(first.Entry.Path, second.Entry.Path, "dedupe should resolve to same managed path");
         Equal(1, library.Scan().Count(entry => entry.Status == SheetValidationStatus.Valid), "only one managed song should exist");
-        True(!Path.GetFileName(first.Entry.Path).Contains("-", StringComparison.Ordinal), "managed client filename should not expose temporary GUIDs");
+        Equal("Online Song.mid", Path.GetFileName(first.Entry.Path), "managed filename must hide temporary operation identity");
+    }
+
+    private static async Task TestArchiveRedirectAsync()
+    {
+        using var temp = new TempTree();
+        var candidate = Candidate(
+            "Archive Song",
+            "sha1:archive",
+            "internet-archive",
+            "Internet Archive",
+            "https://archive.org/download/item/archive.mid");
+        using var http = new HttpClient(new DelegateHandler(_ =>
+            BinaryResponse(ValidMidi("Archive Song"), "https://ia801234.us.archive.org/1/items/item/archive.mid")));
+        var importer = new OnlineSongImportService(http, new SheetLibraryService(temp.Managed), temp.Downloads);
+
+        var result = await importer.ImportAsync(candidate);
+        True(!result.AlreadyPresent, "controlled Archive redirect should import");
+        Equal("Archive Song", result.Entry.Title, "Archive redirect import title");
+    }
+
+    private static async Task TestUntrustedRedirectAsync()
+    {
+        using var temp = new TempTree();
+        using var http = new HttpClient(new DelegateHandler(_ =>
+            BinaryResponse(ValidMidi("Wrong Host"), "https://untrusted.example/song.mid")));
+        var importer = new OnlineSongImportService(http, new SheetLibraryService(temp.Managed), temp.Downloads);
+
+        await ThrowsAsync<InvalidOperationException>(
+            () => importer.ImportAsync(Candidate("Wrong Host", "sha1:wrong-host")),
+            "cross-provider redirect");
+        Equal(0, Directory.EnumerateFiles(temp.Managed).Count(), "untrusted redirect must not enter managed library");
     }
 
     private static async Task TestOversizedDownloadAsync()
@@ -174,7 +209,7 @@ internal static class Program
         using var temp = new TempTree();
         using var http = new HttpClient(new DelegateHandler(_ =>
         {
-            var response = BinaryResponse([0x01]);
+            var response = BinaryResponse([0x01], "https://upload.wikimedia.org/test/song.mid");
             response.Content.Headers.ContentLength = OnlineSongImportService.MaximumDownloadBytes + 1;
             return response;
         }));
@@ -187,7 +222,8 @@ internal static class Program
     private static async Task TestMalformedDownloadAsync()
     {
         using var temp = new TempTree();
-        using var http = new HttpClient(new DelegateHandler(_ => BinaryResponse([0x00, 0x01, 0x02, 0x03])));
+        using var http = new HttpClient(new DelegateHandler(_ =>
+            BinaryResponse([0x00, 0x01, 0x02, 0x03], "https://upload.wikimedia.org/test/song.mid")));
         var importer = new OnlineSongImportService(http, new SheetLibraryService(temp.Managed), temp.Downloads);
 
         await ThrowsAsync<FormatException>(() => importer.ImportAsync(Candidate("Broken", "sha1:broken")), "malformed MIDI");
@@ -207,15 +243,22 @@ internal static class Program
         True(loaded[0].IsCached, "cache round-trip should mark result cached");
     }
 
-    private static SongDiscoveryCandidate Candidate(string title, string identity)
+    private static SongDiscoveryCandidate Candidate(
+        string title,
+        string identity,
+        string providerId = "wikimedia-commons",
+        string providerName = "Wikimedia Commons",
+        string downloadUrl = "https://upload.wikimedia.org/test/song.mid")
         => new(
-            "wikimedia-commons",
-            "Wikimedia Commons",
+            providerId,
+            providerName,
             title,
             null,
             DiscoveredSongFormat.Midi,
-            new Uri("https://upload.wikimedia.org/test/song.mid"),
-            new Uri("https://commons.wikimedia.org/wiki/File:Song.mid"),
+            new Uri(downloadUrl),
+            providerId == "internet-archive"
+                ? new Uri("https://archive.org/details/item")
+                : new Uri("https://commons.wikimedia.org/wiki/File:Song.mid"),
             identity,
             4096);
 
@@ -225,11 +268,11 @@ internal static class Program
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
 
-    private static HttpResponseMessage BinaryResponse(byte[] bytes)
+    private static HttpResponseMessage BinaryResponse(byte[] bytes, string finalUri)
         => new(HttpStatusCode.OK)
         {
             Content = new ByteArrayContent(bytes),
-            RequestMessage = new HttpRequestMessage(HttpMethod.Get, "https://upload.wikimedia.org/test/song.mid")
+            RequestMessage = new HttpRequestMessage(HttpMethod.Get, finalUri)
         };
 
     private static byte[] ValidMidi(string title)
