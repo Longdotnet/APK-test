@@ -12,8 +12,10 @@ internal static class Program
         Run("import validates and allocates collision-safe names", TestImport, failures);
         Run("source-neutral loader routes text and MIDI deterministically", TestSourceNeutralLoader, failures);
         Run("unsupported extension is rejected", TestUnsupportedExtension, failures);
+        Run("empty first-run library receives playable starter songs", TestStarterBootstrap, failures);
+        Run("starter bootstrap never pollutes an existing library", TestStarterPreservesExistingLibrary, failures);
 
-        Console.WriteLine($"Song library regressions: {5 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Song library regressions: {7 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -97,6 +99,36 @@ internal static class Program
         var source = Path.Combine(temp.Root, "song.pdf");
         File.WriteAllText(source, "not supported");
         Throws<FormatException>(() => new SheetLibraryService(temp.Managed).Import(source), "unsupported extension");
+    }
+
+    private static void TestStarterBootstrap()
+    {
+        using var temp = new TempTree();
+        var library = new SheetLibraryService(temp.Managed);
+        var entries = library.EnsureStarterLibrary();
+
+        Equal(3, entries.Count, "starter song count");
+        True(entries.All(entry => entry.Status == SheetValidationStatus.Valid), "every starter song must pass deterministic validation");
+        True(entries.All(entry => entry.IsManaged), "starter songs belong to the managed client library");
+        True(entries.Any(entry => entry.Title == "Starter Melody"), "starter melody missing");
+        True(entries.Any(entry => entry.Title == "Starter Chords"), "starter chords missing");
+        True(entries.Any(entry => entry.Title == "Starter Warmup"), "starter warmup missing");
+
+        var second = library.EnsureStarterLibrary();
+        Equal(3, second.Count, "starter bootstrap must be idempotent");
+        Equal(3, Directory.EnumerateFiles(temp.Managed).Count(), "bootstrap must not duplicate starter files");
+    }
+
+    private static void TestStarterPreservesExistingLibrary()
+    {
+        using var temp = new TempTree();
+        File.WriteAllText(Path.Combine(temp.Managed, "mine.txt"), ValidSheet("My Existing Song"));
+        var library = new SheetLibraryService(temp.Managed);
+
+        var entries = library.EnsureStarterLibrary();
+        Equal(1, entries.Count, "existing library must not receive unsolicited starter songs");
+        Equal("My Existing Song", entries[0].Title, "existing song must remain untouched");
+        True(!Directory.EnumerateFiles(temp.Managed).Any(path => Path.GetFileName(path).StartsWith("starter-", StringComparison.OrdinalIgnoreCase)), "starter files should not be written into a non-empty library");
     }
 
     private static string ValidSheet(string title) => $"""
