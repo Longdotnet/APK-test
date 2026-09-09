@@ -185,47 +185,57 @@ public static class MidiFileImporter
             .Where(pair => pair.Value.Count > 0 && noteChannels.Contains(pair.Key))
             .Select(pair => pair.Key)
             .Distinct()
+            .OrderBy(channel => channel)
             .ToArray();
-        if (noteChannels.Count > 1 && channelsWithSustain.Length > 0)
-        {
-            throw new FormatException(
-                "This MIDI uses sustain with multiple note-bearing channels. The current canonical sustain model is global, " +
-                "so importing it would over-sustain other channels; split/flatten the piano performance to one channel first.");
-        }
 
         var timelineTick = Math.Max(lastTick, notes.Max(note => note.EndTick));
         var timeline = TicksToTimeSpan(timelineTick, ppq, tempoChanges);
-        var performanceEvents = notes
-            .OrderBy(note => note.StartTick)
-            .ThenBy(note => note.Channel)
-            .ThenBy(note => note.Pitch)
-            .Select(note =>
-            {
-                var start = TicksToTimeSpan(note.StartTick, ppq, tempoChanges);
-                var end = TicksToTimeSpan(note.EndTick, ppq, tempoChanges);
-                return new PerformanceEvent(
-                    start,
-                    end - start,
-                    new[] { options.EffectiveKeyboardProfile.Map(note.Pitch) });
-            })
-            .ToArray();
-
+        PerformanceEvent[] performanceEvents;
         var controls = new List<PerformanceControlEvent>();
-        if (channelsWithSustain.Length == 1)
-        {
-            var channel = channelsWithSustain[0];
-            bool? previous = null;
-            foreach (var sustain in sustainEventsByChannel[channel].OrderBy(item => item.Tick))
-            {
-                if (previous == sustain.Down)
-                {
-                    continue;
-                }
 
-                previous = sustain.Down;
-                controls.Add(new PerformanceControlEvent(
-                    TicksToTimeSpan(sustain.Tick, ppq, tempoChanges),
-                    sustain.Down ? PerformanceControlKind.SustainDown : PerformanceControlKind.SustainUp));
+        if (noteChannels.Count > 1 && channelsWithSustain.Length > 0)
+        {
+            performanceEvents = CompileChannelScopedSustain(
+                notes,
+                sustainEventsByChannel,
+                timelineTick,
+                ppq,
+                tempoChanges,
+                options.EffectiveKeyboardProfile);
+        }
+        else
+        {
+            performanceEvents = notes
+                .OrderBy(note => note.StartTick)
+                .ThenBy(note => note.Channel)
+                .ThenBy(note => note.Pitch)
+                .Select(note =>
+                {
+                    var start = TicksToTimeSpan(note.StartTick, ppq, tempoChanges);
+                    var end = TicksToTimeSpan(note.EndTick, ppq, tempoChanges);
+                    return new PerformanceEvent(
+                        start,
+                        end - start,
+                        new[] { options.EffectiveKeyboardProfile.Map(note.Pitch) });
+                })
+                .ToArray();
+
+            if (channelsWithSustain.Length == 1)
+            {
+                var channel = channelsWithSustain[0];
+                bool? previous = null;
+                foreach (var sustain in sustainEventsByChannel[channel].OrderBy(item => item.Tick))
+                {
+                    if (previous == sustain.Down)
+                    {
+                        continue;
+                    }
+
+                    previous = sustain.Down;
+                    controls.Add(new PerformanceControlEvent(
+                        TicksToTimeSpan(sustain.Tick, ppq, tempoChanges),
+                        sustain.Down ? PerformanceControlKind.SustainDown : PerformanceControlKind.SustainUp));
+                }
             }
         }
 
@@ -242,6 +252,111 @@ public static class MidiFileImporter
 
     public static PerformanceTrack ImportCompiled(ReadOnlySpan<byte> bytes, MidiImportOptions? options = null)
         => ExpressivePerformanceCompiler.Compile(Import(bytes, options));
+
+    private static PerformanceEvent[] CompileChannelScopedSustain(
+        IReadOnlyList<MidiNote> notes,
+        IReadOnlyDictionary<int, List<(long Tick, bool Down)>> sustainEventsByChannel,
+        long timelineTick,
+        int ppq,
+        IReadOnlyList<TempoChange> tempoChanges,
+        MidiKeyboardProfile profile)
+    {
+        var normalizedSustain = sustainEventsByChannel.ToDictionary(
+            pair => pair.Key,
+            pair => NormalizeSustainTransitions(pair.Key, pair.Value));
+        var startsByPitch = notes
+            .GroupBy(note => note.Pitch)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(note => note.StartTick).Distinct().OrderBy(tick => tick).ToArray());
+
+        return notes
+            .OrderBy(note => note.StartTick)
+            .ThenBy(note => note.Channel)
+            .ThenBy(note => note.Pitch)
+            .Select(note =>
+            {
+                var effectiveEndTick = note.EndTick;
+                if (normalizedSustain.TryGetValue(note.Channel, out var transitions)
+                    && IsSustainDownAtTick(transitions, note.EndTick))
+                {
+                    effectiveEndTick = FindNextSustainUpTick(transitions, note.EndTick) ?? timelineTick;
+                    effectiveEndTick = Math.Max(effectiveEndTick, note.EndTick);
+                }
+
+                var nextSamePitchStart = startsByPitch[note.Pitch].FirstOrDefault(tick => tick > note.StartTick);
+                if (nextSamePitchStart > 0 && nextSamePitchStart < effectiveEndTick)
+                {
+                    effectiveEndTick = nextSamePitchStart;
+                }
+
+                if (effectiveEndTick <= note.StartTick)
+                {
+                    throw new FormatException(
+                        $"Channel-scoped MIDI sustain produced a non-positive note duration on channel {note.Channel + 1}, pitch {note.Pitch}.");
+                }
+
+                var start = TicksToTimeSpan(note.StartTick, ppq, tempoChanges);
+                var end = TicksToTimeSpan(effectiveEndTick, ppq, tempoChanges);
+                return new PerformanceEvent(start, end - start, new[] { profile.Map(note.Pitch) });
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<(long Tick, bool Down)> NormalizeSustainTransitions(
+        int channel,
+        IEnumerable<(long Tick, bool Down)> source)
+    {
+        var result = new List<(long Tick, bool Down)>();
+        bool? previous = null;
+        foreach (var transition in source.OrderBy(item => item.Tick))
+        {
+            if (previous == transition.Down)
+            {
+                continue;
+            }
+
+            if (previous is null && !transition.Down)
+            {
+                throw new FormatException(
+                    $"MIDI sustain-up on channel {channel + 1} has no preceding sustain-down transition.");
+            }
+
+            previous = transition.Down;
+            result.Add(transition);
+        }
+
+        return result;
+    }
+
+    private static bool IsSustainDownAtTick(IReadOnlyList<(long Tick, bool Down)> transitions, long tick)
+    {
+        var down = false;
+        foreach (var transition in transitions)
+        {
+            if (transition.Tick > tick)
+            {
+                break;
+            }
+
+            down = transition.Down;
+        }
+
+        return down;
+    }
+
+    private static long? FindNextSustainUpTick(IReadOnlyList<(long Tick, bool Down)> transitions, long after)
+    {
+        foreach (var transition in transitions)
+        {
+            if (transition.Tick >= after && !transition.Down)
+            {
+                return transition.Tick;
+            }
+        }
+
+        return null;
+    }
 
     private static int ResolveEffectiveTranspose(IReadOnlyList<RawEvent> events, MidiImportOptions options)
     {

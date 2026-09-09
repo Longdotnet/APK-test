@@ -149,20 +149,22 @@ jobs:
           1. Download RobloxPiano.exe and double-click it.
           2. The Sheet Library is list-first: imported songs persist as rows instead of bypassing the Library.
           3. Use Import MIDI for one or many `.mid` / `.midi` files, Import MIDI Folder for a whole MIDI collection, drag/drop files or folders, or use online discovery.
-          4. The Library shows an Import compatibility column before playback. In-range MIDI reports `source preserved`; deterministic range auto-fit and ignored General MIDI drum notes are shown explicitly.
+          4. Real-world multi-channel MIDI may use CC64 sustain on only some melodic channels; Roblox Piano now lowers that pedal state per channel instead of rejecting the whole song or over-sustaining unrelated channels.
           5. Select any playable Library row and press Play after opening Roblox and entering the piano game.
           6. Roblox Piano restores the selected Roblox window, waits for exact foreground confirmation, then playback runs only while that exact window remains focused.
 
           Production capability and reliability in this release:
-          - MIDI compatibility behavior introduced in v0.16.2 is now observable instead of silent: source/effective range, automatic semitone adjustment and ignored percussion counts are deterministically inspected.
-          - The production MidiFileImporter remains the only validation/playback truth. Diagnostic inspection is best-effort and cannot make an importer-accepted song fail.
-          - Sheet Library rows surface source-preserved versus adjusted MIDI, batch import counts adjusted songs, search includes compatibility text and diagnostics log the exact decision.
+          - Multi-channel MIDI sustain is compiled deterministically per source channel before canonical playback, so CC64 on one channel cannot extend notes on another channel.
+          - Same-pitch notes across channels remain physically retriggerable: sustained holds are clipped at the next effective-pitch NoteOn before KeyUp-before-KeyDown planning.
+          - Malformed channel pedal state still fails closed; an unterminated SustainDown uses the existing deterministic timeline-end safety repair.
+          - The proven single-channel sustain path remains unchanged, preserving existing expressive and Legacy/Legacy x2 regression baselines.
+          - Existing MIDI range auto-fit, General MIDI percussion filtering, compatibility diagnostics, local MIDI collection import and SHA-256 duplicate suppression remain unchanged.
           - The field-proven VkKeyScanW + keybd_event backend, exact Roblox MainWindowHandle focus gating, held-note ownership, release-all, pause/seek/cancellation and canonical timing remain unchanged.
-          - Local MIDI multi-select/folder import, deterministic validation and SHA-256 duplicate suppression remain unchanged.
 
           Notes:
-          - Range auto-fit is one deterministic global transpose only; MIDI whose melodic span cannot fit the classic 61-key Roblox profile still fails closed.
-          - General MIDI channel 10 percussion is ignored by the production compatibility policy and is now visibly counted in the Library.
+          - MIDI channels are intentionally lowered away after import because Roblox playback targets one physical virtual-piano keyboard rather than a multitimbral synthesizer.
+          - Range auto-fit remains one deterministic global transpose; MIDI whose melodic span cannot fit the classic 61-key Roblox profile still fails closed.
+          - General MIDI channel 10 percussion remains ignored by the production compatibility policy and visibly counted in the Library.
           - keybd_event is intentionally used as a field-compatibility baseline; CI cannot prove that Roblox itself consumes a synthetic input event.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
