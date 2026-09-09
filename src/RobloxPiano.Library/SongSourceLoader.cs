@@ -36,7 +36,9 @@ public static class SongSourceLoader
         }
         if (IsMusicXml(extension))
         {
-            return new LoadedSong(MusicXmlImporter.Import(File.ReadAllText(fullPath)), SongSourceKind.MusicXml);
+            var xml = File.ReadAllText(fullPath);
+            MusicXmlConformance.ValidateForProductionImport(xml);
+            return new LoadedSong(MusicXmlImporter.Import(xml), SongSourceKind.MusicXml);
         }
 
         return new LoadedSong(LegacySheetParser.Parse(File.ReadAllText(fullPath)), SongSourceKind.LegacyText);
@@ -54,6 +56,7 @@ public static class SongSourceLoader
         if (IsMusicXml(extension))
         {
             var xml = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
+            MusicXmlConformance.ValidateForProductionImport(xml);
             return new LoadedSong(MusicXmlImporter.Import(xml), SongSourceKind.MusicXml);
         }
 
