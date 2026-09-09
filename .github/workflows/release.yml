@@ -140,7 +140,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Published executable STA UI startup smoke test failed" }
 
           & $exe --input-abi-smoke
-          if ($LASTEXITCODE -ne 0) { throw "Published executable Windows INPUT ABI smoke test failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Published executable Windows INPUT compatibility smoke test failed" }
 
       - name: Generate checksum and release evidence
         if: steps.guard.outputs.publish == 'true'
@@ -167,17 +167,18 @@ jobs:
           2. The Sheet Library remains list-first; existing user songs are preserved and starter content is only a first-run convenience.
           3. Search your Library or online MIDI catalog, or import TXT/VPS/MIDI/MusicXML from your computer.
           4. Open Roblox and enter the piano game, select a local song and press Play.
-          5. Playback stops safely on focus loss or input failure and releases held keys.
+          5. Roblox Piano restores the selected Roblox window, waits for foreground confirmation, then playback begins only while that exact window remains focused.
 
           Production reliability in this release:
-          - WinForms now starts through an explicit synchronous STA entrypoint; published UI smoke creates both Library and playback window handles to catch OLE drag/drop apartment regressions.
-          - Windows SendInput now uses a native-compatible INPUT union size (40 bytes on win-x64) instead of a keyboard-only undersized union that caused SendInput to return 0.
-          - Published release validation includes a deterministic INPUT ABI smoke probe before release creation.
-          - SendInput rejection is converted into a controlled playback failure with diagnostics and privilege/focus guidance instead of escaping as an unhandled Roblox Piano error dialog.
-          - Existing focus guard, cancellation, release-all behavior, Legacy/Legacy x2 baselines, MIDI/MusicXML import and canonical playback contracts remain unchanged.
+          - Real-client feedback showed that Windows accepting SendInput is not enough: v0.14.3 could return success while Roblox consumed no notes.
+          - Keyboard dispatch now uses virtual-key SendInput semantics matching the previously working PowerShell prototype instead of scan-code packets.
+          - Mixed chords keep source order and apply Shift/Ctrl/Alt only around the corresponding character key-down, matching the known-good prototype behavior.
+          - Interactive focus safety is bound to the exact Roblox MainWindowHandle; activation mirrors the prototype with SetForegroundWindow plus a bounded 250 ms settle/confirmation window.
+          - The corrected native INPUT ABI from v0.14.3 remains in place; the published smoke probe now also verifies virtual-key packet semantics before release creation.
+          - Existing cancellation, release-all behavior, Legacy/Legacy x2 baselines, MIDI/MusicXML import and canonical playback contracts remain unchanged.
 
           Notes:
-          - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client now reports this safely instead of crashing the playback UI.
+          - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client reports this safely instead of crashing the playback UI.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           - Real Roblox client acceptance remains a required field validation in addition to deterministic CI smoke tests.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
