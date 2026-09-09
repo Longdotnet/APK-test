@@ -310,6 +310,7 @@ public sealed class SheetLibraryService
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                _ = exception;
                 // A transiently unreadable existing file must not block importing other songs.
             }
         }
