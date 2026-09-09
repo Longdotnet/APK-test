@@ -32,6 +32,9 @@ jobs:
       - name: Run legacy regression harness
         run: dotnet run --project tests/RobloxPiano.RegressionTests/RobloxPiano.RegressionTests.csproj -c Release
 
+      - name: Run transport regression harness
+        run: dotnet run --project tests/RobloxPiano.TransportTests/RobloxPiano.TransportTests.csproj -c Release
+
       - name: Run playback quality harness
         run: dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
 
@@ -90,9 +93,6 @@ jobs:
       - name: Malformed baseline is a controlled client error
         shell: pwsh
         run: |
-          # This invocation intentionally returns non-zero. GitHub's PowerShell
-          # wrapper treats native non-zero exits as terminating errors on modern
-          # pwsh unless this preference is disabled for the assertion.
           $PSNativeCommandUseErrorActionPreference = $false
 
           Set-Content -Path artifacts/quality/invalid-baseline.json -Value '{broken-json'
