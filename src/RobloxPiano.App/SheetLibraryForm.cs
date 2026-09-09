@@ -35,7 +35,7 @@ internal sealed class SheetLibraryForm : Form
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
     private readonly System.Windows.Forms.Timer _robloxTimer = new() { Interval = 1000 };
     private IReadOnlyList<SheetLibraryEntry> _entries = Array.Empty<SheetLibraryEntry>();
-    private bool _robloxReady;
+    private RobloxWindowTarget? _robloxTarget;
     private bool _dragDropAvailable;
 
     public SheetLibraryForm()
@@ -103,7 +103,7 @@ internal sealed class SheetLibraryForm : Form
         var title = new Label { Text = "Roblox Piano", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Import MIDI collections into the Library. If Roblox does not react during playback, Test Roblox Input isolates focus, Windows delivery and Roblox consumption without involving MIDI or AI.",
+            Text = "Import MIDI collections into the Library. Playback now verifies the current Roblox process accepts the production input path before the first play in that Roblox session.",
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 4)
         };
@@ -195,12 +195,18 @@ internal sealed class SheetLibraryForm : Form
 
     private void RefreshRobloxStatus()
     {
-        var target = RobloxProcessLocator.FindPreferred();
-        _robloxReady = target is not null;
-        _robloxStatus.Text = target is null
-            ? "○ Roblox not detected — open Roblox and enter the piano game."
-            : "● Roblox ready — select a song and press Play, or run Test Roblox Input if Roblox is not reacting.";
-        _inputCheckButton.Enabled = target is not null;
+        _robloxTarget = RobloxProcessLocator.FindPreferred();
+        var health = RobloxInputHealthSession.GetFor(_robloxTarget);
+        var decision = RobloxPlaybackPreflight.Evaluate(_robloxTarget, health);
+
+        _robloxStatus.Text = decision.Action switch
+        {
+            RobloxPlaybackPreflightAction.OpenRoblox => "○ Roblox not detected — open Roblox and enter the piano game.",
+            RobloxPlaybackPreflightAction.Proceed => $"✓ Roblox PID {_robloxTarget!.ProcessId} ready — input confirmed for this process.",
+            RobloxPlaybackPreflightAction.RetestInput => $"⚠ Roblox PID {_robloxTarget!.ProcessId} detected, but input is blocked. Retest before playback.",
+            _ => $"○ Roblox PID {_robloxTarget!.ProcessId} detected — verify input once before playback."
+        };
+        _inputCheckButton.Enabled = _robloxTarget is not null;
         UpdatePrimaryAction();
     }
 
@@ -236,8 +242,11 @@ internal sealed class SheetLibraryForm : Form
     {
         var selected = _grid.CurrentRow?.DataBoundItem as SheetLibraryEntry;
         var playable = selected?.Status == SheetValidationStatus.Valid;
-        _playButton.Enabled = playable && _robloxReady;
-        _playButton.Text = !playable ? "Select a Song" : _robloxReady ? "Play" : "Open Roblox to Play";
+        var health = RobloxInputHealthSession.GetFor(_robloxTarget);
+        var decision = RobloxPlaybackPreflight.Evaluate(_robloxTarget, health);
+
+        _playButton.Enabled = playable && _robloxTarget is not null;
+        _playButton.Text = !playable ? "Select a Song" : decision.PrimaryActionText;
 
         if (selected?.HasCompatibilityAdjustment == true)
         {
@@ -389,12 +398,51 @@ internal sealed class SheetLibraryForm : Form
             _status.Text = entry.Error ?? "This song needs repair before it can play.";
             return;
         }
-        if (!_robloxReady)
+
+        var target = RobloxProcessLocator.FindPreferred();
+        var decision = RobloxPlaybackPreflight.Evaluate(target, RobloxInputHealthSession.GetFor(target));
+        if (target is null)
         {
-            _robloxStatus.Text = "○ Open Roblox and enter the piano game; Play becomes available automatically.";
+            _robloxTarget = null;
+            _robloxStatus.Text = decision.StatusText;
+            UpdatePrimaryAction();
             return;
         }
 
+        if (!decision.CanLaunchPlayback)
+        {
+            ClientDiagnostics.Log($"Playback preflight requires action={decision.Action}; targetPid={target.ProcessId}.");
+            _status.Text = decision.StatusText;
+            using var inputCheck = new RobloxInputCheckDialog();
+            inputCheck.ShowDialog(this);
+
+            target = RobloxProcessLocator.FindPreferred();
+            decision = RobloxPlaybackPreflight.Evaluate(target, RobloxInputHealthSession.GetFor(target));
+            _robloxTarget = target;
+            RefreshRobloxStatus();
+            if (!decision.CanLaunchPlayback)
+            {
+                _status.Text = decision.StatusText;
+                return;
+            }
+        }
+
+        var launchTarget = RobloxProcessLocator.FindPreferred();
+        var launchDecision = RobloxPlaybackPreflight.Evaluate(
+            launchTarget,
+            RobloxInputHealthSession.GetFor(launchTarget));
+        if (!launchDecision.CanLaunchPlayback)
+        {
+            ClientDiagnostics.Log(
+                $"Playback preflight invalidated before launch: action={launchDecision.Action}; " +
+                $"targetPid={(launchTarget?.ProcessId.ToString() ?? "none")}.");
+            _robloxTarget = launchTarget;
+            _status.Text = launchDecision.StatusText;
+            RefreshRobloxStatus();
+            return;
+        }
+
+        ClientDiagnostics.Log($"Playback preflight confirmed for Roblox PID {launchTarget!.ProcessId}; launching '{entry.Title}'.");
         var state = ClientStateStore.Load();
         ClientStateStore.Save(state with { LastSheetPath = entry.Path });
         using var player = new ClientMainForm(autoStart: true);
