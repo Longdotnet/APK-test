@@ -163,9 +163,40 @@ internal static class RobloxProcessLocator
         bool IsExactPlayer);
 }
 
-internal sealed class RobloxTargetFocusGate(RobloxWindowTarget target) : IFocusGate
+internal sealed class RobloxTargetFocusGate : IFocusGate
 {
-    public bool IsTargetFocused => target.IsForeground;
+    private readonly object _gate = new();
+    private readonly RobloxWindowTarget _target;
+    private long? _focusedSince;
+
+    public RobloxTargetFocusGate(RobloxWindowTarget target)
+    {
+        _target = target ?? throw new ArgumentNullException(nameof(target));
+    }
+
+    public bool IsTargetFocused
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (!_target.IsForeground)
+                {
+                    _focusedSince = null;
+                    return false;
+                }
+
+                _focusedSince ??= Stopwatch.GetTimestamp();
+                var stable = Stopwatch.GetElapsedTime(_focusedSince.Value) >= RobloxFieldInputPolicy.StableFocusDuration;
+                if (stable)
+                {
+                    return true;
+                }
+
+                return false;
+            }
+        }
+    }
 }
 
 internal sealed record ClientState(string? LastSheetPath, double PreferredSpeed, int InputLatencyMs = 0)
