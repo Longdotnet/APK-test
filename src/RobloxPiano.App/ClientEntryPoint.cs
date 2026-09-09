@@ -137,6 +137,7 @@ internal static class ClientEntryPoint
 
             AssertInputHealthSessionSemantics();
             AssertPlaybackPreflightSemantics();
+            AssertProcessLifetimeAuthorizationSemantics();
 
             if (RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPiano"))
             {
@@ -159,7 +160,7 @@ internal static class ClientEntryPoint
                 $"vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; " +
                 $"minimumPhysicalHoldMs={WindowsKeyboardInputSink.MinimumPhysicalKeyHold.TotalMilliseconds:0}; " +
                 $"stableFocusMs={RobloxFieldInputPolicy.StableFocusDuration.TotalMilliseconds:0}; " +
-                $"guiVerdicts=7; sessionHealth=pid-scoped; playbackPreflight=pid-scoped; targetSelfExcluded=true.");
+                $"guiVerdicts=7; sessionHealth=process-lifetime-scoped; playbackPreflight=process-lifetime-scoped; pidReuseFailClosed=true; targetSelfExcluded=true.");
             return 0;
         }
         catch (Exception exception)
@@ -172,12 +173,13 @@ internal static class ClientEntryPoint
     private static void AssertInputHealthSessionSemantics()
     {
         RobloxInputHealthSession.ResetForTests();
-        var first = new RobloxWindowTarget(1001, IntPtr.Zero, "Roblox A");
-        var second = new RobloxWindowTarget(1002, IntPtr.Zero, "Roblox B");
+        var identity = RobloxProcessIdentity.CaptureOrThrow(Environment.ProcessId);
+        var first = new RobloxWindowTarget(identity.ProcessId, IntPtr.Zero, "Current process test target");
+        var unavailable = new RobloxWindowTarget(int.MaxValue, IntPtr.Zero, "Missing process");
 
         if (RobloxInputHealthSession.GetFor(first).State != RobloxInputHealthState.Unknown)
         {
-            throw new InvalidOperationException("New Roblox sessions must start with unknown input readiness.");
+            throw new InvalidOperationException("New Roblox process instances must start with unknown input readiness.");
         }
 
         var confirmed = new RobloxInputCheckAssessment(
@@ -190,14 +192,21 @@ internal static class ClientEntryPoint
         var firstHealth = RobloxInputHealthSession.GetFor(first);
         if (firstHealth.State != RobloxInputHealthState.Confirmed
             || firstHealth.ProcessId != first.ProcessId
+            || firstHealth.ProcessStartTimeUtcTicks != identity.StartTimeUtcTicks
             || firstHealth.Verdict != RobloxInputCheckVerdict.Confirmed)
         {
-            throw new InvalidOperationException("Confirmed input readiness must remain attached to the tested Roblox PID.");
+            throw new InvalidOperationException("Confirmed input readiness must remain attached to the tested Roblox process lifetime.");
         }
 
-        if (RobloxInputHealthSession.GetFor(second).State != RobloxInputHealthState.Unknown)
+        if (RobloxInputHealthSession.GetFor(unavailable).State != RobloxInputHealthState.Unknown)
         {
-            throw new InvalidOperationException("Input readiness must not leak to a different Roblox PID.");
+            throw new InvalidOperationException("Input readiness must not leak to a different or unavailable process.");
+        }
+
+        var staleSamePid = firstHealth with { ProcessStartTimeUtcTicks = identity.StartTimeUtcTicks + 1 };
+        if (staleSamePid.AppliesTo(first))
+        {
+            throw new InvalidOperationException("A reused PID with a different process start identity must not inherit input readiness.");
         }
 
         var blocked = new RobloxInputCheckAssessment(
@@ -208,7 +217,7 @@ internal static class ClientEntryPoint
         RobloxInputHealthSession.Record(first, blocked, DateTimeOffset.UnixEpoch.AddSeconds(1));
         if (RobloxInputHealthSession.GetFor(first).State != RobloxInputHealthState.Blocked)
         {
-            throw new InvalidOperationException("A failed field observation must replace stale confirmed readiness for the same PID.");
+            throw new InvalidOperationException("A failed field observation must replace stale confirmed readiness for the same process instance.");
         }
 
         RobloxInputHealthSession.ResetForTests();
@@ -216,7 +225,9 @@ internal static class ClientEntryPoint
 
     private static void AssertPlaybackPreflightSemantics()
     {
-        var target = new RobloxWindowTarget(2001, IntPtr.Zero, "Roblox preflight");
+        RobloxPlaybackLaunchAuthorization.ResetForTests();
+        var identity = RobloxProcessIdentity.CaptureOrThrow(Environment.ProcessId);
+        var target = new RobloxWindowTarget(identity.ProcessId, IntPtr.Zero, "Roblox preflight test target");
 
         var noRoblox = RobloxPlaybackPreflight.Evaluate(null, RobloxInputHealthSnapshot.Unknown);
         if (noRoblox.Action != RobloxPlaybackPreflightAction.OpenRoblox || noRoblox.CanLaunchPlayback)
@@ -236,11 +247,17 @@ internal static class ClientEntryPoint
             RobloxInputCheckVerdict.Confirmed,
             DateTimeOffset.UnixEpoch,
             "confirmed",
-            "proceed");
+            "proceed",
+            identity.StartTimeUtcTicks);
         var confirmed = RobloxPlaybackPreflight.Evaluate(target, confirmedHealth);
         if (confirmed.Action != RobloxPlaybackPreflightAction.Proceed || !confirmed.CanLaunchPlayback)
         {
-            throw new InvalidOperationException("Confirmed input readiness must allow playback for the same Roblox PID.");
+            throw new InvalidOperationException("Confirmed input readiness must allow playback for the same Roblox process lifetime.");
+        }
+
+        if (RobloxPlaybackLaunchAuthorization.AuthorizedProcessStartTimeUtcTicksForTests != identity.StartTimeUtcTicks)
+        {
+            throw new InvalidOperationException("Playback launch authorization must carry the verified process start identity.");
         }
 
         var blockedHealth = new RobloxInputHealthSnapshot(
@@ -249,18 +266,66 @@ internal static class ClientEntryPoint
             RobloxInputCheckVerdict.RobloxDidNotReact,
             DateTimeOffset.UnixEpoch,
             "blocked",
-            "retest");
+            "retest",
+            identity.StartTimeUtcTicks);
         var blocked = RobloxPlaybackPreflight.Evaluate(target, blockedHealth);
         if (blocked.Action != RobloxPlaybackPreflightAction.RetestInput || blocked.CanLaunchPlayback)
         {
             throw new InvalidOperationException("Blocked input readiness must require retest before playback.");
         }
 
+        var staleSamePid = confirmedHealth with { ProcessStartTimeUtcTicks = identity.StartTimeUtcTicks + 1 };
+        var staleLifetime = RobloxPlaybackPreflight.Evaluate(target, staleSamePid);
+        if (staleLifetime.Action != RobloxPlaybackPreflightAction.VerifyInput || staleLifetime.CanLaunchPlayback)
+        {
+            throw new InvalidOperationException("Confirmed readiness from an older process lifetime with the same PID must never authorize playback.");
+        }
+
         var staleConfirmed = confirmedHealth with { ProcessId = target.ProcessId + 1 };
-        var stale = RobloxPlaybackPreflight.Evaluate(target, staleConfirmed);
-        if (stale.Action != RobloxPlaybackPreflightAction.VerifyInput || stale.CanLaunchPlayback)
+        var stalePid = RobloxPlaybackPreflight.Evaluate(target, staleConfirmed);
+        if (stalePid.Action != RobloxPlaybackPreflightAction.VerifyInput || stalePid.CanLaunchPlayback)
         {
             throw new InvalidOperationException("Confirmed readiness from another Roblox PID must never authorize playback.");
+        }
+
+        RobloxPlaybackLaunchAuthorization.ResetForTests();
+    }
+
+    private static void AssertProcessLifetimeAuthorizationSemantics()
+    {
+        var authorized = new RobloxProcessIdentity(3001, 100_000);
+        var same = new RobloxProcessIdentity(3001, 100_000);
+        var reusedPid = new RobloxProcessIdentity(3001, 200_000);
+        var otherPid = new RobloxProcessIdentity(3002, 100_000);
+        var authorizedAt = DateTimeOffset.UnixEpoch;
+
+        if (RobloxPlaybackLaunchAuthorization.CompareIdentity(authorized, same, authorizedAt, 3001) is not null)
+        {
+            throw new InvalidOperationException("The exact authorized process lifetime must remain valid.");
+        }
+
+        if (RobloxPlaybackLaunchAuthorization.CompareIdentity(authorized, reusedPid, authorizedAt, 3001)
+            != RobloxPlaybackAuthorizationFailure.ProcessReplaced)
+        {
+            throw new InvalidOperationException("PID reuse with a different process start time must fail closed as ProcessReplaced.");
+        }
+
+        if (RobloxPlaybackLaunchAuthorization.CompareIdentity(authorized, null, authorizedAt, 3001)
+            != RobloxPlaybackAuthorizationFailure.ProcessEnded)
+        {
+            throw new InvalidOperationException("A vanished verified process must fail closed as ProcessEnded.");
+        }
+
+        if (RobloxPlaybackLaunchAuthorization.CompareIdentity(authorized, otherPid, authorizedAt, 3002)
+            != RobloxPlaybackAuthorizationFailure.VerificationRequired)
+        {
+            throw new InvalidOperationException("A different target PID must require fresh input verification.");
+        }
+
+        if (RobloxPlaybackLaunchAuthorization.CompareIdentity(null, same, null, 3001)
+            != RobloxPlaybackAuthorizationFailure.VerificationRequired)
+        {
+            throw new InvalidOperationException("Missing launch authorization must require fresh verification.");
         }
     }
 
