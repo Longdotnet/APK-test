@@ -82,8 +82,8 @@ public static class MusicXmlImporter
                             var tempo = ReadTempoQuarterBpm(child);
                             if (tempo is not null)
                             {
-                                var offset = ReadDirectionOffsetQuarter(child, divisions);
-                                AddTempoMarker(tempoMarkers, cursorQuarter + offset, tempo.Value);
+                                var offsetQuarter = ReadDirectionOffsetQuarter(child, divisions);
+                                AddTempoMarker(tempoMarkers, cursorQuarter + offsetQuarter, tempo.Value);
                             }
                             break;
                         }
@@ -98,8 +98,7 @@ public static class MusicXmlImporter
                         }
                         case "backup":
                         {
-                            var durationQuarter = DivisionsToQuarter(ReadDurationDivisions(child), divisions);
-                            cursorQuarter -= durationQuarter;
+                            cursorQuarter -= DivisionsToQuarter(ReadDurationDivisions(child), divisions);
                             if (cursorQuarter < measureStartQuarter - PositionTolerance)
                             {
                                 throw new FormatException("MusicXML backup moves before the start of its measure.");
@@ -109,8 +108,7 @@ public static class MusicXmlImporter
                         }
                         case "forward":
                         {
-                            var durationQuarter = DivisionsToQuarter(ReadDurationDivisions(child), divisions);
-                            cursorQuarter += durationQuarter;
+                            cursorQuarter += DivisionsToQuarter(ReadDurationDivisions(child), divisions);
                             measureEndQuarter = Math.Max(measureEndQuarter, cursorQuarter);
                             break;
                         }
@@ -123,16 +121,12 @@ public static class MusicXmlImporter
 
                             var isChord = Child(child, "chord") is not null;
                             var durationQuarter = DivisionsToQuarter(ReadDurationDivisions(child), divisions);
-                            if (durationQuarter <= 0d)
-                            {
-                                throw new FormatException("MusicXML note duration must be positive.");
-                            }
-
                             var startQuarter = isChord ? previousNoteStartQuarter : cursorQuarter;
                             if (!isChord)
                             {
                                 previousNoteStartQuarter = startQuarter;
                             }
+
                             var endQuarter = startQuarter + durationQuarter;
                             measureEndQuarter = Math.Max(measureEndQuarter, endQuarter);
 
@@ -189,8 +183,8 @@ public static class MusicXmlImporter
                     }
                 }
 
-                // MusicXML backup/forward is a voice cursor operation, not the measure's durable extent.
-                // The next measure starts after the furthest event/forward reached by any voice.
+                // A voice cursor may be rewound by backup. The next measure begins after the
+                // furthest position reached by any voice, never at the last parsed voice cursor.
                 cursorQuarter = measureEndQuarter;
             }
 
@@ -208,7 +202,6 @@ public static class MusicXmlImporter
         }
 
         var tempoMap = BuildTempoMap(tempoMarkers);
-        var initialBpm = tempoMap[0].Bpm;
         var timedNotes = notes
             .Select(note => new TimedNote(
                 QuarterToSeconds(note.StartQuarter, tempoMap),
@@ -228,11 +221,13 @@ public static class MusicXmlImporter
             .ToArray();
 
         var eventEnd = grouped.Max(item => item.Start + item.Duration);
-        var timelineSeconds = QuarterToSeconds(globalEndQuarter, tempoMap);
-        var timeline = TimeSpan.FromTicks(Math.Max(ToTicks(timelineSeconds), eventEnd.Ticks));
+        var timeline = TimeSpan.FromTicks(Math.Max(
+            ToTicks(QuarterToSeconds(globalEndQuarter, tempoMap)),
+            eventEnd.Ticks));
+
         return new PerformanceTrack(
             title,
-            initialBpm,
+            tempoMap[0].Bpm,
             1,
             TimeSpan.Zero,
             grouped,
@@ -260,11 +255,6 @@ public static class MusicXmlImporter
         }
 
         var metronome = direction.Descendants().FirstOrDefault(element => element.Name.LocalName == "metronome");
-        if (metronome is null)
-        {
-            return null;
-        }
-
         var perMinuteText = Child(metronome, "per-minute")?.Value;
         if (string.IsNullOrWhiteSpace(perMinuteText))
         {
@@ -292,7 +282,7 @@ public static class MusicXmlImporter
             _ => throw new FormatException($"MusicXML metronome beat-unit '{beatUnit}' is not supported.")
         };
 
-        var dotCount = metronome.Elements().Count(element => element.Name.LocalName == "beat-unit-dot");
+        var dotCount = metronome?.Elements().Count(element => element.Name.LocalName == "beat-unit-dot") ?? 0;
         var dotAddition = quarterLength;
         for (var index = 0; index < dotCount; index++)
         {
@@ -326,34 +316,29 @@ public static class MusicXmlImporter
         {
             throw new FormatException("MusicXML tempo marker resolves before the start of the score.");
         }
+
         markers.Add(new TempoMarker(Math.Max(0d, quarter), bpm));
     }
 
     private static IReadOnlyList<TempoMarker> BuildTempoMap(IEnumerable<TempoMarker> markers)
     {
         var ordered = markers
-            .Append(new TempoMarker(0d, DefaultBpm))
             .OrderBy(item => item.Quarter)
             .ThenBy(item => item.Bpm)
             .ToArray();
-
         var result = new List<TempoMarker>();
+
         foreach (var marker in ordered)
         {
             if (result.Count > 0 && Math.Abs(result[^1].Quarter - marker.Quarter) <= PositionTolerance)
             {
-                // An explicit tempo at score start overrides the synthetic 120 BPM default.
-                if (Math.Abs(result[^1].Quarter) <= PositionTolerance && Math.Abs(result[^1].Bpm - DefaultBpm) <= PositionTolerance)
-                {
-                    result[^1] = marker;
-                    continue;
-                }
                 if (Math.Abs(result[^1].Bpm - marker.Bpm) > PositionTolerance)
                 {
                     throw new FormatException($"MusicXML contains conflicting tempo values at quarter position {marker.Quarter.ToString("0.########", CultureInfo.InvariantCulture)}.");
                 }
                 continue;
             }
+
             result.Add(marker);
         }
 
@@ -361,6 +346,7 @@ public static class MusicXmlImporter
         {
             result.Insert(0, new TempoMarker(0d, DefaultBpm));
         }
+
         return result;
     }
 
@@ -374,23 +360,17 @@ public static class MusicXmlImporter
         var seconds = 0d;
         var position = 0d;
         var bpm = tempoMap[0].Bpm;
-        for (var index = 1; index < tempoMap.Count && tempoMap[index].Quarter < quarter - PositionTolerance; index++)
+        for (var index = 1; index < tempoMap.Count; index++)
         {
             var marker = tempoMap[index];
+            if (marker.Quarter >= quarter - PositionTolerance)
+            {
+                break;
+            }
+
             seconds += (marker.Quarter - position) * 60d / bpm;
             position = marker.Quarter;
             bpm = marker.Bpm;
-        }
-
-        if (tempoMap.Count > 1)
-        {
-            var exact = tempoMap.LastOrDefault(marker => Math.Abs(marker.Quarter - quarter) <= PositionTolerance);
-            if (exact is not null && exact.Quarter > position + PositionTolerance)
-            {
-                seconds += (exact.Quarter - position) * 60d / bpm;
-                position = exact.Quarter;
-                bpm = exact.Bpm;
-            }
         }
 
         seconds += (quarter - position) * 60d / bpm;
