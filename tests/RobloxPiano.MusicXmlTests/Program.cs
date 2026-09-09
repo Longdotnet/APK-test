@@ -4,10 +4,15 @@ var cases = new (string Name, Action Run)[]
 {
     ("chords rests tempo and backup compile deterministically", ChordsRestsTempoAndBackup),
     ("ties compile to one canonical duration", TiesCompile),
+    ("tempo changes with backup compile in musical time", TempoChangesWithBackupCompile),
+    ("direction offsets place tempo on musical timeline", DirectionOffsetTempoCompiles),
+    ("measure extent follows longest voice", MeasureExtentFollowsLongestVoice),
+    ("metronome beat units normalize to quarter bpm", MetronomeBeatUnitNormalizes),
+    ("conflicting simultaneous tempos fail closed", ConflictingTempoFails),
     ("out of range notes fail closed", OutOfRangeFails),
     ("malformed and unsupported notation fail controlled", MalformedFails),
     ("conformance rejects silent semantic loss", ConformanceRejectsUnsupportedSemantics),
-    ("conformance detects tempo backup ambiguity", ConformanceDetectsTempoBackupAmbiguity),
+    ("conformance allows modeled tempo backup semantics", ConformanceAllowsTempoBackup),
     ("conformance diagnostics are stable and localized", ConformanceDiagnosticsAreStable)
 };
 
@@ -33,7 +38,7 @@ static void ChordsRestsTempoAndBackup()
     var track = MusicXmlImporter.Import("""
         <?xml version="1.0" encoding="UTF-8"?>
         <score-partwise version="4.0">
-          <movement-title>Phase 13 Fixture</movement-title>
+          <movement-title>Phase 15 Fixture</movement-title>
           <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
           <part id="P1">
             <measure number="1">
@@ -49,7 +54,7 @@ static void ChordsRestsTempoAndBackup()
         </score-partwise>
         """);
 
-    Require(track.Title == "Phase 13 Fixture", "title mismatch");
+    Require(track.Title == "Phase 15 Fixture", "title mismatch");
     Require(Math.Abs(track.Bpm - 120d) < 0.001d, "tempo mismatch");
     Require(track.Events.Count == 2, $"expected 2 grouped events, actual {track.Events.Count}");
     Require(track.Events[0].Keys.Count == 2, "C/E chord was not grouped");
@@ -80,6 +85,113 @@ static void TiesCompile()
 
     Require(track.Events.Count == 1, "tie must produce one canonical event");
     Require(track.Events[0].Duration == TimeSpan.FromSeconds(2), "tie duration mismatch");
+}
+
+static void TempoChangesWithBackupCompile()
+{
+    var xml = """
+        <score-partwise version="4.0">
+          <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+          <part id="P1"><measure number="3">
+            <attributes><divisions>4</divisions></attributes>
+            <direction><sound tempo="120"/></direction>
+            <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+            <direction><sound tempo="60"/></direction>
+            <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration></note>
+            <backup><duration>8</duration></backup>
+            <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note>
+            <note><pitch><step>F</step><octave>4</octave></pitch><duration>4</duration></note>
+          </measure></part>
+        </score-partwise>
+        """;
+
+    MusicXmlConformance.ValidateForProductionImport(xml);
+    var track = MusicXmlImporter.Import(xml);
+    Require(track.Events.Count == 2, "voices should group at q0 and q1");
+    Require(track.Events[0].Start == TimeSpan.Zero, "q0 event mismatch");
+    Require(track.Events[0].Duration == TimeSpan.FromMilliseconds(500), "q0 duration must use 120 BPM");
+    Require(track.Events[1].Start == TimeSpan.FromMilliseconds(500), "q1 start mismatch");
+    Require(track.Events[1].Duration == TimeSpan.FromSeconds(1), "q1 duration must use 60 BPM");
+    Require(track.TimelineDuration == TimeSpan.FromSeconds(1.5), "tempo-map timeline mismatch");
+}
+
+static void DirectionOffsetTempoCompiles()
+{
+    var xml = """
+        <score-partwise version="4.0">
+          <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+          <part id="P1"><measure number="1">
+            <attributes><divisions>4</divisions></attributes>
+            <direction><sound tempo="120"/></direction>
+            <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+            <direction><offset>4</offset><sound tempo="60"/></direction>
+            <note><pitch><step>D</step><octave>4</octave></pitch><duration>8</duration></note>
+          </measure></part>
+        </score-partwise>
+        """;
+
+    MusicXmlConformance.ValidateForProductionImport(xml);
+    var track = MusicXmlImporter.Import(xml);
+    Require(track.Events[0].Duration == TimeSpan.FromMilliseconds(500), "first quarter mismatch");
+    Require(track.Events[1].Start == TimeSpan.FromMilliseconds(500), "second note start mismatch");
+    Require(track.Events[1].Duration == TimeSpan.FromSeconds(1.5), "offset tempo should affect only the second half of the two-quarter note");
+    Require(track.TimelineDuration == TimeSpan.FromSeconds(2), "offset tempo timeline mismatch");
+}
+
+static void MeasureExtentFollowsLongestVoice()
+{
+    var track = MusicXmlImporter.Import("""
+        <score-partwise version="4.0">
+          <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+          <part id="P1">
+            <measure number="1">
+              <attributes><divisions>1</divisions></attributes>
+              <direction><sound tempo="60"/></direction>
+              <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
+              <backup><duration>4</duration></backup>
+              <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note>
+            </measure>
+            <measure number="2">
+              <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration></note>
+            </measure>
+          </part>
+        </score-partwise>
+        """);
+
+    var nextMeasure = track.Events.Single(item => item.Keys.Count == 1 && item.Start == TimeSpan.FromSeconds(4));
+    Require(nextMeasure.Duration == TimeSpan.FromSeconds(1), "next measure note duration mismatch");
+    Require(track.TimelineDuration == TimeSpan.FromSeconds(5), "longest-voice measure extent was not preserved");
+}
+
+static void MetronomeBeatUnitNormalizes()
+{
+    var track = MusicXmlImporter.Import("""
+        <score-partwise version="4.0">
+          <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+          <part id="P1"><measure number="1">
+            <attributes><divisions>1</divisions></attributes>
+            <direction><direction-type><metronome><beat-unit>half</beat-unit><per-minute>60</per-minute></metronome></direction-type></direction>
+            <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+          </measure></part>
+        </score-partwise>
+        """);
+
+    Require(Math.Abs(track.Bpm - 120d) < 0.001d, "half=60 must normalize to quarter=120");
+    Require(track.Events[0].Duration == TimeSpan.FromMilliseconds(500), "normalized metronome duration mismatch");
+}
+
+static void ConflictingTempoFails()
+{
+    ExpectFormat(() => MusicXmlImporter.Import("""
+        <score-partwise version="4.0">
+          <part-list>
+            <score-part id="P1"><part-name>RH</part-name></score-part>
+            <score-part id="P2"><part-name>LH</part-name></score-part>
+          </part-list>
+          <part id="P1"><measure><attributes><divisions>1</divisions></attributes><direction><sound tempo="120"/></direction><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure></part>
+          <part id="P2"><measure><attributes><divisions>1</divisions></attributes><direction><sound tempo="90"/></direction><note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note></measure></part>
+        </score-partwise>
+        """), "conflicting tempo");
 }
 
 static void OutOfRangeFails()
@@ -125,7 +237,7 @@ static void ConformanceRejectsUnsupportedSemantics()
     ExpectFormat(() => MusicXmlConformance.ValidateForProductionImport(xml), "MXML101");
 }
 
-static void ConformanceDetectsTempoBackupAmbiguity()
+static void ConformanceAllowsTempoBackup()
 {
     var xml = """
         <score-partwise version="4.0">
@@ -134,7 +246,7 @@ static void ConformanceDetectsTempoBackupAmbiguity()
             <attributes><divisions>4</divisions></attributes>
             <direction><sound tempo="120"/></direction>
             <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>
-            <direction><sound tempo="90"/></direction>
+            <direction><offset>2</offset><sound tempo="90"/></direction>
             <backup><duration>4</duration></backup>
             <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note>
           </measure></part>
@@ -142,7 +254,7 @@ static void ConformanceDetectsTempoBackupAmbiguity()
         """;
 
     var report = MusicXmlConformance.Analyze(xml);
-    Require(report.Errors.Any(item => item.Code == "MXML111"), "tempo/backup ambiguity must be rejected");
+    Require(report.CanImport, "modeled tempo/offset/backup semantics should pass conformance");
 }
 
 static void ConformanceDiagnosticsAreStable()
@@ -159,7 +271,7 @@ static void ConformanceDiagnosticsAreStable()
         """;
 
     var report = MusicXmlConformance.Analyze(xml);
-    Require(report.Errors.Select(item => item.Code).SequenceEqual(["MXML107", "MXML110", "MXML112"]), "diagnostic order changed");
+    Require(report.Errors.Select(item => item.Code).SequenceEqual(["MXML107", "MXML112"]), "diagnostic order changed");
     Require(report.Errors.All(item => item.Part == "Piano" && item.Measure == "12"), "diagnostic location missing");
     ExpectFormat(() => MusicXmlConformance.ValidateForProductionImport(xml), "measure 12");
 }
