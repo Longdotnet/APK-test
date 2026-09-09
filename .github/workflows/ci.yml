@@ -59,6 +59,9 @@ jobs:
       - name: Run deterministic MusicXML importer regression harness
         run: dotnet run --project tests/RobloxPiano.MusicXmlTests/RobloxPiano.MusicXmlTests.csproj -c Release
 
+      - name: Run MusicXML repeat normalization regression harness
+        run: dotnet run --project tests/RobloxPiano.MusicXmlRepeatTests/RobloxPiano.MusicXmlRepeatTests.csproj -c Release
+
       - name: Run timing calibration regression harness
         run: dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
 
