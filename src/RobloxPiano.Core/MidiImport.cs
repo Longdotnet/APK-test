@@ -94,9 +94,8 @@ public static class MidiFileImporter
         }
 
         var tempoChanges = BuildTempoMap(events);
-        var firstTempo = tempoChanges.Count == 0
-            ? DefaultTempoMicrosecondsPerQuarter
-            : tempoChanges[0].MicrosecondsPerQuarter;
+        var firstTempo = tempoChanges.FirstOrDefault(change => change.Tick == 0)?.MicrosecondsPerQuarter
+            ?? DefaultTempoMicrosecondsPerQuarter;
         var ordered = events
             .Where(item => item.Kind is RawEventKind.NoteOn or RawEventKind.NoteOff or RawEventKind.Sustain)
             .OrderBy(item => item.Tick)
@@ -413,6 +412,8 @@ public static class MidiFileImporter
                     break;
             }
         }
+
+        throw new FormatException("MIDI track ended without an EndOfTrack meta event.");
     }
 
     private enum RawEventKind { NoteOn, NoteOff, Sustain, Tempo }
@@ -468,7 +469,7 @@ public static class MidiFileImporter
             for (var index = 0; index < 4; index++)
             {
                 var current = ReadByte();
-                value = checked((value << 7) | (current & 0x7F));
+                value = checked((value << 7) | (long)(current & 0x7F));
                 if ((current & 0x80) == 0)
                 {
                     return value;
