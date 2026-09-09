@@ -51,7 +51,7 @@ internal static class Program
     private static async Task TestRelativeTimingAsync()
     {
         var track = CreateTrack();
-        var clock = new FakeClock(TimeSpan.FromMilliseconds(3));
+        var clock = new FakeClock(TimeSpan.FromMilliseconds(5));
         var collector = new PlaybackQualityCollector();
         var instrumented = PlaybackInstrumentation.Create(
             track,
@@ -70,8 +70,8 @@ internal static class Program
         Equal(report.PlannedEdgeCount, report.DispatchedEdgeCount, "all edges dispatched");
         Equal(0, report.MissingEdgeCount, "no missing edges");
         Equal(0, report.FailureCount, "no quality failures");
-        True(report.MaxAbsoluteTimingErrorMilliseconds >= 2.9d, "clock overshoot should be measurable");
-        True(report.P95AbsoluteTimingErrorMilliseconds >= 2.9d, "p95 should expose repeated overshoot");
+        True(report.MaxAbsoluteTimingErrorMilliseconds >= 4.9d, "clock overshoot should be measurable");
+        True(report.P95AbsoluteTimingErrorMilliseconds >= 4.9d, "p95 should expose repeated overshoot");
     }
 
     private static async Task TestFocusPauseAsync()
