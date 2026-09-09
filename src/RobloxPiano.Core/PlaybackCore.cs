@@ -111,7 +111,8 @@ public interface IFocusGate
 public sealed record PlaybackOptions(
     double Speed = 1d,
     TimeSpan? InitialDelay = null,
-    TimeSpan? FocusPollInterval = null);
+    TimeSpan? FocusPollInterval = null,
+    TimeSpan? DispatchLead = null);
 
 public sealed class PlaybackKernel
 {
@@ -143,6 +144,14 @@ public sealed class PlaybackKernel
         if (pollInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Focus poll interval must be positive.");
+        }
+
+        var dispatchLead = options.DispatchLead ?? TimeSpan.Zero;
+        if (dispatchLead < TimeSpan.Zero || dispatchLead > PlaybackTimingProfile.MaximumDispatchLead)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"Dispatch lead must be between 0 and {PlaybackTimingProfile.MaximumDispatchLead.TotalMilliseconds:0} ms.");
         }
 
         var edges = PlaybackPlanner.BuildEdges(track);
@@ -180,7 +189,14 @@ public sealed class PlaybackKernel
                         continue;
                     }
 
-                    var target = origin + Scale(edge.At, options.Speed) + pausedDuration;
+                    var canonicalTarget = origin + Scale(edge.At, options.Speed) + pausedDuration;
+                    var target = canonicalTarget - dispatchLead;
+                    var earliestSafeTarget = origin - dispatchLead;
+                    if (target < earliestSafeTarget)
+                    {
+                        target = earliestSafeTarget;
+                    }
+
                     var now = _clock.Elapsed;
                     if (now >= target)
                     {
