@@ -45,9 +45,12 @@ internal static class ClientEntryPoint
             using var player = new ClientMainForm();
             _ = player.Handle;
 
+            using var inputCheck = new RobloxInputCheckDialog();
+            _ = inputCheck.Handle;
+
             Console.WriteLine(
                 $"UI startup smoke passed. apartment={Thread.CurrentThread.GetApartmentState()}; " +
-                $"libraryDragDrop={library.AllowDrop}; playerDragDrop={player.AllowDrop}.");
+                $"libraryDragDrop={library.AllowDrop}; playerDragDrop={player.AllowDrop}; inputCheckReady=true.");
             return 0;
         }
         catch (Exception exception)
@@ -96,6 +99,42 @@ internal static class ClientEntryPoint
                 throw new InvalidOperationException("Roblox field-input readiness policy is invalid.");
             }
 
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(false, false, false, false, 0, TimeSpan.Zero),
+                null,
+                RobloxInputCheckVerdict.ActivationFailed,
+                expectedSuccess: false);
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(true, false, false, false, 0, TimeSpan.Zero),
+                null,
+                RobloxInputCheckVerdict.FocusUnstable,
+                expectedSuccess: false);
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(true, true, false, true, 0x57, TimeSpan.FromMilliseconds(650)),
+                null,
+                RobloxInputCheckVerdict.WindowsKeyStateNotObserved,
+                expectedSuccess: false);
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(true, true, true, false, 0x57, TimeSpan.FromMilliseconds(650)),
+                null,
+                RobloxInputCheckVerdict.FocusLostDuringProbe,
+                expectedSuccess: false);
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(true, true, true, true, 0x57, TimeSpan.FromMilliseconds(650)),
+                null,
+                RobloxInputCheckVerdict.NativeDeliveryAwaitingObservation,
+                expectedSuccess: false);
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(true, true, true, true, 0x57, TimeSpan.FromMilliseconds(650)),
+                false,
+                RobloxInputCheckVerdict.RobloxDidNotReact,
+                expectedSuccess: false);
+            AssertInputVerdict(
+                new RobloxFieldInputProbeResult(true, true, true, true, 0x57, TimeSpan.FromMilliseconds(650)),
+                true,
+                RobloxInputCheckVerdict.Confirmed,
+                expectedSuccess: true);
+
             if (RobloxProcessLocator.IsRobloxPlayerProcess("RobloxPiano"))
             {
                 throw new InvalidOperationException("RobloxPiano client must never be classified as the Roblox player target.");
@@ -116,13 +155,33 @@ internal static class ClientEntryPoint
                 $"Windows input compatibility smoke passed. backend={WindowsKeyboardInputSink.BackendName}; " +
                 $"vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP; " +
                 $"minimumPhysicalHoldMs={WindowsKeyboardInputSink.MinimumPhysicalKeyHold.TotalMilliseconds:0}; " +
-                $"stableFocusMs={RobloxFieldInputPolicy.StableFocusDuration.TotalMilliseconds:0}; targetSelfExcluded=true.");
+                $"stableFocusMs={RobloxFieldInputPolicy.StableFocusDuration.TotalMilliseconds:0}; " +
+                $"guiVerdicts=7; targetSelfExcluded=true.");
             return 0;
         }
         catch (Exception exception)
         {
             Console.Error.WriteLine($"Windows input compatibility smoke failed: {exception}");
             return 7;
+        }
+    }
+
+    private static void AssertInputVerdict(
+        RobloxFieldInputProbeResult result,
+        bool? robloxReacted,
+        RobloxInputCheckVerdict expected,
+        bool expectedSuccess)
+    {
+        var assessment = result.Assess(robloxReacted);
+        if (assessment.Verdict != expected || assessment.IsSuccess != expectedSuccess)
+        {
+            throw new InvalidOperationException(
+                $"Input verdict mismatch. expected={expected}/{expectedSuccess}, actual={assessment.Verdict}/{assessment.IsSuccess}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(assessment.Summary) || string.IsNullOrWhiteSpace(assessment.NextAction))
+        {
+            throw new InvalidOperationException($"Input verdict {assessment.Verdict} must include client guidance.");
         }
     }
 
@@ -144,10 +203,13 @@ internal static class ClientEntryPoint
             Console.WriteLine("Observe Roblox: outside a piano this should visibly act like W; inside a piano it should trigger the W-bound note.");
 
             var result = await RobloxFieldInputProbe.RunAsync(target).ConfigureAwait(false);
+            var assessment = result.Assess(null);
             Console.WriteLine(
                 $"Result: activation={result.ActivationConfirmed}; stableForeground={result.StableForegroundConfirmed}; " +
                 $"windowsKeyDownObserved={result.WindowsReportedKeyDown}; foregroundHeld={result.ForegroundHeldDuringProbe}; " +
                 $"vk=0x{result.VirtualKey:X2}; heldMs={result.HoldDuration.TotalMilliseconds:0}.");
+            Console.WriteLine($"Verdict: {assessment.Verdict} — {assessment.Summary}");
+            Console.WriteLine($"Next: {assessment.NextAction}");
             Console.WriteLine($"Diagnostics: {ClientDiagnostics.DirectoryPath}");
 
             return result.NativeDeliveryObserved ? 0 : 9;
