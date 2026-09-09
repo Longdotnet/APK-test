@@ -163,7 +163,8 @@ internal static class SelfUpdateBootstrap
             throw new ArgumentException(error ?? "Invalid self-update command.");
         }
 
-        if (suppressRestart && !IsCiUpdateSmoke())
+        var ciSmoke = suppressRestart && IsCiUpdateSmoke();
+        if (suppressRestart && !ciSmoke)
         {
             throw new InvalidOperationException("The no-restart updater mode is reserved for the production CI smoke test.");
         }
@@ -191,11 +192,19 @@ internal static class SelfUpdateBootstrap
         }
 
         ClientDiagnostics.Log(
-            $"Self-update apply starting: parent={parentProcessId}, staged='{stagedPath}', target='{targetPath}', sha256={expectedSha256}.");
-        await AtomicUpdateApplier.WaitForProcessExitAsync(parentProcessId, TimeSpan.FromSeconds(90)).ConfigureAwait(false);
+            $"Self-update apply starting: parent={parentProcessId}, staged='{stagedPath}', target='{targetPath}', sha256={expectedSha256}, ciSmoke={ciSmoke}.");
+
+        // Real client updates must wait for the old executable to release its file handle.
+        // The CI-only no-restart smoke owns a disposable target and therefore skips a
+        // synthetic parent wait; it exists to prove the published EXE replacement path.
+        if (!ciSmoke)
+        {
+            await AtomicUpdateApplier.WaitForProcessExitAsync(parentProcessId, TimeSpan.FromSeconds(90)).ConfigureAwait(false);
+        }
+
         await AtomicUpdateApplier.ReplaceVerifiedFileAsync(stagedPath, targetPath, expectedSha256).ConfigureAwait(false);
 
-        if (suppressRestart)
+        if (ciSmoke)
         {
             ClientDiagnostics.Log("Self-update replacement verified in CI smoke mode; restart intentionally suppressed.");
             return 0;
