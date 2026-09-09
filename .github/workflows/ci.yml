@@ -111,6 +111,38 @@ jobs:
           & ./artifacts/publish/RobloxPiano.exe --help
           if ($LASTEXITCODE -ne 0) { throw "Published executable smoke test failed" }
 
+      - name: Published single-EXE self-update replacement smoke test
+        shell: pwsh
+        env:
+          ROBLOXPIANO_UPDATE_TEST: "1"
+        run: |
+          $stageDirectory = Join-Path $env:LOCALAPPDATA 'RobloxPiano\updates\ci-smoke'
+          Remove-Item $stageDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $stageDirectory | Out-Null
+          $stagedExe = Join-Path $stageDirectory 'RobloxPiano.exe'
+          Copy-Item artifacts/publish/RobloxPiano.exe $stagedExe
+
+          New-Item -ItemType Directory -Force artifacts/update-smoke | Out-Null
+          $targetExe = Join-Path (Resolve-Path artifacts/update-smoke) 'RobloxPiano.exe'
+          Set-Content -Path $targetExe -Value 'previous-client-placeholder' -NoNewline
+          $expectedHash = (Get-FileHash $stagedExe -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          & $stagedExe `
+            --apply-update `
+            --target $targetExe `
+            --parent-pid 2147483647 `
+            --expected-sha256 $expectedHash `
+            --ci-no-restart
+
+          if ($LASTEXITCODE -ne 0) { throw "Published self-update apply smoke test failed" }
+          $installedHash = (Get-FileHash $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($installedHash -ne $expectedHash) {
+            throw "Self-update smoke target hash does not match staged published EXE."
+          }
+          if (Test-Path ($targetExe + '.update.previous')) {
+            throw "Self-update smoke left a previous-version backup after successful verification."
+          }
+
       - name: Published EXE quality-report smoke test
         shell: pwsh
         run: |
