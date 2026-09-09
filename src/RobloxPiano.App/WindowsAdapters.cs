@@ -99,10 +99,13 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private readonly object _gate = new();
     private readonly HashSet<ushort> _heldKeys = new();
+    private long _dispatchSequence;
 
     public WindowsKeyboardInputSink()
     {
-        ClientDiagnostics.Log($"Keyboard input backend initialized: {BackendName} (PowerShell field baseline).");
+        ClientDiagnostics.Log(
+            $"Keyboard input backend initialized: {BackendName} (PowerShell field baseline), " +
+            $"processPid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}.");
     }
 
     public ValueTask KeyDownAsync(IReadOnlyList<char> keys, CancellationToken cancellationToken)
@@ -113,6 +116,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var strokes = keys.Select(ResolveStroke).ToArray();
         lock (_gate)
         {
+            LogDispatch("DOWN", keys, strokes);
             foreach (var stroke in strokes)
             {
                 PressModifiers(stroke.Modifiers);
@@ -139,6 +143,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var strokes = keys.Select(ResolveStroke).Reverse().ToArray();
         lock (_gate)
         {
+            LogDispatch("UP", keys, strokes);
             foreach (var stroke in strokes)
             {
                 if (_heldKeys.Remove(stroke.VirtualKey))
@@ -155,6 +160,11 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
     {
         lock (_gate)
         {
+            if (_heldKeys.Count > 0)
+            {
+                LogReleaseAll();
+            }
+
             foreach (var virtualKey in _heldKeys.ToArray().Reverse())
             {
                 TrySendKeyUp(virtualKey);
@@ -167,6 +177,31 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private void LogDispatch(string action, IReadOnlyList<char> keys, IReadOnlyList<KeyStroke> strokes)
+    {
+        var sequence = Interlocked.Increment(ref _dispatchSequence);
+        if (sequence > 20 && sequence % 100 != 0)
+        {
+            return;
+        }
+
+        var foreground = NativeMethods.GetForegroundWindow();
+        NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
+        var virtualKeys = string.Join(",", strokes.Select(stroke => $"0x{stroke.VirtualKey:X2}/m{stroke.Modifiers:X2}"));
+        ClientDiagnostics.Log(
+            $"Input dispatch #{sequence} {action}: chars='{new string(keys.ToArray())}', vk=[{virtualKeys}], " +
+            $"thread={Environment.CurrentManagedThreadId}, fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}.");
+    }
+
+    private void LogReleaseAll()
+    {
+        var foreground = NativeMethods.GetForegroundWindow();
+        NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
+        ClientDiagnostics.Log(
+            $"Input release-all: held={_heldKeys.Count}, thread={Environment.CurrentManagedThreadId}, " +
+            $"fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}.");
     }
 
     private static KeyStroke ResolveStroke(char character)
