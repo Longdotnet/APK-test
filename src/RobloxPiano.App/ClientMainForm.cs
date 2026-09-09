@@ -79,7 +79,6 @@ internal sealed class ClientMainForm : Form
     private bool _positionDragging;
     private bool _allowClose;
     private bool _autoStartAttempted;
-    private RobloxPlaybackAuthorizationFailure? _authorizationRecoveryFailure;
 
     public ClientMainForm(bool autoStart = false)
     {
@@ -370,8 +369,6 @@ internal sealed class ClientMainForm : Form
             return;
         }
 
-        _authorizationRecoveryFailure = null;
-
         if (string.IsNullOrWhiteSpace(_selectedSongPath)
             || !TrySelectSongPreservingPosition(_selectedSongPath))
         {
@@ -396,7 +393,8 @@ internal sealed class ClientMainForm : Form
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or FormatException or ArgumentException or OverflowException)
         {
-            _playbackInfo.Text = $"This song could not be loaded: {exception.Message}";
+            var sourceFailure = PlaybackSessionResult.SourceFailure(exception, PositionFromBar(_loadedDuration));
+            PresentPlaybackSessionResult(sourceFailure, _selectedSongPath, target.ProcessId);
             ClientDiagnostics.Log($"Playback source load failed: {exception}");
             return;
         }
@@ -428,47 +426,20 @@ internal sealed class ClientMainForm : Form
 
         var task = RunPlaybackSessionAsync(track, transport, initialPosition, cancellation.Token);
         _playbackTask = task;
-        var returnToLibraryForAuthorization = false;
+        PlaybackSessionResult? sessionResult = null;
 
         try
         {
-            await task.ConfigureAwait(true);
-            SetPositionBar(track.TimelineDuration);
-            _playbackInfo.Text = "Playback complete.";
-            ClientDiagnostics.Log($"Playback completed: title='{track.Title}'.");
-        }
-        catch (OperationCanceledException)
-        {
-            _playbackInfo.Text = "Playback stopped safely.";
-            ClientDiagnostics.Log($"Playback cancelled: title='{track.Title}', position={transport.Position.TotalSeconds:0.###}s.");
-        }
-        catch (RobloxPlaybackAuthorizationException exception)
-        {
-            _authorizationRecoveryFailure = exception.Failure;
-            var recovery = RobloxPlaybackAuthorizationRecoveryPolicy.Describe(exception.Failure);
-            _playbackInfo.Text = recovery.PlayerStatusText;
-            ClientDiagnostics.Log(
-                $"Playback authorization recovery requested: failure={exception.Failure}, targetPid={target.ProcessId}, " +
-                $"position={transport.Position.TotalSeconds:0.###}s, detail='{exception.Message}'.");
-            MessageBox.Show(
-                this,
-                recovery.DialogMessage,
-                recovery.DialogTitle,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            returnToLibraryForAuthorization = true;
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or OverflowException)
-        {
-            _playbackInfo.Text = "Playback had a problem. Diagnostics were saved automatically.";
-            ClientDiagnostics.Log($"Playback failed: {exception}");
-            MessageBox.Show(
-                this,
-                "Playback stopped safely. Try Play again. Technical details were saved automatically in Diagnostics.",
-                "Playback stopped",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+            sessionResult = await PlaybackSessionResultCapture.RunAsync(
+                () => task,
+                () => transport.Position).ConfigureAwait(true);
+
+            if (sessionResult.Kind == PlaybackSessionResultKind.Completed)
+            {
+                SetPositionBar(track.TimelineDuration);
+            }
+
+            PresentPlaybackSessionResult(sessionResult, track.Title, target.ProcessId);
         }
         finally
         {
@@ -486,14 +457,42 @@ internal sealed class ClientMainForm : Form
             SetPlaybackActive(false);
             RefreshRobloxStatus();
 
-            if (returnToLibraryForAuthorization && !IsDisposed)
+            if (sessionResult?.ShouldReturnToLibrary == true && !IsDisposed)
             {
                 ClientDiagnostics.Log(
-                    $"Returning player to Sheet Library after runtime authorization failure={_authorizationRecoveryFailure}.");
+                    $"Returning player to Sheet Library after typed playback result={sessionResult.Kind}, " +
+                    $"authorizationFailure={sessionResult.AuthorizationFailure}.");
                 _allowClose = true;
                 Close();
             }
         }
+    }
+
+    private bool PresentPlaybackSessionResult(PlaybackSessionResult result, string context, int? targetProcessId)
+    {
+        var presentation = PlaybackSessionPresentationPolicy.Describe(result);
+        _playbackInfo.Text = presentation.StatusText;
+
+        var exceptionDetail = result.Exception is null
+            ? "none"
+            : $"{result.Exception.GetType().Name}: {result.Exception.Message}";
+        ClientDiagnostics.Log(
+            $"Playback session result: kind={result.Kind}, context='{context}', targetPid={targetProcessId?.ToString() ?? "none"}, " +
+            $"position={result.Position.TotalSeconds:0.###}s, authorizationFailure={result.AuthorizationFailure?.ToString() ?? "none"}, " +
+            $"detail='{exceptionDetail}'.");
+
+        if (!string.IsNullOrWhiteSpace(presentation.DialogTitle)
+            && !string.IsNullOrWhiteSpace(presentation.DialogMessage))
+        {
+            MessageBox.Show(
+                this,
+                presentation.DialogMessage,
+                presentation.DialogTitle,
+                MessageBoxButtons.OK,
+                presentation.DialogIcon);
+        }
+
+        return presentation.ReturnToLibrary;
     }
 
     private bool TrySelectSongPreservingPosition(string path)
