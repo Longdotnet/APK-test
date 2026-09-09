@@ -37,9 +37,6 @@ internal static class ClientEntryPoint
             using var library = new SheetLibraryForm();
             _ = library.Handle;
 
-            // The playback form historically registered OLE drag/drop too. Creating its native
-            // handle here catches the exact production regression where Library opened but the
-            // player later raised "DragDrop registration did not succeed".
             using var player = new ClientMainForm();
             _ = player.Handle;
 
@@ -60,14 +57,36 @@ internal static class ClientEntryPoint
         try
         {
             NativeMethods.ValidateInputAbi();
+
+            const ushort virtualKeyA = 0x41;
+            var down = WindowsKeyboardInputSink.BuildVirtualKeyInput(virtualKeyA, keyUp: false);
+            var up = WindowsKeyboardInputSink.BuildVirtualKeyInput(virtualKeyA, keyUp: true);
+
+            if (down.Type != NativeMethods.InputKeyboard
+                || down.Union.Keyboard.VirtualKey != virtualKeyA
+                || down.Union.Keyboard.ScanCode != 0
+                || down.Union.Keyboard.Flags != 0)
+            {
+                throw new InvalidOperationException("Roblox compatibility key-down packet is not virtual-key based.");
+            }
+
+            if (up.Type != NativeMethods.InputKeyboard
+                || up.Union.Keyboard.VirtualKey != virtualKeyA
+                || up.Union.Keyboard.ScanCode != 0
+                || up.Union.Keyboard.Flags != NativeMethods.KeyEventKeyUp)
+            {
+                throw new InvalidOperationException("Roblox compatibility key-up packet is not virtual-key based.");
+            }
+
             Console.WriteLine(
-                $"Windows INPUT ABI smoke passed. actual={NativeMethods.InputStructureSize}; " +
-                $"expected={NativeMethods.ExpectedInputStructureSize}; pointerSize={IntPtr.Size}.");
+                $"Windows INPUT compatibility smoke passed. actual={NativeMethods.InputStructureSize}; " +
+                $"expected={NativeMethods.ExpectedInputStructureSize}; pointerSize={IntPtr.Size}; " +
+                "mode=virtual-key; scanCode=0.");
             return 0;
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"Windows INPUT ABI smoke failed: {exception}");
+            Console.Error.WriteLine($"Windows INPUT compatibility smoke failed: {exception}");
             return 7;
         }
     }
