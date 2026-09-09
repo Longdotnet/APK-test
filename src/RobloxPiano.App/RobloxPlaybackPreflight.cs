@@ -84,47 +84,94 @@ internal static class RobloxPlaybackLaunchAuthorization
         ArgumentNullException.ThrowIfNull(target);
 
         RobloxProcessIdentity? authorizedIdentity;
+        DateTimeOffset? authorizedAt;
         lock (Gate)
         {
             authorizedIdentity = _authorizedIdentity;
-        }
-
-        if (!authorizedIdentity.HasValue
-            || !_authorizedAt.HasValue
-            || authorizedIdentity.Value.ProcessId != target.ProcessId)
-        {
-            throw new RobloxPlaybackAuthorizationException(
-                RobloxPlaybackAuthorizationFailure.VerificationRequired,
-                $"Roblox input verification is no longer valid for PID {target.ProcessId}. Return to the Sheet Library and verify input again.");
+            authorizedAt = _authorizedAt;
         }
 
         if (!RobloxProcessIdentity.TryCapture(target.ProcessId, out var currentIdentity))
         {
-            throw new RobloxPlaybackAuthorizationException(
-                RobloxPlaybackAuthorizationFailure.ProcessEnded,
-                $"The verified Roblox process ended before playback input could be dispatched. Return to the Sheet Library and verify the current Roblox process.");
+            ThrowAuthorizationFailure(
+                CompareIdentity(authorizedIdentity, null, authorizedAt, target.ProcessId),
+                target.ProcessId,
+                authorizedIdentity,
+                null);
         }
 
-        if (currentIdentity != authorizedIdentity.Value)
+        var failure = CompareIdentity(authorizedIdentity, currentIdentity, authorizedAt, target.ProcessId);
+        if (failure.HasValue)
         {
-            ClientDiagnostics.Log(
-                $"Roblox process lifetime mismatch at runtime dispatch: authorized={authorizedIdentity.Value}; current={currentIdentity}.");
-            throw new RobloxPlaybackAuthorizationException(
-                RobloxPlaybackAuthorizationFailure.ProcessReplaced,
-                $"Roblox restarted or Windows reused PID {target.ProcessId} after input verification. Playback was blocked before input dispatch; verify input for the current Roblox process.");
+            ThrowAuthorizationFailure(failure, target.ProcessId, authorizedIdentity, currentIdentity);
         }
 
         var health = RobloxInputHealthSession.GetFor(target);
         if (health.State != RobloxInputHealthState.Confirmed
             || !health.AppliesTo(target)
-            || health.ProcessStartTimeUtcTicks != authorizedIdentity.Value.StartTimeUtcTicks)
+            || health.ProcessStartTimeUtcTicks != authorizedIdentity!.Value.StartTimeUtcTicks)
         {
             throw new RobloxPlaybackAuthorizationException(
                 RobloxPlaybackAuthorizationFailure.VerificationRequired,
-                $"Roblox input readiness changed before playback. Return to the Sheet Library and verify input for the current Roblox process.");
+                "Roblox input readiness changed before playback. Return to the Sheet Library and verify input for the current Roblox process.");
         }
 
         return true;
+    }
+
+    internal static RobloxPlaybackAuthorizationFailure? CompareIdentity(
+        RobloxProcessIdentity? authorizedIdentity,
+        RobloxProcessIdentity? currentIdentity,
+        DateTimeOffset? authorizedAt,
+        int targetProcessId)
+    {
+        if (!authorizedIdentity.HasValue
+            || !authorizedAt.HasValue
+            || authorizedIdentity.Value.ProcessId != targetProcessId)
+        {
+            return RobloxPlaybackAuthorizationFailure.VerificationRequired;
+        }
+
+        if (!currentIdentity.HasValue)
+        {
+            return RobloxPlaybackAuthorizationFailure.ProcessEnded;
+        }
+
+        return currentIdentity.Value == authorizedIdentity.Value
+            ? null
+            : RobloxPlaybackAuthorizationFailure.ProcessReplaced;
+    }
+
+    private static void ThrowAuthorizationFailure(
+        RobloxPlaybackAuthorizationFailure? failure,
+        int targetProcessId,
+        RobloxProcessIdentity? authorizedIdentity,
+        RobloxProcessIdentity? currentIdentity)
+    {
+        if (!failure.HasValue)
+        {
+            return;
+        }
+
+        switch (failure.Value)
+        {
+            case RobloxPlaybackAuthorizationFailure.ProcessEnded:
+                throw new RobloxPlaybackAuthorizationException(
+                    failure.Value,
+                    "The verified Roblox process ended before playback input could be dispatched. Return to the Sheet Library and verify the current Roblox process.");
+
+            case RobloxPlaybackAuthorizationFailure.ProcessReplaced:
+                ClientDiagnostics.Log(
+                    $"Roblox process lifetime mismatch at runtime dispatch: authorized={authorizedIdentity}; current={currentIdentity}.");
+                throw new RobloxPlaybackAuthorizationException(
+                    failure.Value,
+                    $"Roblox restarted or Windows reused PID {targetProcessId} after input verification. Playback was blocked before input dispatch; verify input for the current Roblox process.");
+
+            default:
+                throw new RobloxPlaybackAuthorizationException(
+                    failure.Value,
+                    $"Roblox input verification is no longer valid for PID {targetProcessId}. Return to the Sheet Library and verify input again.");
+        }
     }
 
     internal static int? AuthorizedProcessIdForTests
