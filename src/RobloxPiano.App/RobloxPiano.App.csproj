@@ -14,5 +14,6 @@
   <ItemGroup>
     <ProjectReference Include="../RobloxPiano.Core/RobloxPiano.Core.csproj" />
     <ProjectReference Include="../RobloxPiano.Library/RobloxPiano.Library.csproj" />
+    <ProjectReference Include="../RobloxPiano.Updater/RobloxPiano.Updater.csproj" />
   </ItemGroup>
 </Project>
