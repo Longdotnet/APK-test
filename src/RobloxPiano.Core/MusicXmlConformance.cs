@@ -27,9 +27,10 @@ public sealed record MusicXmlConformanceReport(IReadOnlyList<MusicXmlDiagnostic>
 }
 
 /// <summary>
-/// Deterministic production gate for MusicXML constructs. The importer intentionally supports a
-/// conservative subset; anything that could alter audible timing/pitch/order but is not modeled
-/// by the canonical importer is rejected instead of being silently ignored.
+/// Deterministic production gate for MusicXML constructs. Anything that could alter audible
+/// pitch/order/expression but is not modeled by the canonical importer is rejected instead of
+/// being silently ignored. Musical-time direction offsets and tempo+backup are supported by the
+/// tempo-map compiler and therefore are no longer rejected here.
 /// </summary>
 public static class MusicXmlConformance
 {
@@ -107,30 +108,6 @@ public static class MusicXmlConformance
         AddUnsupported(measure, "cue", "MXML108", "Cue notes are not part of the production playback subset.", partId, measureNumber, diagnostics);
         AddUnsupported(measure, "unpitched", "MXML109", "Unpitched notes cannot map to the Roblox piano keyboard.", partId, measureNumber, diagnostics);
 
-        foreach (var direction in measure.Elements().Where(element => element.Name.LocalName == "direction"))
-        {
-            if (direction.Elements().Any(element => element.Name.LocalName == "offset"))
-            {
-                diagnostics.Add(new MusicXmlDiagnostic(
-                    "MXML110",
-                    MusicXmlDiagnosticSeverity.Error,
-                    "Direction offsets are not modeled yet; applying the direction at the cursor would change timing.",
-                    measureNumber,
-                    partId));
-            }
-        }
-
-        var hasBackup = measure.Elements().Any(element => element.Name.LocalName == "backup");
-        if (hasBackup && HasTempoChangeInsideMeasure(measure))
-        {
-            diagnostics.Add(new MusicXmlDiagnostic(
-                "MXML111",
-                MusicXmlDiagnosticSeverity.Error,
-                "Tempo changes combined with multi-voice backup/forward are unsafe in the current seconds-based importer and could misalign voices.",
-                measureNumber,
-                partId));
-        }
-
         var transpose = measure.Descendants().FirstOrDefault(element => element.Name.LocalName == "transpose");
         if (transpose is not null)
         {
@@ -141,17 +118,6 @@ public static class MusicXmlConformance
                 measureNumber,
                 partId));
         }
-    }
-
-    private static bool HasTempoChangeInsideMeasure(XElement measure)
-    {
-        var tempos = measure.Descendants()
-            .Where(element => element.Name.LocalName == "sound")
-            .Select(element => element.Attribute("tempo")?.Value)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .ToArray();
-
-        return tempos.Length > 1;
     }
 
     private static void AddUnsupported(
