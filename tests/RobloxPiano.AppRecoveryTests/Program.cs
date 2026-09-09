@@ -57,7 +57,8 @@ internal static class Program
         {
             var exception = new RobloxPlaybackAuthorizationException(failure, $"test-{failure}");
             Equal(failure, exception.Failure, "exception failure kind");
-            True(exception is InvalidOperationException, "authorization exception should remain compatible with runtime invalid-operation handling");
+            InvalidOperationException baseException = exception;
+            Contains(baseException.Message, failure.ToString(), "authorization exception should remain a normal invalid-operation failure with its diagnostic detail");
         }
     }
 
@@ -87,14 +88,6 @@ internal static class Program
         if (!EqualityComparer<T>.Default.Equals(expected, actual))
         {
             throw new InvalidOperationException($"{message}: expected '{expected}', actual '{actual}'.");
-        }
-    }
-
-    private static void True(bool condition, string message)
-    {
-        if (!condition)
-        {
-            throw new InvalidOperationException(message);
         }
     }
 }
