@@ -75,6 +75,12 @@ jobs:
           dotnet run --project tests/RobloxPiano.TransportTests/RobloxPiano.TransportTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Transport regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.InputStateTests/RobloxPiano.InputStateTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Held-input ownership regression harness failed" }
+
+          dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Sheet library regression harness failed" }
 
@@ -143,11 +149,12 @@ jobs:
           2. Double-click it.
           3. Pick a sheet from the Sheet Library (or import .txt/.vps).
           4. Start Roblox and press Play.
-          5. F6 slower, F7 faster, F8 pause/resume, F9 stop.
+          5. Optionally calibrate input latency in milliseconds; 0 preserves legacy timing.
+          6. F6 slower, F7 faster, F8 pause/resume, F9 stop.
 
           Notes:
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
-          - Roblox runtime acceptance of SendInput/global hotkeys still requires real-client acceptance testing.
+          - Roblox runtime acceptance of SendInput/global hotkeys and the best latency value still require real-client acceptance testing.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
 
       - name: Create GitHub Release
