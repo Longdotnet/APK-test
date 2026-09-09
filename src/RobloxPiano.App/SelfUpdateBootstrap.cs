@@ -292,7 +292,10 @@ internal static class SelfUpdateBootstrap
     }
 
     private static bool IsCiUpdateSmoke()
-        => Environment.GetEnvironmentVariable(CiUpdateTestVariable).Equals("1", StringComparison.Ordinal);
+        => string.Equals(
+            Environment.GetEnvironmentVariable(CiUpdateTestVariable),
+            "1",
+            StringComparison.Ordinal);
 
     private static bool IsPathUnderRoot(string path, string root)
     {
