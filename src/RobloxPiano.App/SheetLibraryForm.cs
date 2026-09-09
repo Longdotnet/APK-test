@@ -6,6 +6,7 @@ internal sealed class SheetLibraryForm : Form
 {
     private readonly SheetLibraryService _library;
     private readonly OnlineSongDiscoveryController _onlineDiscovery;
+    private readonly ClientUpdateController _updates;
     private readonly TextBox _search = new() { PlaceholderText = "Search songs...", Dock = DockStyle.Fill };
     private readonly DataGridView _grid = new()
     {
@@ -38,8 +39,8 @@ internal sealed class SheetLibraryForm : Form
     {
         Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(760, 540);
-        Size = new Size(920, 700);
+        MinimumSize = new Size(760, 560);
+        Size = new Size(920, 720);
         AllowDrop = true;
 
         var localRoot = Path.Combine(
@@ -49,6 +50,7 @@ internal sealed class SheetLibraryForm : Form
         var portable = Path.Combine(AppContext.BaseDirectory, "sheets");
         _library = new SheetLibraryService(localRoot, portable);
         _onlineDiscovery = new OnlineSongDiscoveryController(_search, _library, path => RefreshLibrary(path));
+        _updates = new ClientUpdateController();
 
         BuildLayout();
         RefreshLibrary();
@@ -64,10 +66,12 @@ internal sealed class SheetLibraryForm : Form
         _robloxTimer.Start();
         DragEnter += HandleDragEnter;
         DragDrop += HandleDragDrop;
+        Shown += async (_, _) => await _updates.CheckAsync(this);
         FormClosed += (_, _) =>
         {
             _robloxTimer.Stop();
             _onlineDiscovery.Dispose();
+            _updates.Dispose();
         };
     }
 
@@ -102,7 +106,8 @@ internal sealed class SheetLibraryForm : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         buttons.Controls.AddRange([_playButton, _importButton, _refreshButton]);
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 8 };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 9 };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -113,12 +118,13 @@ internal sealed class SheetLibraryForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(title, 0, 0);
         root.Controls.Add(subtitle, 0, 1);
-        root.Controls.Add(_robloxStatus, 0, 2);
-        root.Controls.Add(_search, 0, 3);
-        root.Controls.Add(_onlineDiscovery.View, 0, 4);
-        root.Controls.Add(_grid, 0, 5);
-        root.Controls.Add(buttons, 0, 6);
-        root.Controls.Add(_status, 0, 7);
+        root.Controls.Add(_updates.View, 0, 2);
+        root.Controls.Add(_robloxStatus, 0, 3);
+        root.Controls.Add(_search, 0, 4);
+        root.Controls.Add(_onlineDiscovery.View, 0, 5);
+        root.Controls.Add(_grid, 0, 6);
+        root.Controls.Add(buttons, 0, 7);
+        root.Controls.Add(_status, 0, 8);
         Controls.Add(root);
     }
 
