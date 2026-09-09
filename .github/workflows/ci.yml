@@ -111,6 +111,12 @@ jobs:
           & ./artifacts/publish/RobloxPiano.exe --help
           if ($LASTEXITCODE -ne 0) { throw "Published executable smoke test failed" }
 
+      - name: Published EXE UI startup smoke test
+        shell: pwsh
+        run: |
+          & ./artifacts/publish/RobloxPiano.exe --ui-smoke
+          if ($LASTEXITCODE -ne 0) { throw "Published executable UI startup smoke test failed" }
+
       - name: Published EXE quality-report smoke test
         shell: pwsh
         run: |
