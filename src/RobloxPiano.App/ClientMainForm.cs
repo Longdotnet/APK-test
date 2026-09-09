@@ -79,6 +79,7 @@ internal sealed class ClientMainForm : Form
     private bool _positionDragging;
     private bool _allowClose;
     private bool _autoStartAttempted;
+    private RobloxPlaybackAuthorizationFailure? _authorizationRecoveryFailure;
 
     public ClientMainForm(bool autoStart = false)
     {
@@ -369,6 +370,8 @@ internal sealed class ClientMainForm : Form
             return;
         }
 
+        _authorizationRecoveryFailure = null;
+
         if (string.IsNullOrWhiteSpace(_selectedSongPath)
             || !TrySelectSongPreservingPosition(_selectedSongPath))
         {
@@ -425,6 +428,7 @@ internal sealed class ClientMainForm : Form
 
         var task = RunPlaybackSessionAsync(track, transport, initialPosition, cancellation.Token);
         _playbackTask = task;
+        var returnToLibraryForAuthorization = false;
 
         try
         {
@@ -437,6 +441,22 @@ internal sealed class ClientMainForm : Form
         {
             _playbackInfo.Text = "Playback stopped safely.";
             ClientDiagnostics.Log($"Playback cancelled: title='{track.Title}', position={transport.Position.TotalSeconds:0.###}s.");
+        }
+        catch (RobloxPlaybackAuthorizationException exception)
+        {
+            _authorizationRecoveryFailure = exception.Failure;
+            var recovery = RobloxPlaybackAuthorizationRecoveryPolicy.Describe(exception.Failure);
+            _playbackInfo.Text = recovery.PlayerStatusText;
+            ClientDiagnostics.Log(
+                $"Playback authorization recovery requested: failure={exception.Failure}, targetPid={target.ProcessId}, " +
+                $"position={transport.Position.TotalSeconds:0.###}s, detail='{exception.Message}'.");
+            MessageBox.Show(
+                this,
+                recovery.DialogMessage,
+                recovery.DialogTitle,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            returnToLibraryForAuthorization = true;
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or OverflowException)
@@ -465,6 +485,14 @@ internal sealed class ClientMainForm : Form
             _playbackTask = null;
             SetPlaybackActive(false);
             RefreshRobloxStatus();
+
+            if (returnToLibraryForAuthorization && !IsDisposed)
+            {
+                ClientDiagnostics.Log(
+                    $"Returning player to Sheet Library after runtime authorization failure={_authorizationRecoveryFailure}.");
+                _allowClose = true;
+                Close();
+            }
         }
     }
 

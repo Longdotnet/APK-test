@@ -34,6 +34,33 @@ internal sealed class RobloxPlaybackAuthorizationException : InvalidOperationExc
     public RobloxPlaybackAuthorizationFailure Failure { get; }
 }
 
+internal sealed record RobloxPlaybackAuthorizationRecovery(
+    string PlayerStatusText,
+    string DialogTitle,
+    string DialogMessage);
+
+internal static class RobloxPlaybackAuthorizationRecoveryPolicy
+{
+    public static RobloxPlaybackAuthorizationRecovery Describe(RobloxPlaybackAuthorizationFailure failure)
+        => failure switch
+        {
+            RobloxPlaybackAuthorizationFailure.ProcessEnded => new RobloxPlaybackAuthorizationRecovery(
+                "Roblox closed before input could continue. Returning to the Sheet Library safely.",
+                "Roblox closed",
+                "The Roblox process that passed input verification has closed. No further piano input was sent. Roblox Piano will return to the Sheet Library; reopen Roblox and use Verify Input & Play for the new process."),
+
+            RobloxPlaybackAuthorizationFailure.ProcessReplaced => new RobloxPlaybackAuthorizationRecovery(
+                "Roblox restarted or changed process lifetime. Returning to the Sheet Library for fresh input verification.",
+                "Roblox restarted",
+                "Roblox restarted or Windows reused the verified process ID. Playback was blocked before input could continue. Roblox Piano will return to the Sheet Library, where the current Roblox process must pass Verify Input & Play."),
+
+            _ => new RobloxPlaybackAuthorizationRecovery(
+                "Roblox input verification is no longer valid. Returning to the Sheet Library for verification.",
+                "Input verification required",
+                "The current Roblox process is no longer covered by the input verification used to start this playback. No unverified input will be sent. Roblox Piano will return to the Sheet Library so you can run Verify Input & Play again.")
+        };
+}
+
 internal static class RobloxPlaybackLaunchAuthorization
 {
     private static readonly object Gate = new();

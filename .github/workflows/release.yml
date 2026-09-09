@@ -87,6 +87,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Online discovery regression harness failed" }
           dotnet run --project tests/RobloxPiano.QualityTests/RobloxPiano.QualityTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Playback quality harness failed" }
+          dotnet run --project tests/RobloxPiano.AppRecoveryTests/RobloxPiano.AppRecoveryTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Desktop authorization recovery regression harness failed" }
 
       - name: Publish client single EXE
         if: steps.guard.outputs.publish == 'true'
@@ -151,19 +153,19 @@ jobs:
           3. The first Play attempt for a Roblox process instance requires **Verify Input & Play**.
           4. A successful observation confirms that exact Roblox process lifetime: PID plus process start identity.
           5. Subsequent songs can Play directly only while that same process instance remains active.
-          6. Roblox restart, PID change, or same-PID reuse discards stale confirmation and requires verification for the new process instance.
+          6. If Roblox closes/restarts or verification becomes stale during playback, input fails closed, the player explains the exact recovery, then returns to the Sheet Library for a fresh **Verify Input & Play**.
 
           Production capability and reliability in this release:
-          - Input readiness and runtime launch authorization are now process-lifetime scoped instead of PID-only.
-          - Windows process start identity is recorded with the field-verification result and checked again before runtime keyboard dispatch.
-          - Same-PID process reuse fails closed before input dispatch instead of inheriting stale trust.
-          - Missing authorization, an ended Roblox process and a replaced same-PID process are classified deterministically.
-          - The published executable input compatibility smoke covers exact lifetime match, same-PID replacement, ended process and missing/different authorization.
-          - Existing list-first Library UX, GUI input diagnostics, focus safety, release-all, multi-channel MIDI sustain, MIDI range auto-fit, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
+          - Runtime authorization failures no longer collapse into the generic playback-error path.
+          - VerificationRequired, ProcessEnded and ProcessReplaced each have deterministic client-facing recovery guidance.
+          - Authorization failure still travels through playback cleanup/release-all before the player closes and returns to the Library.
+          - Library refresh after the modal player closes re-evaluates the current Roblox process lifetime, so stale trust becomes Verify Input & Play or Open Roblox to Play automatically.
+          - A dedicated desktop authorization recovery regression harness is required by both production-gate and production-release.
+          - Existing process-lifetime authorization, list-first Library UX, GUI input diagnostics, focus safety, release-all, multi-channel MIDI sustain, MIDI range auto-fit, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
 
           Notes:
           - Input confirmation remains intentionally in-memory. Closing Roblox or restarting the client requires verification again rather than persisting stale trust.
-          - CI validates the deterministic Windows/process/input contract but cannot observe a live Roblox client consuming synthetic input; the GUI check still requires explicit human observation.
+          - CI validates deterministic recovery policy and Windows/process/input contracts but cannot observe a live Roblox client consuming synthetic input; the GUI check still requires explicit human observation.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
