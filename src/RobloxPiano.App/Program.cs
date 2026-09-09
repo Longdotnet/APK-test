@@ -12,7 +12,59 @@ internal static class Program
         WriteIndented = true
     };
 
+    [STAThread]
     public static async Task<int> Main(string[] args)
+    {
+        if (args.Length == 0 || args[0].Equals("--ui", StringComparison.OrdinalIgnoreCase))
+        {
+            return RunInteractiveClient();
+        }
+
+        return await RunCommandLineAsync(args).ConfigureAwait(false);
+    }
+
+    private static int RunInteractiveClient()
+    {
+        ClientConsoleWindow.Hide();
+        ApplicationConfiguration.Initialize();
+
+        using var singleInstance = new Mutex(
+            initiallyOwned: true,
+            name: @"Local\Longdotnet.RobloxPiano.Client",
+            createdNew: out var createdNew);
+
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "Roblox Piano is already running.",
+                "Roblox Piano",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return 4;
+        }
+
+        Application.ThreadException += (_, eventArgs) =>
+        {
+            ClientDiagnostics.Log($"Unhandled UI exception: {eventArgs.Exception}");
+            MessageBox.Show(
+                eventArgs.Exception.Message,
+                "Roblox Piano error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+        {
+            ClientDiagnostics.Log($"Unhandled process exception: {eventArgs.ExceptionObject}");
+        };
+
+        ClientDiagnostics.Log("Interactive client started.");
+        Application.Run(new ClientMainForm());
+        ClientDiagnostics.Log("Interactive client stopped.");
+        GC.KeepAlive(singleInstance);
+        return 0;
+    }
+
+    private static async Task<int> RunCommandLineAsync(string[] args)
     {
         if (!TryParseArguments(args, out var settings, out var error))
         {
@@ -369,7 +421,13 @@ internal static class Program
 
     private static void PrintUsage()
     {
-        Console.WriteLine("Usage:");
+        Console.WriteLine("Roblox Piano");
+        Console.WriteLine();
+        Console.WriteLine("Client mode:");
+        Console.WriteLine("  Double-click RobloxPiano.exe (or run RobloxPiano.exe --ui)");
+        Console.WriteLine("  F6 slower | F7 faster | F8 pause/resume | F9 stop");
+        Console.WriteLine();
+        Console.WriteLine("Developer/CI mode:");
         Console.WriteLine("  RobloxPiano.exe <sheet.txt> [--speed N] [--start-delay S] [--dry-run] [--validate-only]");
         Console.WriteLine("      [--quality-report report.json] [--baseline-report baseline.json] [--quality-gate]");
         Console.WriteLine();
