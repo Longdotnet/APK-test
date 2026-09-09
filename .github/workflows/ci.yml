@@ -97,8 +97,10 @@ jobs:
             --start-delay 0 `
             --baseline-report artifacts/quality/invalid-baseline.json
 
-          if ($LASTEXITCODE -ne 1) {
-            throw "Malformed baseline must return controlled exit code 1, actual: $LASTEXITCODE"
+          $appExitCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($appExitCode -ne 1) {
+            throw "Malformed baseline must return controlled exit code 1, actual: $appExitCode"
           }
 
       - name: Upload client artifact
