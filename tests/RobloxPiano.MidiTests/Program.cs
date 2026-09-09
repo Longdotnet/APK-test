@@ -7,7 +7,10 @@ var tests = new (string Name, Action Run)[]
     ("tempo changes preserve absolute timing", TempoChangeTiming),
     ("running status and velocity-zero note-off are supported", RunningStatus),
     ("single-channel CC64 compiles sustain", SustainCompilation),
-    ("out-of-range notes fail closed", OutOfRangeFails),
+    ("out-of-range melodic notes auto-fit deterministically", OutOfRangeAutoFits),
+    ("General MIDI percussion channel is ignored", PercussionChannelIgnored),
+    ("strict range policy still fails closed", StrictOutOfRangeFails),
+    ("melodic range wider than the Roblox profile fails closed", WideRangeFails),
     ("dangling notes fail closed", DanglingNoteFails),
     ("multi-channel sustain fails instead of over-sustaining", MultiChannelSustainFails),
     ("SMPTE division is rejected", SmpteFails)
@@ -122,9 +125,49 @@ static void SustainCompilation()
     Equal(TimeSpan.FromMilliseconds(500), compiled.Events.Single().Duration);
 }
 
-static void OutOfRangeFails()
+static void OutOfRangeAutoFits()
 {
-    var midi = BuildMidi(480, [Ch(0, 0x90, 100, 100), Ch(120, 0x80, 100, 0), End(0)]);
+    var midi = BuildMidi(480, [Ch(0, 0x90, 35, 100), Ch(120, 0x80, 35, 0), End(0)]);
+    var imported = MidiFileImporter.ImportCompiled(midi);
+    Equal(1, imported.Events.Count);
+    Equal('1', imported.Events[0].Keys.Single());
+}
+
+static void PercussionChannelIgnored()
+{
+    var midi = BuildMidi(
+        480,
+        [
+            Ch(0, 0x99, 35, 100),
+            Ch(0, 0x90, 60, 100),
+            Ch(120, 0x89, 35, 0),
+            Ch(0, 0x80, 60, 0),
+            End(0)
+        ]);
+
+    var imported = MidiFileImporter.ImportCompiled(midi);
+    Equal(1, imported.Events.Count);
+    Equal('t', imported.Events[0].Keys.Single());
+}
+
+static void StrictOutOfRangeFails()
+{
+    var midi = BuildMidi(480, [Ch(0, 0x90, 35, 100), Ch(120, 0x80, 35, 0), End(0)]);
+    var options = new MidiImportOptions(AutoFitToKeyboardRange: false);
+    Throws<FormatException>(() => MidiFileImporter.Import(midi, options));
+}
+
+static void WideRangeFails()
+{
+    var midi = BuildMidi(
+        480,
+        [
+            Ch(0, 0x90, 20, 100),
+            Ch(0, 0x90, 110, 100),
+            Ch(120, 0x80, 20, 0),
+            Ch(0, 0x80, 110, 0),
+            End(0)
+        ]);
     Throws<FormatException>(() => MidiFileImporter.Import(midi));
 }
 
