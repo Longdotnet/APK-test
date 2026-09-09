@@ -258,8 +258,6 @@ public sealed class SongDiscoveryService
             var cached = await _cache.TryLoadAsync(query, CacheFallbackAge, cancellationToken).ConfigureAwait(false);
             if (cached.Count > 0)
             {
-                // Cached candidates already contain a previous ranking score. Reset it so
-                // repeated offline searches cannot inflate relevance on every rerank.
                 var reranked = SongDiscoveryRanker.Rank(
                         query,
                         cached.Select(candidate => candidate with { Score = 0 }),
@@ -373,7 +371,12 @@ public static class SongDiscoveryRanker
                 continue;
             }
 
-            if (char.IsLetterOrDigit(character))
+            if (character is 'đ' or 'Đ')
+            {
+                builder.Append('d');
+                previousSpace = false;
+            }
+            else if (char.IsLetterOrDigit(character))
             {
                 builder.Append(char.ToLowerInvariant(character));
                 previousSpace = false;
