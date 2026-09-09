@@ -16,20 +16,16 @@ internal sealed record RobloxWindowTarget(int ProcessId, IntPtr WindowHandle, st
                 using var process = Process.GetProcessById(ProcessId);
                 return !process.HasExited;
             }
-            catch (ArgumentException)
-            {
-                return false;
-            }
-            catch (InvalidOperationException)
-            {
-                return false;
-            }
-            catch (SystemException)
-            {
-                return false;
-            }
+            catch (ArgumentException) { return false; }
+            catch (InvalidOperationException) { return false; }
+            catch (SystemException) { return false; }
         }
     }
+
+    public bool IsForeground
+        => IsAlive
+           && WindowHandle != IntPtr.Zero
+           && ClientNativeMethods.GetForegroundWindow() == WindowHandle;
 
     public bool TryActivate()
     {
@@ -39,15 +35,25 @@ internal sealed record RobloxWindowTarget(int ProcessId, IntPtr WindowHandle, st
         }
 
         _ = ClientNativeMethods.ShowWindowAsync(WindowHandle, ClientNativeMethods.SwRestore);
-        return ClientNativeMethods.SetForegroundWindow(WindowHandle);
+        var requested = ClientNativeMethods.SetForegroundWindow(WindowHandle);
+        if (!requested)
+        {
+            ClientDiagnostics.Log($"Roblox activation request was rejected: target={this}, hwnd=0x{WindowHandle.ToInt64():X}.");
+            return false;
+        }
+
+        Thread.Sleep(250);
+        var focused = IsForeground;
+        ClientDiagnostics.Log(
+            $"Roblox activation {(focused ? "confirmed" : "requested but not foreground")}: " +
+            $"target={this}, hwnd=0x{WindowHandle.ToInt64():X}.");
+        return focused;
     }
 
     public override string ToString()
-    {
-        return string.IsNullOrWhiteSpace(WindowTitle)
+        => string.IsNullOrWhiteSpace(WindowTitle)
             ? $"Roblox (PID {ProcessId})"
             : $"{WindowTitle} (PID {ProcessId})";
-    }
 }
 
 internal static class RobloxProcessLocator
@@ -80,14 +86,8 @@ internal static class RobloxProcessLocator
                     }
 
                     DateTime startTime;
-                    try
-                    {
-                        startTime = process.StartTime;
-                    }
-                    catch (SystemException)
-                    {
-                        startTime = DateTime.MinValue;
-                    }
+                    try { startTime = process.StartTime; }
+                    catch (SystemException) { startTime = DateTime.MinValue; }
 
                     candidates.Add(new RobloxCandidate(
                         process.Id,
@@ -96,12 +96,8 @@ internal static class RobloxProcessLocator
                         startTime,
                         processName.Equals("RobloxPlayerBeta", StringComparison.OrdinalIgnoreCase)));
                 }
-                catch (InvalidOperationException)
-                {
-                }
-                catch (SystemException)
-                {
-                }
+                catch (InvalidOperationException) { }
+                catch (SystemException) { }
             }
         }
 
@@ -136,18 +132,9 @@ internal static class RobloxProcessLocator
                 ? new RobloxWindowTarget(process.Id, foreground, process.MainWindowTitle)
                 : null;
         }
-        catch (ArgumentException)
-        {
-            return null;
-        }
-        catch (InvalidOperationException)
-        {
-            return null;
-        }
-        catch (SystemException)
-        {
-            return null;
-        }
+        catch (ArgumentException) { return null; }
+        catch (InvalidOperationException) { return null; }
+        catch (SystemException) { return null; }
     }
 
     private static bool IsRobloxPlayerProcess(string processName)
@@ -172,25 +159,7 @@ internal static class RobloxProcessLocator
 
 internal sealed class RobloxTargetFocusGate(RobloxWindowTarget target) : IFocusGate
 {
-    public bool IsTargetFocused
-    {
-        get
-        {
-            if (!target.IsAlive)
-            {
-                return false;
-            }
-
-            var foreground = ClientNativeMethods.GetForegroundWindow();
-            if (foreground == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            ClientNativeMethods.GetWindowThreadProcessId(foreground, out var processId);
-            return processId == (uint)target.ProcessId;
-        }
-    }
+    public bool IsTargetFocused => target.IsForeground;
 }
 
 internal sealed record ClientState(string? LastSheetPath, double PreferredSpeed, int InputLatencyMs = 0)
@@ -269,12 +238,10 @@ internal static class ClientStateStore
     }
 
     private static string GetStatePath()
-    {
-        return Path.Combine(
+        => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RobloxPiano",
             "state.json");
-    }
 }
 
 internal static class ClientDiagnostics
@@ -294,14 +261,10 @@ internal static class ClientDiagnostics
             {
                 Directory.CreateDirectory(DirectoryPath);
                 var path = Path.Combine(DirectoryPath, $"client-{DateTime.UtcNow:yyyyMMdd}.log");
-                File.AppendAllText(
-                    path,
-                    $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+                File.AppendAllText(path, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
             }
         }
-        catch
-        {
-        }
+        catch { }
     }
 }
 
