@@ -31,6 +31,11 @@ internal sealed record RobloxWindowTarget(int ProcessId, IntPtr WindowHandle, st
         }
     }
 
+    public bool IsForeground
+        => IsAlive
+           && WindowHandle != IntPtr.Zero
+           && ClientNativeMethods.GetForegroundWindow() == WindowHandle;
+
     public bool TryActivate()
     {
         if (!IsAlive || WindowHandle == IntPtr.Zero)
@@ -39,7 +44,21 @@ internal sealed record RobloxWindowTarget(int ProcessId, IntPtr WindowHandle, st
         }
 
         _ = ClientNativeMethods.ShowWindowAsync(WindowHandle, ClientNativeMethods.SwRestore);
-        return ClientNativeMethods.SetForegroundWindow(WindowHandle);
+        var requested = ClientNativeMethods.SetForegroundWindow(WindowHandle);
+        if (!requested)
+        {
+            ClientDiagnostics.Log($"Roblox activation request was rejected: target={this}, hwnd=0x{WindowHandle.ToInt64():X}.");
+            return false;
+        }
+
+        // Match the proven PowerShell client: let Windows finish foreground activation before the
+        // first playback deadline can dispatch a key. This is intentionally small and bounded.
+        Thread.Sleep(250);
+        var focused = IsForeground;
+        ClientDiagnostics.Log(
+            $"Roblox activation {(focused ? "confirmed" : "requested but not foreground")}: " +
+            $"target={this}, hwnd=0x{WindowHandle.ToInt64():X}.");
+        return focused;
     }
 
     public override string ToString()
@@ -172,25 +191,7 @@ internal static class RobloxProcessLocator
 
 internal sealed class RobloxTargetFocusGate(RobloxWindowTarget target) : IFocusGate
 {
-    public bool IsTargetFocused
-    {
-        get
-        {
-            if (!target.IsAlive)
-            {
-                return false;
-            }
-
-            var foreground = ClientNativeMethods.GetForegroundWindow();
-            if (foreground == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            ClientNativeMethods.GetWindowThreadProcessId(foreground, out var processId);
-            return processId == (uint)target.ProcessId;
-        }
-    }
+    public bool IsTargetFocused => target.IsForeground;
 }
 
 internal sealed record ClientState(string? LastSheetPath, double PreferredSpeed, int InputLatencyMs = 0)
