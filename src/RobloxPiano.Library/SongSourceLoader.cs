@@ -16,10 +16,12 @@ public sealed record SongLoadMetadata(
     int? SourceLowestMidiNote = null,
     int? SourceHighestMidiNote = null,
     int? EffectiveLowestMidiNote = null,
-    int? EffectiveHighestMidiNote = null)
+    int? EffectiveHighestMidiNote = null,
+    bool UsedOctaveFolding = false)
 {
     public bool HasCompatibilityAdjustment => EffectiveTransposeSemitones is not null && EffectiveTransposeSemitones != 0
-        || IgnoredPercussionNoteOns > 0;
+        || IgnoredPercussionNoteOns > 0
+        || UsedOctaveFolding;
 }
 
 public sealed record LoadedSong(
@@ -48,9 +50,7 @@ public static class SongSourceLoader
         var extension = Path.GetExtension(fullPath);
         if (IsMidi(extension))
         {
-            var bytes = File.ReadAllBytes(fullPath);
-            var track = MidiFileImporter.ImportCompiled(bytes);
-            return new LoadedSong(track, SongSourceKind.Midi, BuildMidiMetadata(bytes));
+            return LoadMidi(File.ReadAllBytes(fullPath));
         }
         if (IsMusicXml(extension))
         {
@@ -67,8 +67,7 @@ public static class SongSourceLoader
         if (IsMidi(extension))
         {
             var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
-            var track = MidiFileImporter.ImportCompiled(bytes);
-            return new LoadedSong(track, SongSourceKind.Midi, BuildMidiMetadata(bytes));
+            return LoadMidi(bytes);
         }
         if (IsMusicXml(extension))
         {
@@ -78,6 +77,20 @@ public static class SongSourceLoader
 
         var text = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
         return new LoadedSong(LegacySheetParser.Parse(text), SongSourceKind.LegacyText);
+    }
+
+    private static LoadedSong LoadMidi(byte[] bytes)
+    {
+        try
+        {
+            var track = MidiFileImporter.ImportCompiled(bytes);
+            return new LoadedSong(track, SongSourceKind.Midi, BuildMidiMetadata(bytes));
+        }
+        catch (FormatException exception) when (MidiClientCompatibility.IsWideRangeFailure(exception))
+        {
+            var track = MidiFileImporter.ImportCompiled(bytes, MidiClientCompatibility.WideRangeFallbackOptions);
+            return new LoadedSong(track, SongSourceKind.Midi, MidiClientCompatibility.BuildMetadata(bytes));
+        }
     }
 
     private static SongLoadMetadata? BuildMidiMetadata(ReadOnlySpan<byte> bytes)
