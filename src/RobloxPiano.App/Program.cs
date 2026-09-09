@@ -116,7 +116,8 @@ internal static class Program
             or UnauthorizedAccessException
             or FormatException
             or InvalidOperationException
-            or ArgumentException)
+            or ArgumentException
+            or JsonException)
         {
             await TryPersistFailureReportAsync(track, qualityCollector, settings).ConfigureAwait(false);
             Console.Error.WriteLine($"Playback failed: {exception.Message}");
