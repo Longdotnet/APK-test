@@ -32,6 +32,14 @@ internal sealed class ClientMainForm : Form
     private readonly Button _backButton = new() { Text = "-10s", AutoSize = true, Enabled = false };
     private readonly Button _forwardButton = new() { Text = "+10s", AutoSize = true, Enabled = false };
     private readonly Button _logsButton = new() { Text = "Diagnostics", AutoSize = true };
+    private readonly NumericUpDown _latencyMs = new()
+    {
+        Minimum = 0,
+        Maximum = (decimal)PlaybackTimingProfile.MaximumDispatchLead.TotalMilliseconds,
+        Increment = 5,
+        DecimalPlaces = 0,
+        Width = 80
+    };
     private readonly TrackBar _positionBar = new()
     {
         Dock = DockStyle.Fill,
@@ -59,7 +67,7 @@ internal sealed class ClientMainForm : Form
         Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(720, 500);
-        Size = new Size(840, 570);
+        Size = new Size(840, 590);
         AllowDrop = true;
 
         BuildLayout();
@@ -75,6 +83,11 @@ internal sealed class ClientMainForm : Form
         _backButton.Click += (_, _) => SeekRelative(TimeSpan.FromSeconds(-10));
         _forwardButton.Click += (_, _) => SeekRelative(TimeSpan.FromSeconds(10));
         _logsButton.Click += (_, _) => OpenDiagnosticsDirectory();
+        _latencyMs.ValueChanged += (_, _) =>
+        {
+            SaveClientState();
+            _playbackInfo.Text = $"Input latency compensation set to {(int)_latencyMs.Value} ms for the next playback.";
+        };
         _positionBar.MouseDown += (_, _) => _positionDragging = true;
         _positionBar.MouseUp += (_, _) => CommitPositionBarSeek();
         _robloxTimer.Tick += (_, _) => RefreshRobloxStatus();
@@ -181,30 +194,36 @@ internal sealed class ClientMainForm : Form
         speedRow.Controls.Add(new Label { Text = "Speed:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
         speedRow.Controls.Add(_speedInfo);
 
+        var latencyRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+        latencyRow.Controls.Add(new Label { Text = "Input latency compensation:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
+        latencyRow.Controls.Add(_latencyMs);
+        latencyRow.Controls.Add(new Label { Text = "ms (0 = legacy timing)", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
+
         var seekPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, AutoSize = true };
         seekPanel.Controls.Add(_positionBar, 0, 0);
         seekPanel.Controls.Add(_positionInfo, 0, 1);
 
-        var playbackPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, AutoSize = true };
+        var playbackPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, AutoSize = true };
         playbackPanel.Controls.Add(controls, 0, 0);
         playbackPanel.Controls.Add(speedRow, 0, 1);
-        playbackPanel.Controls.Add(seekPanel, 0, 2);
-        playbackPanel.Controls.Add(_playbackInfo, 0, 3);
-        playbackPanel.Controls.Add(_hotkeyInfo, 0, 4);
+        playbackPanel.Controls.Add(latencyRow, 0, 2);
+        playbackPanel.Controls.Add(seekPanel, 0, 3);
+        playbackPanel.Controls.Add(_playbackInfo, 0, 4);
+        playbackPanel.Controls.Add(_hotkeyInfo, 0, 5);
 
         var safety = new Label
         {
             AutoSize = true,
             MaximumSize = new Size(780, 0),
             Text = "Safety: input is sent only to the selected foreground Roblox process. Losing focus, pause, stop, " +
-                   "seek, cancellation, or an input error releases held keys before playback can continue."
+                   "seek, cancellation, or an input error releases held keys before playback can continue. Latency compensation only changes dispatch timing; it never changes score truth."
         };
 
         root.Controls.Add(title);
         root.Controls.Add(subtitle);
         root.Controls.Add(CreateGroup("Roblox", _robloxInfo));
         root.Controls.Add(CreateGroup("Sheet", sheetPanel));
-        root.Controls.Add(CreateGroup("Playback / Seek", playbackPanel));
+        root.Controls.Add(CreateGroup("Playback / Seek / Calibration", playbackPanel));
         root.Controls.Add(safety);
         Controls.Add(root);
     }
@@ -239,6 +258,7 @@ internal sealed class ClientMainForm : Form
     {
         var state = ClientStateStore.Load();
         _preferredSpeed = state.PreferredSpeed;
+        _latencyMs.Value = Math.Clamp(state.InputLatencyMs, (int)_latencyMs.Minimum, (int)_latencyMs.Maximum);
         UpdateSpeedLabel();
 
         if (!string.IsNullOrWhiteSpace(state.LastSheetPath) && File.Exists(state.LastSheetPath))
@@ -249,7 +269,7 @@ internal sealed class ClientMainForm : Form
 
     private void SaveClientState()
     {
-        ClientStateStore.Save(new ClientState(_selectedSheetPath, _preferredSpeed));
+        ClientStateStore.Save(new ClientState(_selectedSheetPath, _preferredSpeed, (int)_latencyMs.Value));
     }
 
     private void BrowseSheet()
@@ -358,6 +378,7 @@ internal sealed class ClientMainForm : Form
         }
 
         var initialPosition = PositionFromBar(track.TimelineDuration);
+        var timingProfile = PlaybackTimingProfile.FromMilliseconds(_latencyMs.Value);
         _activeTarget = target;
         _playbackCancellation = new CancellationTokenSource();
         var cancellation = _playbackCancellation;
@@ -366,7 +387,7 @@ internal sealed class ClientMainForm : Form
         var sessionClock = _sessionClock;
         var input = new WindowsKeyboardInputSink();
         var focus = new PlaybackSessionFocusGate(new RobloxTargetFocusGate(target), sessionClock);
-        _transportSession = new PlaybackTransportSession(track, sessionClock, input, focus);
+        _transportSession = new PlaybackTransportSession(track, sessionClock, input, focus, timingProfile);
         var transport = _transportSession;
 
         SetPlaybackActive(true);
@@ -378,7 +399,8 @@ internal sealed class ClientMainForm : Form
 
         ClientDiagnostics.Log(
             $"Playback start: sheet='{_selectedSheetPath}', title='{track.Title}', targetPid={target.ProcessId}, " +
-            $"speed={sessionClock.Speed:0.00}x, position={initialPosition.TotalSeconds:0.###}s, activation={activated}.");
+            $"speed={sessionClock.Speed:0.00}x, position={initialPosition.TotalSeconds:0.###}s, " +
+            $"dispatchLeadMs={timingProfile.DispatchLead.TotalMilliseconds:0}, activation={activated}.");
 
         var task = RunPlaybackSessionAsync(track, transport, initialPosition, cancellation.Token);
         _playbackTask = task;
@@ -623,6 +645,7 @@ internal sealed class ClientMainForm : Form
     {
         _playButton.Enabled = !active;
         _browseButton.Enabled = !active;
+        _latencyMs.Enabled = !active;
         _pauseButton.Enabled = active;
         _stopButton.Enabled = active;
         _pauseButton.Text = "Pause (F8)";
@@ -742,7 +765,6 @@ internal sealed class ClientMainForm : Form
         }
         catch
         {
-            // Playback already reports/logs its failure; shutdown must continue.
         }
 
         _allowClose = true;
