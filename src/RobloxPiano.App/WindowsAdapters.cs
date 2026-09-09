@@ -73,6 +73,19 @@ internal sealed class TraceInputSink(Func<TimeSpan> now) : IInputSink
     }
 }
 
+internal sealed class WindowsInputInjectionException : InvalidOperationException
+{
+    public WindowsInputInjectionException(string message)
+        : base(message)
+    {
+    }
+
+    public WindowsInputInjectionException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
 internal sealed class WindowsKeyboardInputSink : IInputSink
 {
     private const byte ShiftModifier = 0x01;
@@ -158,7 +171,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var encoded = NativeMethods.VkKeyScanW(character);
         if (encoded == -1)
         {
-            throw new InvalidOperationException(
+            throw new WindowsInputInjectionException(
                 $"Character U+{(int)character:X4} ('{character}') cannot be mapped by the active Windows keyboard layout.");
         }
 
@@ -166,7 +179,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var modifiers = (byte)((encoded >> 8) & 0x00ff);
         if ((modifiers & ~(ShiftModifier | ControlModifier | AltModifier)) != 0)
         {
-            throw new InvalidOperationException($"Unsupported keyboard modifier state 0x{modifiers:X2} for '{character}'.");
+            throw new WindowsInputInjectionException($"Unsupported keyboard modifier state 0x{modifiers:X2} for '{character}'.");
         }
 
         return new KeyStroke(virtualKey, modifiers);
@@ -214,7 +227,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         {
             SendVirtualKey(virtualKey, keyUp: true);
         }
-        catch (Win32Exception)
+        catch (WindowsInputInjectionException)
         {
             // Release-all is a best-effort safety path. The original failure remains more useful to the caller.
         }
@@ -222,10 +235,12 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private static void SendVirtualKey(ushort virtualKey, bool keyUp)
     {
+        NativeMethods.ValidateInputAbi();
+
         var scanCode = (ushort)NativeMethods.MapVirtualKeyW(virtualKey, NativeMethods.MapVkToVsc);
         if (scanCode == 0)
         {
-            throw new Win32Exception($"Unable to resolve scan code for virtual key 0x{virtualKey:X2}.");
+            throw new WindowsInputInjectionException($"Unable to resolve scan code for virtual key 0x{virtualKey:X2}.");
         }
 
         var input = new NativeMethods.Input
@@ -244,11 +259,25 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             }
         };
 
-        var sent = NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.Input>());
-        if (sent != 1)
+        var size = NativeMethods.InputStructureSize;
+        var sent = NativeMethods.SendInput(1, new[] { input }, size);
+        if (sent == 1)
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows SendInput failed.");
+            return;
         }
+
+        var errorCode = Marshal.GetLastWin32Error();
+        var nativeMessage = errorCode == 0
+            ? "Windows returned no error code. This commonly occurs when UIPI blocks input across privilege levels."
+            : new Win32Exception(errorCode).Message;
+        var message =
+            $"Windows keyboard input was rejected (SendInput=0, Win32={errorCode}, INPUT={size} bytes). " +
+            $"{nativeMessage} Keep Roblox in the foreground and run Roblox and Roblox Piano at the same Windows privilege level.";
+
+        ClientDiagnostics.Log(message);
+        throw errorCode == 0
+            ? new WindowsInputInjectionException(message)
+            : new WindowsInputInjectionException(message, new Win32Exception(errorCode));
     }
 
     private readonly record struct KeyStroke(ushort VirtualKey, byte Modifiers);
@@ -256,10 +285,26 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
 internal static class NativeMethods
 {
+    internal const uint InputMouse = 0;
     internal const uint InputKeyboard = 1;
+    internal const uint InputHardware = 2;
     internal const uint KeyEventKeyUp = 0x0002;
     internal const uint KeyEventScanCode = 0x0008;
     internal const uint MapVkToVsc = 0;
+
+    internal static int InputStructureSize => Marshal.SizeOf<Input>();
+    internal static int ExpectedInputStructureSize => IntPtr.Size == 8 ? 40 : 28;
+
+    internal static void ValidateInputAbi()
+    {
+        var actual = InputStructureSize;
+        var expected = ExpectedInputStructureSize;
+        if (actual != expected)
+        {
+            throw new WindowsInputInjectionException(
+                $"Windows INPUT ABI mismatch: managed size is {actual} bytes, expected {expected} bytes for a {IntPtr.Size * 8}-bit process.");
+        }
+    }
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetForegroundWindow();
@@ -287,7 +332,24 @@ internal static class NativeMethods
     internal struct InputUnion
     {
         [FieldOffset(0)]
+        internal MouseInput Mouse;
+
+        [FieldOffset(0)]
         internal KeyboardInput Keyboard;
+
+        [FieldOffset(0)]
+        internal HardwareInput Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        internal int Dx;
+        internal int Dy;
+        internal uint MouseData;
+        internal uint Flags;
+        internal uint Time;
+        internal UIntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -298,5 +360,13 @@ internal static class NativeMethods
         internal uint Flags;
         internal uint Time;
         internal UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct HardwareInput
+    {
+        internal uint Message;
+        internal ushort ParamL;
+        internal ushort ParamH;
     }
 }
