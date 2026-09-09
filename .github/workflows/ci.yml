@@ -47,6 +47,9 @@ jobs:
       - name: Run transport regression harness
         run: dotnet run --project tests/RobloxPiano.TransportTests/RobloxPiano.TransportTests.csproj -c Release
 
+      - name: Run held-input ownership regression harness
+        run: dotnet run --project tests/RobloxPiano.InputStateTests/RobloxPiano.InputStateTests.csproj -c Release
+
       - name: Run sheet library regression harness
         run: dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
 
