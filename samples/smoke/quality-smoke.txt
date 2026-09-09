@@ -1,0 +1,8 @@
+TITLE=Quality Smoke
+BPM=600
+SUBDIV=4
+START_DELAY=0
+CHORD_HOLD=0.5
+LOOPS=1
+
+t r . y
