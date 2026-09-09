@@ -73,6 +73,11 @@ internal static class RobloxProcessLocator
             {
                 try
                 {
+                    if (process.Id == Environment.ProcessId)
+                    {
+                        continue;
+                    }
+
                     var processName = process.ProcessName;
                     if (!IsRobloxPlayerProcess(processName))
                     {
@@ -120,7 +125,7 @@ internal static class RobloxProcessLocator
         }
 
         ClientNativeMethods.GetWindowThreadProcessId(foreground, out var rawProcessId);
-        if (rawProcessId == 0 || rawProcessId > int.MaxValue)
+        if (rawProcessId == 0 || rawProcessId > int.MaxValue || rawProcessId == Environment.ProcessId)
         {
             return null;
         }
@@ -137,9 +142,10 @@ internal static class RobloxProcessLocator
         catch (SystemException) { return null; }
     }
 
-    private static bool IsRobloxPlayerProcess(string processName)
+    internal static bool IsRobloxPlayerProcess(string processName)
     {
-        if (processName.Contains("Studio", StringComparison.OrdinalIgnoreCase))
+        if (processName.Equals("RobloxPiano", StringComparison.OrdinalIgnoreCase)
+            || processName.Contains("Studio", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
