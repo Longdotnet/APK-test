@@ -1,0 +1,71 @@
+name: production-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Show SDK
+        run: dotnet --info
+
+      - name: Build deterministic core
+        run: dotnet build src/RobloxPiano.Core/RobloxPiano.Core.csproj -c Release
+
+      - name: Run regression harness
+        run: dotnet run --project tests/RobloxPiano.RegressionTests/RobloxPiano.RegressionTests.csproj -c Release
+
+      - name: Build Windows client
+        run: dotnet build src/RobloxPiano.App/RobloxPiano.App.csproj -c Release
+
+      - name: Publish self-contained single EXE
+        shell: pwsh
+        run: |
+          dotnet publish src/RobloxPiano.App/RobloxPiano.App.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=embedded `
+            -o artifacts/publish
+
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+
+          $files = @(Get-ChildItem artifacts/publish -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'RobloxPiano.exe') {
+            $names = ($files | ForEach-Object Name) -join ', '
+            throw "Distribution contract failed. Expected only RobloxPiano.exe, found: $names"
+          }
+
+      - name: Clean-machine style smoke test
+        shell: pwsh
+        run: |
+          & ./artifacts/publish/RobloxPiano.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "Published executable smoke test failed" }
+
+      - name: Upload client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RobloxPiano-win-x64
+          path: artifacts/publish/RobloxPiano.exe
+          if-no-files-found: error
+          retention-days: 14

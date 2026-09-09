@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RobloxPiano.Core</AssemblyName>
+    <RootNamespace>RobloxPiano.Core</RootNamespace>
+  </PropertyGroup>
+</Project>
