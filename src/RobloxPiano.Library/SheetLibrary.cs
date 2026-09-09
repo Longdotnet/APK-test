@@ -21,6 +21,42 @@ public sealed record SheetLibraryEntry(
 
 public sealed class SheetLibraryService
 {
+    private static readonly (string FileName, string Content)[] StarterSongs =
+    [
+        ("starter-melody.txt", """
+            TITLE=Starter Melody
+            BPM=120
+            SUBDIV=4
+            START_DELAY=0
+            CHORD_HOLD=0.5
+            LOOPS=1
+
+            t r y u i u y r
+            t . r . [ty] . [ru] .
+            """),
+        ("starter-chords.txt", """
+            TITLE=Starter Chords
+            BPM=96
+            SUBDIV=4
+            START_DELAY=0
+            CHORD_HOLD=0.7
+            LOOPS=1
+
+            [ad] . [sf] . [dg] . [fh] .
+            [ad] [sf] [dg] [fh]
+            """),
+        ("starter-warmup.txt", """
+            TITLE=Starter Warmup
+            BPM=132
+            SUBDIV=4
+            START_DELAY=0
+            CHORD_HOLD=0.45
+            LOOPS=1
+
+            a s d f g h j h g f d s a
+            """)
+    ];
+
     public SheetLibraryService(string managedDirectory, string? portableDirectory = null)
     {
         ManagedDirectory = Path.GetFullPath(managedDirectory ?? throw new ArgumentNullException(nameof(managedDirectory)));
@@ -49,6 +85,32 @@ public sealed class SheetLibraryService
             .ThenBy(entry => entry.Title, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(entry => entry.FileName, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
+    }
+
+    public IReadOnlyList<SheetLibraryEntry> EnsureStarterLibrary()
+    {
+        Directory.CreateDirectory(ManagedDirectory);
+        if (Directory.EnumerateFiles(ManagedDirectory, "*", SearchOption.TopDirectoryOnly).Any(IsSupportedPath))
+        {
+            return Scan();
+        }
+
+        foreach (var starter in StarterSongs)
+        {
+            var path = Path.Combine(ManagedDirectory, starter.FileName);
+            if (!File.Exists(path))
+            {
+                File.WriteAllText(path, starter.Content.Replace("\r\n", "\n", StringComparison.Ordinal));
+            }
+        }
+
+        var entries = Scan();
+        if (entries.Count == 0 || entries.Any(entry => entry.Status != SheetValidationStatus.Valid))
+        {
+            throw new InvalidOperationException("Built-in starter songs failed deterministic library validation.");
+        }
+
+        return entries;
     }
 
     public SheetLibraryEntry Import(string sourcePath)
