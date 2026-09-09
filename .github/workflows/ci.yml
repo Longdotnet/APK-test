@@ -56,6 +56,9 @@ jobs:
       - name: Run deterministic MIDI importer regression harness
         run: dotnet run --project tests/RobloxPiano.MidiTests/RobloxPiano.MidiTests.csproj -c Release
 
+      - name: Run deterministic MusicXML importer regression harness
+        run: dotnet run --project tests/RobloxPiano.MusicXmlTests/RobloxPiano.MusicXmlTests.csproj -c Release
+
       - name: Run timing calibration regression harness
         run: dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
 
