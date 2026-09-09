@@ -15,7 +15,9 @@ var tests = new (string Name, Action Run)[]
     ("strict range policy still fails closed", StrictOutOfRangeFails),
     ("melodic range wider than the Roblox profile fails closed", WideRangeFails),
     ("dangling notes fail closed", DanglingNoteFails),
-    ("multi-channel sustain fails instead of over-sustaining", MultiChannelSustainFails),
+    ("multi-channel sustain is channel-scoped", MultiChannelSustainIsChannelScoped),
+    ("multi-channel sustain clips same-pitch retrigger", MultiChannelSustainRetriggerClips),
+    ("invalid channel sustain sequence still fails closed", InvalidChannelSustainFails),
     ("SMPTE division is rejected", SmpteFails)
 };
 
@@ -222,7 +224,7 @@ static void DanglingNoteFails()
     Throws<FormatException>(() => MidiFileImporter.Import(midi));
 }
 
-static void MultiChannelSustainFails()
+static void MultiChannelSustainIsChannelScoped()
 {
     var midi = BuildMidi(
         480,
@@ -233,6 +235,52 @@ static void MultiChannelSustainFails()
             Ch(240, 0x80, 60, 0),
             Ch(0, 0x81, 64, 0),
             Ch(240, 0xB0, 64, 0),
+            End(0)
+        ]);
+
+    var expressive = MidiFileImporter.Import(midi);
+    Equal(0, expressive.Controls.Count);
+    var compiled = ExpressivePerformanceCompiler.Compile(expressive);
+    Equal(2, compiled.Events.Count);
+
+    var sustained = compiled.Events.Single(item => item.Keys.Single() == MidiKeyboardProfile.RobloxClassic61.Map(60));
+    var unsustained = compiled.Events.Single(item => item.Keys.Single() == MidiKeyboardProfile.RobloxClassic61.Map(64));
+    Equal(TimeSpan.FromMilliseconds(500), sustained.Duration);
+    Equal(TimeSpan.FromMilliseconds(250), unsustained.Duration);
+}
+
+static void MultiChannelSustainRetriggerClips()
+{
+    var midi = BuildMidi(
+        480,
+        [
+            Ch(0, 0xB0, 64, 127),
+            Ch(0, 0x90, 60, 100),
+            Ch(120, 0x80, 60, 0),
+            Ch(0, 0x91, 60, 100),
+            Ch(120, 0x81, 60, 0),
+            Ch(240, 0xB0, 64, 0),
+            End(0)
+        ]);
+
+    var compiled = MidiFileImporter.ImportCompiled(midi);
+    Equal(2, compiled.Events.Count);
+    Equal(TimeSpan.Zero, compiled.Events[0].Start);
+    Equal(TimeSpan.FromMilliseconds(125), compiled.Events[0].Duration);
+    Equal(TimeSpan.FromMilliseconds(125), compiled.Events[1].Start);
+    Equal(TimeSpan.FromMilliseconds(125), compiled.Events[1].Duration);
+}
+
+static void InvalidChannelSustainFails()
+{
+    var midi = BuildMidi(
+        480,
+        [
+            Ch(0, 0xB0, 64, 0),
+            Ch(0, 0x90, 60, 100),
+            Ch(0, 0x91, 64, 100),
+            Ch(120, 0x80, 60, 0),
+            Ch(0, 0x81, 64, 0),
             End(0)
         ]);
     Throws<FormatException>(() => MidiFileImporter.Import(midi));
