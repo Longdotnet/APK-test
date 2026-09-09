@@ -78,6 +78,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.InputStateTests/RobloxPiano.InputStateTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Held-input ownership regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.ExpressiveTests/RobloxPiano.ExpressiveTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Expressive sustain regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
 
@@ -151,6 +154,10 @@ jobs:
           4. Start Roblox and press Play.
           5. Optionally calibrate input latency in milliseconds; 0 preserves legacy timing.
           6. F6 slower, F7 faster, F8 pause/resume, F9 stop.
+
+          Production foundations in this release:
+          - Canonical expressive sustain/pedal state now compiles deterministically into duration-aware playback before the kernel.
+          - Legacy TXT/VPS playback remains unchanged until an importer explicitly supplies expressive controls.
 
           Notes:
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
