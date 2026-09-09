@@ -178,6 +178,7 @@ public sealed class SheetLibraryService
         var imported = new List<SheetLibraryEntry>();
         var existing = new List<SheetLibraryEntry>();
         var managedByHash = BuildManagedHashIndex();
+        var reportedExistingHashes = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var source in candidates)
         {
@@ -193,7 +194,10 @@ public sealed class SheetLibraryService
                 var hash = ComputeContentHash(source);
                 if (managedByHash.TryGetValue(hash, out var duplicate))
                 {
-                    existing.Add(duplicate);
+                    if (reportedExistingHashes.Add(hash))
+                    {
+                        existing.Add(duplicate);
+                    }
                     continue;
                 }
 
