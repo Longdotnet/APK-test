@@ -14,10 +14,30 @@ internal sealed record RobloxPlaybackPreflightDecision(
     string PrimaryActionText,
     string StatusText);
 
+internal enum RobloxPlaybackAuthorizationFailure
+{
+    VerificationRequired = 0,
+    ProcessEnded = 1,
+    ProcessReplaced = 2
+}
+
+internal sealed class RobloxPlaybackAuthorizationException : InvalidOperationException
+{
+    public RobloxPlaybackAuthorizationException(
+        RobloxPlaybackAuthorizationFailure failure,
+        string message)
+        : base(message)
+    {
+        Failure = failure;
+    }
+
+    public RobloxPlaybackAuthorizationFailure Failure { get; }
+}
+
 internal static class RobloxPlaybackLaunchAuthorization
 {
     private static readonly object Gate = new();
-    private static int? _authorizedProcessId;
+    private static RobloxProcessIdentity? _authorizedIdentity;
     private static DateTimeOffset? _authorizedAt;
 
     public static void Synchronize(RobloxWindowTarget? target, RobloxInputHealthSnapshot health)
@@ -28,27 +48,32 @@ internal static class RobloxPlaybackLaunchAuthorization
         {
             if (target is null)
             {
-                _authorizedProcessId = null;
+                _authorizedIdentity = null;
                 _authorizedAt = null;
                 return;
             }
 
-            if (health.AppliesTo(target.ProcessId) && health.State == RobloxInputHealthState.Confirmed)
+            if (health.AppliesTo(target)
+                && health.State == RobloxInputHealthState.Confirmed
+                && health.ProcessStartTimeUtcTicks.HasValue)
             {
-                if (_authorizedProcessId != target.ProcessId)
+                var identity = new RobloxProcessIdentity(target.ProcessId, health.ProcessStartTimeUtcTicks.Value);
+                if (_authorizedIdentity != identity)
                 {
-                    ClientDiagnostics.Log($"Playback launch authorization armed for confirmed Roblox PID {target.ProcessId}.");
+                    ClientDiagnostics.Log($"Playback launch authorization armed for confirmed Roblox {identity}.");
                 }
 
-                _authorizedProcessId = target.ProcessId;
+                _authorizedIdentity = identity;
                 _authorizedAt = DateTimeOffset.UtcNow;
                 return;
             }
 
-            if (_authorizedProcessId == target.ProcessId)
+            if (_authorizedIdentity?.ProcessId == target.ProcessId)
             {
-                ClientDiagnostics.Log($"Playback launch authorization revoked for Roblox PID {target.ProcessId}; input readiness is {health.State}.");
-                _authorizedProcessId = null;
+                ClientDiagnostics.Log(
+                    $"Playback launch authorization revoked for Roblox PID {target.ProcessId}; " +
+                    $"input readiness is {health.State} or the process lifetime changed.");
+                _authorizedIdentity = null;
                 _authorizedAt = null;
             }
         }
@@ -57,15 +82,49 @@ internal static class RobloxPlaybackLaunchAuthorization
     public static bool IsAuthorized(RobloxWindowTarget target)
     {
         ArgumentNullException.ThrowIfNull(target);
-        var health = RobloxInputHealthSession.GetFor(target);
 
+        RobloxProcessIdentity? authorizedIdentity;
         lock (Gate)
         {
-            return _authorizedProcessId == target.ProcessId
-                && _authorizedAt.HasValue
-                && health.AppliesTo(target.ProcessId)
-                && health.State == RobloxInputHealthState.Confirmed;
+            authorizedIdentity = _authorizedIdentity;
         }
+
+        if (!authorizedIdentity.HasValue
+            || !_authorizedAt.HasValue
+            || authorizedIdentity.Value.ProcessId != target.ProcessId)
+        {
+            throw new RobloxPlaybackAuthorizationException(
+                RobloxPlaybackAuthorizationFailure.VerificationRequired,
+                $"Roblox input verification is no longer valid for PID {target.ProcessId}. Return to the Sheet Library and verify input again.");
+        }
+
+        if (!RobloxProcessIdentity.TryCapture(target.ProcessId, out var currentIdentity))
+        {
+            throw new RobloxPlaybackAuthorizationException(
+                RobloxPlaybackAuthorizationFailure.ProcessEnded,
+                $"The verified Roblox process ended before playback input could be dispatched. Return to the Sheet Library and verify the current Roblox process.");
+        }
+
+        if (currentIdentity != authorizedIdentity.Value)
+        {
+            ClientDiagnostics.Log(
+                $"Roblox process lifetime mismatch at runtime dispatch: authorized={authorizedIdentity.Value}; current={currentIdentity}.");
+            throw new RobloxPlaybackAuthorizationException(
+                RobloxPlaybackAuthorizationFailure.ProcessReplaced,
+                $"Roblox restarted or Windows reused PID {target.ProcessId} after input verification. Playback was blocked before input dispatch; verify input for the current Roblox process.");
+        }
+
+        var health = RobloxInputHealthSession.GetFor(target);
+        if (health.State != RobloxInputHealthState.Confirmed
+            || !health.AppliesTo(target)
+            || health.ProcessStartTimeUtcTicks != authorizedIdentity.Value.StartTimeUtcTicks)
+        {
+            throw new RobloxPlaybackAuthorizationException(
+                RobloxPlaybackAuthorizationFailure.VerificationRequired,
+                $"Roblox input readiness changed before playback. Return to the Sheet Library and verify input for the current Roblox process.");
+        }
+
+        return true;
     }
 
     internal static int? AuthorizedProcessIdForTests
@@ -74,7 +133,18 @@ internal static class RobloxPlaybackLaunchAuthorization
         {
             lock (Gate)
             {
-                return _authorizedProcessId;
+                return _authorizedIdentity?.ProcessId;
+            }
+        }
+    }
+
+    internal static long? AuthorizedProcessStartTimeUtcTicksForTests
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return _authorizedIdentity?.StartTimeUtcTicks;
             }
         }
     }
@@ -83,7 +153,7 @@ internal static class RobloxPlaybackLaunchAuthorization
     {
         lock (Gate)
         {
-            _authorizedProcessId = null;
+            _authorizedIdentity = null;
             _authorizedAt = null;
         }
     }
@@ -107,7 +177,7 @@ internal static class RobloxPlaybackPreflight
                 "Open Roblox and enter the piano game before playback.");
         }
 
-        var effectiveHealth = health.AppliesTo(target.ProcessId)
+        var effectiveHealth = health.AppliesTo(target)
             ? health
             : RobloxInputHealthSnapshot.Unknown;
 
@@ -117,19 +187,19 @@ internal static class RobloxPlaybackPreflight
                 RobloxPlaybackPreflightAction.Proceed,
                 true,
                 "Play",
-                $"Input confirmed for Roblox PID {target.ProcessId}. Playback can start without repeating the input check for this process."),
+                $"Input confirmed for the current Roblox process lifetime (PID {target.ProcessId}). Playback can start without repeating the input check while this process instance remains active."),
 
             RobloxInputHealthState.Blocked => new RobloxPlaybackPreflightDecision(
                 RobloxPlaybackPreflightAction.RetestInput,
                 false,
                 "Retest Input to Play",
-                $"Playback is blocked for Roblox PID {target.ProcessId}: {effectiveHealth.Summary} Next: {effectiveHealth.NextAction}"),
+                $"Playback is blocked for the current Roblox process (PID {target.ProcessId}): {effectiveHealth.Summary} Next: {effectiveHealth.NextAction}"),
 
             _ => new RobloxPlaybackPreflightDecision(
                 RobloxPlaybackPreflightAction.VerifyInput,
                 false,
                 "Verify Input & Play",
-                $"Input readiness is unknown for Roblox PID {target.ProcessId}. Run the production input check once before playback.")
+                $"Input readiness is unknown for the current Roblox process lifetime (PID {target.ProcessId}). Run the production input check once before playback.")
         };
     }
 }
