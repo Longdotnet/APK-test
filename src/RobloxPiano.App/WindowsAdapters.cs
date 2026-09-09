@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using RobloxPiano.Core;
@@ -88,6 +87,8 @@ internal sealed class WindowsInputInjectionException : InvalidOperationException
 
 internal sealed class WindowsKeyboardInputSink : IInputSink
 {
+    internal const string BackendName = "keybd_event";
+
     private const byte ShiftModifier = 0x01;
     private const byte ControlModifier = 0x02;
     private const byte AltModifier = 0x04;
@@ -98,6 +99,11 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private readonly object _gate = new();
     private readonly HashSet<ushort> _heldKeys = new();
+
+    public WindowsKeyboardInputSink()
+    {
+        ClientDiagnostics.Log($"Keyboard input backend initialized: {BackendName} (PowerShell field baseline).");
+    }
 
     public ValueTask KeyDownAsync(IReadOnlyList<char> keys, CancellationToken cancellationToken)
     {
@@ -232,71 +238,34 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private static void SendVirtualKey(ushort virtualKey, bool keyUp)
     {
-        NativeMethods.ValidateInputAbi();
-        var input = BuildVirtualKeyInput(virtualKey, keyUp);
-        var size = NativeMethods.InputStructureSize;
-        var sent = NativeMethods.SendInput(1, new[] { input }, size);
-        if (sent == 1)
+        var keyEvent = BuildFieldBaselineKeyEvent(virtualKey, keyUp);
+        NativeMethods.KeybdEvent(
+            keyEvent.VirtualKey,
+            scanCode: 0,
+            keyEvent.Flags,
+            UIntPtr.Zero);
+    }
+
+    internal static FieldBaselineKeyEvent BuildFieldBaselineKeyEvent(ushort virtualKey, bool keyUp)
+    {
+        if (virtualKey > byte.MaxValue)
         {
-            return;
+            throw new WindowsInputInjectionException(
+                $"Virtual key 0x{virtualKey:X4} cannot be emitted by the field-proven keybd_event backend.");
         }
 
-        var errorCode = Marshal.GetLastWin32Error();
-        var nativeMessage = errorCode == 0
-            ? "Windows returned no error code. This commonly occurs when UIPI blocks input across privilege levels."
-            : new Win32Exception(errorCode).Message;
-        var message =
-            $"Windows keyboard input was rejected (SendInput=0, Win32={errorCode}, INPUT={size} bytes, mode=virtual-key). " +
-            $"{nativeMessage} Keep Roblox in the foreground and run Roblox and Roblox Piano at the same Windows privilege level.";
-
-        ClientDiagnostics.Log(message);
-        throw errorCode == 0
-            ? new WindowsInputInjectionException(message)
-            : new WindowsInputInjectionException(message, new Win32Exception(errorCode));
+        return new FieldBaselineKeyEvent(
+            checked((byte)virtualKey),
+            keyUp ? NativeMethods.KeyEventKeyUp : 0u);
     }
 
-    internal static NativeMethods.Input BuildVirtualKeyInput(ushort virtualKey, bool keyUp)
-    {
-        return new NativeMethods.Input
-        {
-            Type = NativeMethods.InputKeyboard,
-            Union = new NativeMethods.InputUnion
-            {
-                Keyboard = new NativeMethods.KeyboardInput
-                {
-                    VirtualKey = virtualKey,
-                    ScanCode = 0,
-                    Flags = keyUp ? NativeMethods.KeyEventKeyUp : 0,
-                    Time = 0,
-                    ExtraInfo = UIntPtr.Zero
-                }
-            }
-        };
-    }
-
+    internal readonly record struct FieldBaselineKeyEvent(byte VirtualKey, uint Flags);
     private readonly record struct KeyStroke(ushort VirtualKey, byte Modifiers);
 }
 
 internal static class NativeMethods
 {
-    internal const uint InputMouse = 0;
-    internal const uint InputKeyboard = 1;
-    internal const uint InputHardware = 2;
     internal const uint KeyEventKeyUp = 0x0002;
-
-    internal static int InputStructureSize => Marshal.SizeOf<Input>();
-    internal static int ExpectedInputStructureSize => IntPtr.Size == 8 ? 40 : 28;
-
-    internal static void ValidateInputAbi()
-    {
-        var actual = InputStructureSize;
-        var expected = ExpectedInputStructureSize;
-        if (actual != expected)
-        {
-            throw new WindowsInputInjectionException(
-                $"Windows INPUT ABI mismatch: managed size is {actual} bytes, expected {expected} bytes for a {IntPtr.Size * 8}-bit process.");
-        }
-    }
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetForegroundWindow();
@@ -307,50 +276,6 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern short VkKeyScanW(char character);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct Input
-    {
-        internal uint Type;
-        internal InputUnion Union;
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    internal struct InputUnion
-    {
-        [FieldOffset(0)] internal MouseInput Mouse;
-        [FieldOffset(0)] internal KeyboardInput Keyboard;
-        [FieldOffset(0)] internal HardwareInput Hardware;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct MouseInput
-    {
-        internal int Dx;
-        internal int Dy;
-        internal uint MouseData;
-        internal uint Flags;
-        internal uint Time;
-        internal UIntPtr ExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct KeyboardInput
-    {
-        internal ushort VirtualKey;
-        internal ushort ScanCode;
-        internal uint Flags;
-        internal uint Time;
-        internal UIntPtr ExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct HardwareInput
-    {
-        internal uint Message;
-        internal ushort ParamL;
-        internal ushort ParamH;
-    }
+    [DllImport("user32.dll", EntryPoint = "keybd_event")]
+    internal static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 }

@@ -124,7 +124,7 @@ jobs:
           & $exe --ui-smoke
           if ($LASTEXITCODE -ne 0) { throw "Published executable STA UI startup smoke test failed" }
           & $exe --input-abi-smoke
-          if ($LASTEXITCODE -ne 0) { throw "Published executable Windows INPUT compatibility smoke test failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Published executable Windows input compatibility smoke test failed" }
 
       - name: Generate checksum and release evidence
         if: steps.guard.outputs.publish == 'true'
@@ -154,17 +154,16 @@ jobs:
           6. Roblox Piano restores the selected Roblox window, waits for exact foreground confirmation, then playback runs only while that exact window remains focused.
 
           Production capability and reliability in this release:
-          - Local MIDI import is now a first-class Library workflow with multi-select, folder ingestion and persistent list rows.
-          - A Type column surfaces MIDI / MusicXML / VPS / TXT source format and Library search can match source type.
-          - Batch import normalizes and sorts candidates deterministically, validates before copy and enforces a 2000-file safety bound.
-          - Identical valid song bytes are deduplicated against the managed Library with SHA-256 instead of producing numbered duplicate rows.
-          - Invalid MIDI remains outside the playable Library and failed batch candidates are summarized without aborting successful imports.
-          - Existing MusicXML repeat normalization, Legacy/Legacy x2, canonical timing, pause/seek/cancellation, exact-window focus, virtual-key input and release-all behavior remain unchanged.
+          - The final Roblox keyboard dispatch boundary now matches the earlier field-proven PowerShell implementation: VkKeyScanW plus keybd_event virtual-key down/up events.
+          - key-down uses scan code 0 and flags 0; key-up uses KEYEVENTF_KEYUP; character-scoped Shift/Ctrl/Alt handling remains unchanged.
+          - Exact Roblox MainWindowHandle focus gating, held-note ownership, release-all, pause/seek/cancellation and canonical timing remain unchanged.
+          - Local MIDI import remains a first-class Library workflow with multi-select, folder ingestion, deterministic validation and SHA-256 duplicate suppression from v0.16.0.
+          - Diagnostics record the keybd_event backend so real-client logs can prove which input path is active.
 
           Notes:
+          - keybd_event is intentionally used as a field-compatibility baseline; CI cannot prove that Roblox itself consumes a synthetic input event.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
           - Da capo/dal segno/coda, arbitrary repeat counts, nested repeats and complex ending schemes remain intentionally unsupported rather than guessed.
-          - Windows may still reject synthetic input when Roblox and Roblox Piano run at different integrity/administrator levels; the client reports this safely.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           - Real Roblox client consumption remains a required field validation in addition to deterministic CI smoke tests.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
