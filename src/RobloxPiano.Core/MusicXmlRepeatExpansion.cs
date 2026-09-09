@@ -106,8 +106,9 @@ public static class MusicXmlRepeatExpansion
                     continue;
                 }
 
+                // Preserve pass=2 through any following second-ending measures. A later explicit
+                // forward marker or implicit backward repeat starts a new repeat region and resets to pass one.
                 repeatActive = false;
-                pass = 1;
             }
 
             index++;
