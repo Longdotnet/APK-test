@@ -33,6 +33,7 @@ internal sealed class SheetLibraryForm : Form
     private readonly System.Windows.Forms.Timer _robloxTimer = new() { Interval = 1000 };
     private IReadOnlyList<SheetLibraryEntry> _entries = Array.Empty<SheetLibraryEntry>();
     private bool _robloxReady;
+    private bool _dragDropAvailable;
 
     public SheetLibraryForm()
     {
@@ -40,7 +41,6 @@ internal sealed class SheetLibraryForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 540);
         Size = new Size(920, 700);
-        AllowDrop = true;
 
         var localRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -51,6 +51,7 @@ internal sealed class SheetLibraryForm : Form
         _onlineDiscovery = new OnlineSongDiscoveryController(_search, _library, path => RefreshLibrary(path));
 
         BuildLayout();
+        BootstrapFirstRunLibrary();
         RefreshLibrary();
         RefreshRobloxStatus();
 
@@ -62,8 +63,7 @@ internal sealed class SheetLibraryForm : Form
         _grid.SelectionChanged += (_, _) => UpdatePrimaryAction();
         _robloxTimer.Tick += (_, _) => RefreshRobloxStatus();
         _robloxTimer.Start();
-        DragEnter += HandleDragEnter;
-        DragDrop += HandleDragDrop;
+        Shown += (_, _) => TryEnableDragDrop();
         FormClosed += (_, _) =>
         {
             _robloxTimer.Stop();
@@ -122,6 +122,43 @@ internal sealed class SheetLibraryForm : Form
         Controls.Add(root);
     }
 
+    private void BootstrapFirstRunLibrary()
+    {
+        try
+        {
+            var entries = _library.EnsureStarterLibrary();
+            ClientDiagnostics.Log($"Sheet library startup: {entries.Count} managed/portable song(s) available. Managed root='{_library.ManagedDirectory}'.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"Starter library bootstrap failed without blocking the client: {exception}");
+        }
+    }
+
+    private void TryEnableDragDrop()
+    {
+        try
+        {
+            AllowDrop = true;
+            DragEnter += HandleDragEnter;
+            DragDrop += HandleDragDrop;
+            _dragDropAvailable = true;
+            ClientDiagnostics.Log("Shell drag/drop registration succeeded.");
+        }
+        catch (InvalidOperationException exception)
+        {
+            _dragDropAvailable = false;
+            ClientDiagnostics.Log($"Shell drag/drop unavailable; Import Song remains available: {exception}");
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            _dragDropAvailable = false;
+            ClientDiagnostics.Log($"Shell drag/drop unavailable; Import Song remains available: {exception}");
+        }
+
+        RefreshLibrary();
+    }
+
     private void RefreshLibrary(string? selectPath = null)
     {
         try
@@ -130,8 +167,11 @@ internal sealed class SheetLibraryForm : Form
             ApplyFilter(selectPath);
             var valid = _entries.Count(entry => entry.Status == SheetValidationStatus.Valid);
             var invalid = _entries.Count - valid;
+            var importHint = _dragDropAvailable
+                ? "Search above, drop a file here, or use Import Song to add more."
+                : "Search above or use Import Song to add more.";
             _status.Text = invalid == 0
-                ? $"{valid} playable song(s). Search above, drop a file here, or use Import Song to add more."
+                ? $"{valid} playable song(s). {importHint}"
                 : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
