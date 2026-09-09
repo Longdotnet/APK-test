@@ -149,21 +149,21 @@ jobs:
           1. Download RobloxPiano.exe and double-click it.
           2. The Sheet Library is list-first: imported songs persist as rows instead of bypassing the Library.
           3. Use Import MIDI for one or many `.mid` / `.midi` files, Import MIDI Folder for a whole MIDI collection, drag/drop files or folders, or use online discovery.
-          4. Real-world multi-channel MIDI may use CC64 sustain on only some melodic channels; Roblox Piano now lowers that pedal state per channel instead of rejecting the whole song or over-sustaining unrelated channels.
+          4. Real-world multi-channel MIDI may use CC64 sustain on only some melodic channels; Roblox Piano lowers that pedal state per channel instead of rejecting the whole song or over-sustaining unrelated channels.
           5. Select any playable Library row and press Play after opening Roblox and entering the piano game.
-          6. Roblox Piano restores the selected Roblox window, waits for exact foreground confirmation, then playback runs only while that exact window remains focused.
+          6. Roblox Piano activates the selected Roblox player process and keeps playback authorized across top-level window-handle changes only while the foreground window still belongs to that exact selected PID.
 
           Production capability and reliability in this release:
-          - Multi-channel MIDI sustain is compiled deterministically per source channel before canonical playback, so CC64 on one channel cannot extend notes on another channel.
-          - Same-pitch notes across channels remain physically retriggerable: sustained holds are clipped at the next effective-pitch NoteOn before KeyUp-before-KeyDown planning.
-          - Malformed channel pedal state still fails closed; an unterminated SustainDown uses the existing deterministic timeline-end safety repair.
-          - The proven single-channel sustain path remains unchanged, preserving existing expressive and Legacy/Legacy x2 regression baselines.
-          - Existing MIDI range auto-fit, General MIDI percussion filtering, compatibility diagnostics, local MIDI collection import and SHA-256 duplicate suppression remain unchanged.
-          - The field-proven VkKeyScanW + keybd_event backend, exact Roblox MainWindowHandle focus gating, held-note ownership, release-all, pause/seek/cancellation and canonical timing remain unchanged.
+          - Roblox focus safety is now process-continuous: a restored or recreated top-level Roblox window no longer stalls playback solely because its HWND differs from the handle captured at session start.
+          - Focus authorization remains strict to the selected Roblox PID; another Roblox process, Studio, RobloxPiano itself, and unrelated foreground applications remain rejected.
+          - Sampled field diagnostics record focus-gate transitions and actual key DOWN/UP dispatch evidence with foreground HWND/PID so real-client failures can be localized without per-note log flooding.
+          - The field-proven VkKeyScanW + keybd_event backend remains the production compatibility baseline.
+          - Multi-channel MIDI sustain remains compiled deterministically per source channel; same-pitch retriggers, malformed pedal fail-closed behavior and single-channel sustain regressions remain protected.
+          - Existing MIDI range auto-fit, General MIDI percussion filtering, compatibility diagnostics, local MIDI collection import, SHA-256 duplicate suppression, held-note ownership, release-all, pause/seek/cancellation and canonical timing remain unchanged.
 
           Notes:
+          - PID continuity deliberately does not authorize arbitrary Roblox windows; playback stops whenever foreground ownership leaves the exact selected player process.
           - MIDI channels are intentionally lowered away after import because Roblox playback targets one physical virtual-piano keyboard rather than a multitimbral synthesizer.
-          - Range auto-fit remains one deterministic global transpose; MIDI whose melodic span cannot fit the classic 61-key Roblox profile still fails closed.
           - General MIDI channel 10 percussion remains ignored by the production compatibility policy and visibly counted in the Library.
           - keybd_event is intentionally used as a field-compatibility baseline; CI cannot prove that Roblox itself consumes a synthetic input event.
           - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
