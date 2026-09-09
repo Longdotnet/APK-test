@@ -87,6 +87,20 @@ jobs:
           }
           if ($report.failureCount -ne 0) { throw "Published EXE reported quality failures" }
 
+      - name: Malformed baseline is a controlled client error
+        shell: pwsh
+        run: |
+          Set-Content -Path artifacts/quality/invalid-baseline.json -Value '{broken-json'
+          & ./artifacts/publish/RobloxPiano.exe `
+            samples/smoke/quality-smoke.txt `
+            --dry-run `
+            --start-delay 0 `
+            --baseline-report artifacts/quality/invalid-baseline.json
+
+          if ($LASTEXITCODE -ne 1) {
+            throw "Malformed baseline must return controlled exit code 1, actual: $LASTEXITCODE"
+          }
+
       - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
