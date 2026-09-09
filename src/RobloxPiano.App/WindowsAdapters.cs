@@ -107,20 +107,17 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var strokes = keys.Select(ResolveStroke).ToArray();
         lock (_gate)
         {
-            foreach (var group in strokes.GroupBy(stroke => stroke.Modifiers).OrderBy(group => group.Key))
+            foreach (var stroke in strokes)
             {
-                PressModifiers(group.Key);
+                PressModifiers(stroke.Modifiers);
                 try
                 {
-                    foreach (var stroke in group)
-                    {
-                        SendVirtualKey(stroke.VirtualKey, keyUp: false);
-                        _heldKeys.Add(stroke.VirtualKey);
-                    }
+                    SendVirtualKey(stroke.VirtualKey, keyUp: false);
+                    _heldKeys.Add(stroke.VirtualKey);
                 }
                 finally
                 {
-                    ReleaseModifiers(group.Key);
+                    ReleaseModifiers(stroke.Modifiers);
                 }
             }
         }
@@ -187,6 +184,11 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private static void PressModifiers(byte modifiers)
     {
+        if ((modifiers & ShiftModifier) != 0)
+        {
+            SendVirtualKey(VirtualKeyShift, keyUp: false);
+        }
+
         if ((modifiers & ControlModifier) != 0)
         {
             SendVirtualKey(VirtualKeyControl, keyUp: false);
@@ -196,20 +198,10 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         {
             SendVirtualKey(VirtualKeyMenu, keyUp: false);
         }
-
-        if ((modifiers & ShiftModifier) != 0)
-        {
-            SendVirtualKey(VirtualKeyShift, keyUp: false);
-        }
     }
 
     private static void ReleaseModifiers(byte modifiers)
     {
-        if ((modifiers & ShiftModifier) != 0)
-        {
-            TrySendKeyUp(VirtualKeyShift);
-        }
-
         if ((modifiers & AltModifier) != 0)
         {
             TrySendKeyUp(VirtualKeyMenu);
@@ -218,6 +210,11 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         if ((modifiers & ControlModifier) != 0)
         {
             TrySendKeyUp(VirtualKeyControl);
+        }
+
+        if ((modifiers & ShiftModifier) != 0)
+        {
+            TrySendKeyUp(VirtualKeyShift);
         }
     }
 
@@ -229,36 +226,14 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         }
         catch (WindowsInputInjectionException)
         {
-            // Release-all is a best-effort safety path. The original failure remains more useful to the caller.
+            // Best-effort safety release. Preserve the original input failure for diagnostics.
         }
     }
 
     private static void SendVirtualKey(ushort virtualKey, bool keyUp)
     {
         NativeMethods.ValidateInputAbi();
-
-        var scanCode = (ushort)NativeMethods.MapVirtualKeyW(virtualKey, NativeMethods.MapVkToVsc);
-        if (scanCode == 0)
-        {
-            throw new WindowsInputInjectionException($"Unable to resolve scan code for virtual key 0x{virtualKey:X2}.");
-        }
-
-        var input = new NativeMethods.Input
-        {
-            Type = NativeMethods.InputKeyboard,
-            Union = new NativeMethods.InputUnion
-            {
-                Keyboard = new NativeMethods.KeyboardInput
-                {
-                    VirtualKey = 0,
-                    ScanCode = scanCode,
-                    Flags = NativeMethods.KeyEventScanCode | (keyUp ? NativeMethods.KeyEventKeyUp : 0),
-                    Time = 0,
-                    ExtraInfo = UIntPtr.Zero
-                }
-            }
-        };
-
+        var input = BuildVirtualKeyInput(virtualKey, keyUp);
         var size = NativeMethods.InputStructureSize;
         var sent = NativeMethods.SendInput(1, new[] { input }, size);
         if (sent == 1)
@@ -271,13 +246,32 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             ? "Windows returned no error code. This commonly occurs when UIPI blocks input across privilege levels."
             : new Win32Exception(errorCode).Message;
         var message =
-            $"Windows keyboard input was rejected (SendInput=0, Win32={errorCode}, INPUT={size} bytes). " +
+            $"Windows keyboard input was rejected (SendInput=0, Win32={errorCode}, INPUT={size} bytes, mode=virtual-key). " +
             $"{nativeMessage} Keep Roblox in the foreground and run Roblox and Roblox Piano at the same Windows privilege level.";
 
         ClientDiagnostics.Log(message);
         throw errorCode == 0
             ? new WindowsInputInjectionException(message)
             : new WindowsInputInjectionException(message, new Win32Exception(errorCode));
+    }
+
+    internal static NativeMethods.Input BuildVirtualKeyInput(ushort virtualKey, bool keyUp)
+    {
+        return new NativeMethods.Input
+        {
+            Type = NativeMethods.InputKeyboard,
+            Union = new NativeMethods.InputUnion
+            {
+                Keyboard = new NativeMethods.KeyboardInput
+                {
+                    VirtualKey = virtualKey,
+                    ScanCode = 0,
+                    Flags = keyUp ? NativeMethods.KeyEventKeyUp : 0,
+                    Time = 0,
+                    ExtraInfo = UIntPtr.Zero
+                }
+            }
+        };
     }
 
     private readonly record struct KeyStroke(ushort VirtualKey, byte Modifiers);
@@ -289,8 +283,6 @@ internal static class NativeMethods
     internal const uint InputKeyboard = 1;
     internal const uint InputHardware = 2;
     internal const uint KeyEventKeyUp = 0x0002;
-    internal const uint KeyEventScanCode = 0x0008;
-    internal const uint MapVkToVsc = 0;
 
     internal static int InputStructureSize => Marshal.SizeOf<Input>();
     internal static int ExpectedInputStructureSize => IntPtr.Size == 8 ? 40 : 28;
@@ -315,9 +307,6 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern short VkKeyScanW(char character);
 
-    [DllImport("user32.dll")]
-    internal static extern uint MapVirtualKeyW(uint code, uint mapType);
-
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
 
@@ -331,14 +320,9 @@ internal static class NativeMethods
     [StructLayout(LayoutKind.Explicit)]
     internal struct InputUnion
     {
-        [FieldOffset(0)]
-        internal MouseInput Mouse;
-
-        [FieldOffset(0)]
-        internal KeyboardInput Keyboard;
-
-        [FieldOffset(0)]
-        internal HardwareInput Hardware;
+        [FieldOffset(0)] internal MouseInput Mouse;
+        [FieldOffset(0)] internal KeyboardInput Keyboard;
+        [FieldOffset(0)] internal HardwareInput Hardware;
     }
 
     [StructLayout(LayoutKind.Sequential)]
