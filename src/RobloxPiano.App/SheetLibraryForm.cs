@@ -252,12 +252,34 @@ internal sealed class SheetLibraryForm : Form
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Choose a folder. Supported songs inside it and its subfolders will be imported into the Library list.",
+            Description = "Choose a folder. MIDI files inside it and its subfolders will be imported into the Library list.",
             ShowNewFolderButton = false
         };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
+        if (dialog.ShowDialog(this) != DialogResult.OK)
         {
-            ImportPaths([dialog.SelectedPath]);
+            return;
+        }
+
+        try
+        {
+            var midiFiles = Directory
+                .EnumerateFiles(dialog.SelectedPath, "*", SearchOption.AllDirectories)
+                .Where(SheetLibraryService.IsMidiPath)
+                .Take(2001)
+                .ToArray();
+
+            if (midiFiles.Length == 0)
+            {
+                RefreshLibrary(statusOverride: "No .mid or .midi files were found in that folder.");
+                return;
+            }
+
+            ImportPaths(midiFiles);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"MIDI folder discovery failed: {exception}");
+            MessageBox.Show(this, exception.Message, "MIDI folder could not be read", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
