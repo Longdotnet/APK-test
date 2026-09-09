@@ -105,7 +105,10 @@ public sealed class PlaybackTransportSession : IDisposable
     {
         _track = track ?? throw new ArgumentNullException(nameof(track));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
-        _input = input ?? throw new ArgumentNullException(nameof(input));
+        ArgumentNullException.ThrowIfNull(input);
+        _input = input is ReferenceCountedInputSink
+            ? input
+            : new ReferenceCountedInputSink(input);
         ArgumentNullException.ThrowIfNull(focus);
         _focus = new ObservedTransportFocusGate(clock, focus);
     }
