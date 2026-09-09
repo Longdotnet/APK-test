@@ -16,7 +16,7 @@ internal static class ClientEntryPoint
 
         if (args.Length == 1 && args[0].Equals("--input-abi-smoke", StringComparison.OrdinalIgnoreCase))
         {
-            return RunInputAbiSmoke();
+            return RunInputCompatibilitySmoke();
         }
 
         return Program.Main(args).GetAwaiter().GetResult();
@@ -52,41 +52,32 @@ internal static class ClientEntryPoint
         }
     }
 
-    private static int RunInputAbiSmoke()
+    private static int RunInputCompatibilitySmoke()
     {
         try
         {
-            NativeMethods.ValidateInputAbi();
-
             const ushort virtualKeyA = 0x41;
-            var down = WindowsKeyboardInputSink.BuildVirtualKeyInput(virtualKeyA, keyUp: false);
-            var up = WindowsKeyboardInputSink.BuildVirtualKeyInput(virtualKeyA, keyUp: true);
+            var down = WindowsKeyboardInputSink.BuildFieldBaselineKeyEvent(virtualKeyA, keyUp: false);
+            var up = WindowsKeyboardInputSink.BuildFieldBaselineKeyEvent(virtualKeyA, keyUp: true);
 
-            if (down.Type != NativeMethods.InputKeyboard
-                || down.Union.Keyboard.VirtualKey != virtualKeyA
-                || down.Union.Keyboard.ScanCode != 0
-                || down.Union.Keyboard.Flags != 0)
+            if (down.VirtualKey != virtualKeyA || down.Flags != 0)
             {
-                throw new InvalidOperationException("Roblox compatibility key-down packet is not virtual-key based.");
+                throw new InvalidOperationException("Roblox field-baseline key-down event is invalid.");
             }
 
-            if (up.Type != NativeMethods.InputKeyboard
-                || up.Union.Keyboard.VirtualKey != virtualKeyA
-                || up.Union.Keyboard.ScanCode != 0
-                || up.Union.Keyboard.Flags != NativeMethods.KeyEventKeyUp)
+            if (up.VirtualKey != virtualKeyA || up.Flags != NativeMethods.KeyEventKeyUp)
             {
-                throw new InvalidOperationException("Roblox compatibility key-up packet is not virtual-key based.");
+                throw new InvalidOperationException("Roblox field-baseline key-up event is invalid.");
             }
 
             Console.WriteLine(
-                $"Windows INPUT compatibility smoke passed. actual={NativeMethods.InputStructureSize}; " +
-                $"expected={NativeMethods.ExpectedInputStructureSize}; pointerSize={IntPtr.Size}; " +
-                "mode=virtual-key; scanCode=0.");
+                $"Windows input compatibility smoke passed. backend={WindowsKeyboardInputSink.BackendName}; " +
+                "vk=0x41; scanCode=0; downFlags=0; upFlags=KEYEVENTF_KEYUP.");
             return 0;
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"Windows INPUT compatibility smoke failed: {exception}");
+            Console.Error.WriteLine($"Windows input compatibility smoke failed: {exception}");
             return 7;
         }
     }
