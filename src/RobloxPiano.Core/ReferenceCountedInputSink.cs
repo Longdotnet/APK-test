@@ -7,12 +7,11 @@ namespace RobloxPiano.Core;
 /// the final hold ends. Release-all atomically forgets every logical hold after the
 /// underlying backend confirms the emergency release.
 /// </summary>
-public sealed class ReferenceCountedInputSink : IInputSink, IDisposable
+public sealed class ReferenceCountedInputSink : IInputSink
 {
     private readonly IInputSink _inner;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<char, int> _holds = new();
-    private bool _disposed;
 
     public ReferenceCountedInputSink(IInputSink inner)
     {
@@ -26,7 +25,6 @@ public sealed class ReferenceCountedInputSink : IInputSink, IDisposable
             _gate.Wait();
             try
             {
-                ThrowIfDisposed();
                 return _holds.Values.Sum();
             }
             finally
@@ -48,8 +46,6 @@ public sealed class ReferenceCountedInputSink : IInputSink, IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ThrowIfDisposed();
-
             var transitions = keys
                 .Distinct()
                 .Where(key => !_holds.ContainsKey(key))
@@ -84,8 +80,6 @@ public sealed class ReferenceCountedInputSink : IInputSink, IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ThrowIfDisposed();
-
             var decrements = new Dictionary<char, int>();
             foreach (var key in keys)
             {
@@ -140,7 +134,6 @@ public sealed class ReferenceCountedInputSink : IInputSink, IDisposable
         await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            ThrowIfDisposed();
             await _inner.ReleaseAllAsync(cancellationToken).ConfigureAwait(false);
             _holds.Clear();
         }
@@ -148,31 +141,5 @@ public sealed class ReferenceCountedInputSink : IInputSink, IDisposable
         {
             _gate.Release();
         }
-    }
-
-    public void Dispose()
-    {
-        _gate.Wait();
-        try
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
-            _holds.Clear();
-        }
-        finally
-        {
-            _gate.Release();
-        }
-
-        _gate.Dispose();
-    }
-
-    private void ThrowIfDisposed()
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
     }
 }
