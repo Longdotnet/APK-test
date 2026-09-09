@@ -166,7 +166,7 @@ public sealed class SheetLibraryService
     {
         if (!IsSupportedPath(path))
         {
-            throw new FormatException("Choose a supported song: .txt, .vps, .mid, or .midi.");
+            throw new FormatException("Choose a supported song: .txt, .vps, .mid, .midi, .musicxml, or .xml.");
         }
     }
 }

@@ -5,7 +5,8 @@ namespace RobloxPiano.Library;
 public enum SongSourceKind
 {
     LegacyText = 0,
-    Midi = 1
+    Midi = 1,
+    MusicXml = 2
 }
 
 public sealed record LoadedSong(PerformanceTrack Track, SongSourceKind SourceKind);
@@ -17,7 +18,7 @@ public sealed record LoadedSong(PerformanceTrack Track, SongSourceKind SourceKin
 /// </summary>
 public static class SongSourceLoader
 {
-    private static readonly string[] SupportedExtensions = [".txt", ".vps", ".mid", ".midi"];
+    private static readonly string[] SupportedExtensions = [".txt", ".vps", ".mid", ".midi", ".musicxml", ".xml"];
 
     public static bool IsSupportedPath(string path)
     {
@@ -33,6 +34,10 @@ public static class SongSourceLoader
         {
             return new LoadedSong(MidiFileImporter.ImportCompiled(File.ReadAllBytes(fullPath)), SongSourceKind.Midi);
         }
+        if (IsMusicXml(extension))
+        {
+            return new LoadedSong(MusicXmlImporter.Import(File.ReadAllText(fullPath)), SongSourceKind.MusicXml);
+        }
 
         return new LoadedSong(LegacySheetParser.Parse(File.ReadAllText(fullPath)), SongSourceKind.LegacyText);
     }
@@ -45,6 +50,11 @@ public static class SongSourceLoader
         {
             var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
             return new LoadedSong(MidiFileImporter.ImportCompiled(bytes), SongSourceKind.Midi);
+        }
+        if (IsMusicXml(extension))
+        {
+            var xml = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
+            return new LoadedSong(MusicXmlImporter.Import(xml), SongSourceKind.MusicXml);
         }
 
         var text = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -62,7 +72,7 @@ public static class SongSourceLoader
 
         if (!IsSupportedPath(fullPath))
         {
-            throw new FormatException("Choose a supported song: .txt, .vps, .mid, or .midi.");
+            throw new FormatException("Choose a supported song: .txt, .vps, .mid, .midi, .musicxml, or .xml.");
         }
 
         return fullPath;
@@ -71,4 +81,8 @@ public static class SongSourceLoader
     private static bool IsMidi(string extension)
         => extension.Equals(".mid", StringComparison.OrdinalIgnoreCase)
            || extension.Equals(".midi", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMusicXml(string extension)
+        => extension.Equals(".musicxml", StringComparison.OrdinalIgnoreCase)
+           || extension.Equals(".xml", StringComparison.OrdinalIgnoreCase);
 }

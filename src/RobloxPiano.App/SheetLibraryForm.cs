@@ -192,7 +192,7 @@ internal sealed class SheetLibraryForm : Form
         using var dialog = new OpenFileDialog
         {
             Title = "Import song",
-            Filter = "Supported songs (*.txt;*.vps;*.mid;*.midi)|*.txt;*.vps;*.mid;*.midi|All files (*.*)|*.*",
+            Filter = "Supported songs (*.txt;*.vps;*.mid;*.midi;*.musicxml;*.xml)|*.txt;*.vps;*.mid;*.midi;*.musicxml;*.xml|All files (*.*)|*.*",
             CheckFileExists = true,
             Multiselect = true
         };

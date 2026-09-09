@@ -84,6 +84,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.MidiTests/RobloxPiano.MidiTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Deterministic MIDI importer regression harness failed" }
 
+          dotnet run --project tests/RobloxPiano.MusicXmlTests/RobloxPiano.MusicXmlTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Deterministic MusicXML importer regression harness failed" }
+
           dotnet run --project tests/RobloxPiano.TimingTests/RobloxPiano.TimingTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { throw "Timing calibration regression harness failed" }
 
@@ -155,21 +158,20 @@ jobs:
 
           Client flow:
           1. Download RobloxPiano.exe and double-click it.
-          2. Search the same box for songs already in your Library or up to 10 online MIDI matches.
-          3. Pick an online result and Add to Library; it is downloaded, validated and stored locally before playback.
+          2. Search your Library or online MIDI catalog, or import TXT/VPS/MIDI/MusicXML from your computer.
+          3. Imported MusicXML is deterministically validated and converted to the same canonical timeline as other sources before it enters the Library.
           4. Open Roblox and enter the piano game, select the local song and press Play.
           5. Pause, Stop and Seek stay simple; advanced timing/speed/diagnostics remain hidden unless requested.
 
           Production foundations in this release:
-          - Zero-config online discovery uses public Wikimedia Commons and Internet Archive APIs; no API key or client dependency is required.
-          - Provider failure, timeout or network loss never blocks local Library filtering or playback.
-          - Results are deterministically ranked, capped at ten and deduplicated before display.
-          - Downloads are explicit, HTTPS-only, provider-host constrained, size-bounded and validated through the existing MIDI importer before entering the Library.
-          - Recent search metadata can fall back from local cache, while playback remains fully local/offline after import.
+          - score-partwise MusicXML supports measured pitch/duration, chords, rests, voices via backup/forward, tempo and simple ties.
+          - MusicXML and MIDI share the same Roblox classic 61-key mapping/range guard and canonical PerformanceTrack playback boundary.
+          - Unsupported or malformed notation fails closed instead of being silently guessed; AI/network access is not involved in import truth.
+          - Existing zero-config online MIDI discovery and offline Library playback remain unchanged.
           - Legacy TXT/VPS, MIDI canonical playback and the Legacy x2 quality baseline remain unchanged.
 
           Notes:
-          - Online catalog coverage depends on the public sources and may not include every commercial or Vietnamese trending song.
+          - Grace notes, score-timewise, tuplets/ornaments/repeat interpretation and MusicXML pedal notation are intentionally not guessed yet.
           - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
           - Roblox runtime acceptance of SendInput/global hotkeys still requires real-client acceptance testing.
           "@ | Set-Content artifacts/release/RELEASE_NOTES.md
