@@ -20,13 +20,13 @@ public sealed record SheetLibraryEntry(
     string? Error,
     bool IsManaged)
 {
-    public string Format => Path.GetExtension(Path).ToLowerInvariant() switch
+    public string Format => System.IO.Path.GetExtension(Path).ToLowerInvariant() switch
     {
         ".mid" or ".midi" => "MIDI",
         ".musicxml" or ".xml" => "MusicXML",
         ".vps" => "VPS",
         ".txt" => "TXT",
-        _ => Path.GetExtension(Path).TrimStart('.').ToUpperInvariant()
+        _ => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant()
     };
 }
 
