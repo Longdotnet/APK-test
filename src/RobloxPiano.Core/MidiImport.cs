@@ -28,7 +28,9 @@ public sealed record MidiKeyboardProfile(int LowestMidiNote, string Keys)
 
 public sealed record MidiImportOptions(
     MidiKeyboardProfile? KeyboardProfile = null,
-    int TransposeSemitones = 0)
+    int TransposeSemitones = 0,
+    bool AutoFitToKeyboardRange = true,
+    bool IgnoreGeneralMidiPercussion = true)
 {
     public MidiKeyboardProfile EffectiveKeyboardProfile => KeyboardProfile ?? MidiKeyboardProfile.RobloxClassic61;
 }
@@ -36,6 +38,7 @@ public sealed record MidiImportOptions(
 public static class MidiFileImporter
 {
     private const int DefaultTempoMicrosecondsPerQuarter = 500_000;
+    private const int GeneralMidiPercussionChannel = 9;
 
     public static ExpressivePerformanceTrack Import(ReadOnlySpan<byte> bytes, MidiImportOptions? options = null)
     {
@@ -96,8 +99,10 @@ public static class MidiFileImporter
         var tempoChanges = BuildTempoMap(events);
         var firstTempo = tempoChanges.FirstOrDefault(change => change.Tick == 0)?.MicrosecondsPerQuarter
             ?? DefaultTempoMicrosecondsPerQuarter;
+        var effectiveTranspose = ResolveEffectiveTranspose(events, options);
         var ordered = events
             .Where(item => item.Kind is RawEventKind.NoteOn or RawEventKind.NoteOff or RawEventKind.Sustain)
+            .Where(item => !options.IgnoreGeneralMidiPercussion || item.Channel != GeneralMidiPercussionChannel)
             .OrderBy(item => item.Tick)
             .ThenBy(item => item.TrackIndex)
             .ThenBy(item => item.Sequence)
@@ -116,7 +121,7 @@ public static class MidiFileImporter
             {
                 case RawEventKind.NoteOn:
                 {
-                    var pitch = checked(item.Data1 + options.TransposeSemitones);
+                    var pitch = checked(item.Data1 + effectiveTranspose);
                     _ = options.EffectiveKeyboardProfile.Map(pitch);
                     noteChannels.Add(item.Channel);
                     var key = (item.Channel, item.Data1);
@@ -170,7 +175,10 @@ public static class MidiFileImporter
 
         if (notes.Count == 0)
         {
-            throw new FormatException("MIDI file contains no complete playable note events.");
+            throw new FormatException(
+                options.IgnoreGeneralMidiPercussion
+                    ? "MIDI file contains no complete playable melodic note events after General MIDI percussion channel 10 was ignored."
+                    : "MIDI file contains no complete playable note events.");
         }
 
         var channelsWithSustain = sustainEventsByChannel
@@ -234,6 +242,54 @@ public static class MidiFileImporter
 
     public static PerformanceTrack ImportCompiled(ReadOnlySpan<byte> bytes, MidiImportOptions? options = null)
         => ExpressivePerformanceCompiler.Compile(Import(bytes, options));
+
+    private static int ResolveEffectiveTranspose(IReadOnlyList<RawEvent> events, MidiImportOptions options)
+    {
+        var profile = options.EffectiveKeyboardProfile;
+        var pitches = events
+            .Where(item => item.Kind == RawEventKind.NoteOn)
+            .Where(item => !options.IgnoreGeneralMidiPercussion || item.Channel != GeneralMidiPercussionChannel)
+            .Select(item => checked(item.Data1 + options.TransposeSemitones))
+            .ToArray();
+
+        if (pitches.Length == 0)
+        {
+            return options.TransposeSemitones;
+        }
+
+        var minimum = pitches.Min();
+        var maximum = pitches.Max();
+        if (minimum >= profile.LowestMidiNote && maximum <= profile.HighestMidiNote)
+        {
+            return options.TransposeSemitones;
+        }
+
+        if (!options.AutoFitToKeyboardRange)
+        {
+            _ = profile.Map(minimum < profile.LowestMidiNote ? minimum : maximum);
+            return options.TransposeSemitones;
+        }
+
+        var minimumAdjustment = profile.LowestMidiNote - minimum;
+        var maximumAdjustment = profile.HighestMidiNote - maximum;
+        if (minimumAdjustment > maximumAdjustment)
+        {
+            throw new FormatException(
+                $"MIDI melodic range {minimum}..{maximum} cannot fit the active Roblox keyboard range " +
+                $"{profile.LowestMidiNote}..{profile.HighestMidiNote} with one global transpose. " +
+                "Remove non-piano tracks or transpose/arrange the source before import.");
+        }
+
+        var automaticAdjustment = minimumAdjustment > 0
+            ? minimumAdjustment
+            : maximumAdjustment < 0
+                ? maximumAdjustment
+                : 0;
+        var effectiveTranspose = checked(options.TransposeSemitones + automaticAdjustment);
+        _ = profile.Map(checked(minimum + automaticAdjustment));
+        _ = profile.Map(checked(maximum + automaticAdjustment));
+        return effectiveTranspose;
+    }
 
     private static IReadOnlyList<TempoChange> BuildTempoMap(IEnumerable<RawEvent> events)
     {
