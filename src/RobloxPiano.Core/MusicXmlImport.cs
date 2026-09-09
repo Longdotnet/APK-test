@@ -14,6 +14,7 @@ public sealed record MusicXmlImportOptions(
 public static class MusicXmlImporter
 {
     private const double DefaultBpm = 120d;
+    private const double PositionTolerance = 0.000000001d;
 
     public static PerformanceTrack Import(string xml, MusicXmlImportOptions? options = null)
     {
@@ -48,22 +49,21 @@ public static class MusicXmlImporter
         }
 
         var notes = new List<ParsedNote>();
-        var initialBpm = DefaultBpm;
-        var sawTempo = false;
-        var globalEnd = 0d;
+        var tempoMarkers = new List<TempoMarker>();
+        var globalEndQuarter = 0d;
 
         foreach (var part in parts)
         {
             var divisions = 1d;
-            var bpm = DefaultBpm;
-            var cursorSeconds = 0d;
-            var measureStartSeconds = 0d;
-            var previousNoteStartSeconds = 0d;
+            var cursorQuarter = 0d;
+            var previousNoteStartQuarter = 0d;
             var tieStarts = new Dictionary<int, Queue<double>>();
 
             foreach (var measure in part.Elements().Where(element => element.Name.LocalName == "measure"))
             {
-                measureStartSeconds = cursorSeconds;
+                var measureStartQuarter = cursorQuarter;
+                var measureEndQuarter = cursorQuarter;
+
                 foreach (var child in measure.Elements())
                 {
                     switch (child.Name.LocalName)
@@ -79,15 +79,11 @@ public static class MusicXmlImporter
                         }
                         case "direction":
                         {
-                            var tempo = ReadTempo(child);
+                            var tempo = ReadTempoQuarterBpm(child);
                             if (tempo is not null)
                             {
-                                bpm = tempo.Value;
-                                if (!sawTempo)
-                                {
-                                    initialBpm = bpm;
-                                    sawTempo = true;
-                                }
+                                var offset = ReadDirectionOffsetQuarter(child, divisions);
+                                AddTempoMarker(tempoMarkers, cursorQuarter + offset, tempo.Value);
                             }
                             break;
                         }
@@ -96,29 +92,26 @@ public static class MusicXmlImporter
                             var tempoText = child.Attribute("tempo")?.Value;
                             if (!string.IsNullOrWhiteSpace(tempoText))
                             {
-                                bpm = ParsePositiveDouble(tempoText, "MusicXML tempo");
-                                if (!sawTempo)
-                                {
-                                    initialBpm = bpm;
-                                    sawTempo = true;
-                                }
+                                AddTempoMarker(tempoMarkers, cursorQuarter, ParsePositiveDouble(tempoText, "MusicXML tempo"));
                             }
                             break;
                         }
                         case "backup":
                         {
-                            var duration = ReadDurationDivisions(child);
-                            cursorSeconds -= DivisionsToSeconds(duration, divisions, bpm);
-                            if (cursorSeconds < measureStartSeconds - 0.000001d)
+                            var durationQuarter = DivisionsToQuarter(ReadDurationDivisions(child), divisions);
+                            cursorQuarter -= durationQuarter;
+                            if (cursorQuarter < measureStartQuarter - PositionTolerance)
                             {
                                 throw new FormatException("MusicXML backup moves before the start of its measure.");
                             }
+                            cursorQuarter = Math.Max(cursorQuarter, measureStartQuarter);
                             break;
                         }
                         case "forward":
                         {
-                            var duration = ReadDurationDivisions(child);
-                            cursorSeconds += DivisionsToSeconds(duration, divisions, bpm);
+                            var durationQuarter = DivisionsToQuarter(ReadDurationDivisions(child), divisions);
+                            cursorQuarter += durationQuarter;
+                            measureEndQuarter = Math.Max(measureEndQuarter, cursorQuarter);
                             break;
                         }
                         case "note":
@@ -129,18 +122,19 @@ public static class MusicXmlImporter
                             }
 
                             var isChord = Child(child, "chord") is not null;
-                            var durationDivisions = ReadDurationDivisions(child);
-                            var durationSeconds = DivisionsToSeconds(durationDivisions, divisions, bpm);
-                            if (durationSeconds <= 0d)
+                            var durationQuarter = DivisionsToQuarter(ReadDurationDivisions(child), divisions);
+                            if (durationQuarter <= 0d)
                             {
                                 throw new FormatException("MusicXML note duration must be positive.");
                             }
 
-                            var startSeconds = isChord ? previousNoteStartSeconds : cursorSeconds;
+                            var startQuarter = isChord ? previousNoteStartQuarter : cursorQuarter;
                             if (!isChord)
                             {
-                                previousNoteStartSeconds = startSeconds;
+                                previousNoteStartQuarter = startQuarter;
                             }
+                            var endQuarter = startQuarter + durationQuarter;
+                            measureEndQuarter = Math.Max(measureEndQuarter, endQuarter);
 
                             if (Child(child, "rest") is null)
                             {
@@ -160,6 +154,7 @@ public static class MusicXmlImporter
                                     {
                                         throw new FormatException($"MusicXML tie stop for MIDI note {midiPitch} has no matching tie start.");
                                     }
+
                                     var tiedStart = queue.Dequeue();
                                     if (startTie)
                                     {
@@ -167,7 +162,7 @@ public static class MusicXmlImporter
                                     }
                                     else
                                     {
-                                        notes.Add(new ParsedNote(tiedStart, startSeconds + durationSeconds, midiPitch, mappedKey));
+                                        notes.Add(new ParsedNote(tiedStart, endQuarter, midiPitch, mappedKey));
                                     }
                                 }
                                 else if (startTie)
@@ -177,22 +172,26 @@ public static class MusicXmlImporter
                                         queue = new Queue<double>();
                                         tieStarts.Add(midiPitch, queue);
                                     }
-                                    queue.Enqueue(startSeconds);
+                                    queue.Enqueue(startQuarter);
                                 }
                                 else
                                 {
-                                    notes.Add(new ParsedNote(startSeconds, startSeconds + durationSeconds, midiPitch, mappedKey));
+                                    notes.Add(new ParsedNote(startQuarter, endQuarter, midiPitch, mappedKey));
                                 }
                             }
 
                             if (!isChord)
                             {
-                                cursorSeconds += durationSeconds;
+                                cursorQuarter += durationQuarter;
                             }
                             break;
                         }
                     }
                 }
+
+                // MusicXML backup/forward is a voice cursor operation, not the measure's durable extent.
+                // The next measure starts after the furthest event/forward reached by any voice.
+                cursorQuarter = measureEndQuarter;
             }
 
             if (tieStarts.Any(pair => pair.Value.Count > 0))
@@ -200,7 +199,7 @@ public static class MusicXmlImporter
                 throw new FormatException("MusicXML ended with an unterminated tied note.");
             }
 
-            globalEnd = Math.Max(globalEnd, cursorSeconds);
+            globalEndQuarter = Math.Max(globalEndQuarter, cursorQuarter);
         }
 
         if (notes.Count == 0)
@@ -208,7 +207,17 @@ public static class MusicXmlImporter
             throw new FormatException("MusicXML contains no playable notes in the active Roblox keyboard range.");
         }
 
-        var grouped = notes
+        var tempoMap = BuildTempoMap(tempoMarkers);
+        var initialBpm = tempoMap[0].Bpm;
+        var timedNotes = notes
+            .Select(note => new TimedNote(
+                QuarterToSeconds(note.StartQuarter, tempoMap),
+                QuarterToSeconds(note.EndQuarter, tempoMap),
+                note.MidiPitch,
+                note.Key))
+            .ToArray();
+
+        var grouped = timedNotes
             .OrderBy(note => note.StartSeconds)
             .ThenBy(note => note.MidiPitch)
             .GroupBy(note => (StartTicks: ToTicks(note.StartSeconds), EndTicks: ToTicks(note.EndSeconds)))
@@ -219,7 +228,8 @@ public static class MusicXmlImporter
             .ToArray();
 
         var eventEnd = grouped.Max(item => item.Start + item.Duration);
-        var timeline = TimeSpan.FromTicks(Math.Max(ToTicks(globalEnd), eventEnd.Ticks));
+        var timelineSeconds = QuarterToSeconds(globalEndQuarter, tempoMap);
+        var timeline = TimeSpan.FromTicks(Math.Max(ToTicks(timelineSeconds), eventEnd.Ticks));
         return new PerformanceTrack(
             title,
             initialBpm,
@@ -241,7 +251,7 @@ public static class MusicXmlImporter
         return string.IsNullOrWhiteSpace(work) ? "MusicXML performance" : work;
     }
 
-    private static double? ReadTempo(XElement direction)
+    private static double? ReadTempoQuarterBpm(XElement direction)
     {
         var soundTempo = direction.Descendants().FirstOrDefault(element => element.Name.LocalName == "sound")?.Attribute("tempo")?.Value;
         if (!string.IsNullOrWhiteSpace(soundTempo))
@@ -249,8 +259,142 @@ public static class MusicXmlImporter
             return ParsePositiveDouble(soundTempo, "MusicXML tempo");
         }
 
-        var perMinute = direction.Descendants().FirstOrDefault(element => element.Name.LocalName == "per-minute")?.Value;
-        return string.IsNullOrWhiteSpace(perMinute) ? null : ParsePositiveDouble(perMinute, "MusicXML metronome tempo");
+        var metronome = direction.Descendants().FirstOrDefault(element => element.Name.LocalName == "metronome");
+        if (metronome is null)
+        {
+            return null;
+        }
+
+        var perMinuteText = Child(metronome, "per-minute")?.Value;
+        if (string.IsNullOrWhiteSpace(perMinuteText))
+        {
+            return null;
+        }
+
+        var perMinute = ParsePositiveDouble(perMinuteText, "MusicXML metronome tempo");
+        var beatUnit = Child(metronome, "beat-unit")?.Value.Trim().ToLowerInvariant() ?? "quarter";
+        var quarterLength = beatUnit switch
+        {
+            "1024th" => 1d / 256d,
+            "512th" => 1d / 128d,
+            "256th" => 1d / 64d,
+            "128th" => 1d / 32d,
+            "64th" => 1d / 16d,
+            "32nd" => 1d / 8d,
+            "16th" => 1d / 4d,
+            "eighth" => 1d / 2d,
+            "quarter" => 1d,
+            "half" => 2d,
+            "whole" => 4d,
+            "breve" => 8d,
+            "long" => 16d,
+            "maxima" => 32d,
+            _ => throw new FormatException($"MusicXML metronome beat-unit '{beatUnit}' is not supported.")
+        };
+
+        var dotCount = metronome.Elements().Count(element => element.Name.LocalName == "beat-unit-dot");
+        var dotAddition = quarterLength;
+        for (var index = 0; index < dotCount; index++)
+        {
+            dotAddition /= 2d;
+            quarterLength += dotAddition;
+        }
+
+        return perMinute * quarterLength;
+    }
+
+    private static double ReadDirectionOffsetQuarter(XElement direction, double divisions)
+    {
+        var offset = Child(direction, "offset");
+        if (offset is null || string.IsNullOrWhiteSpace(offset.Value))
+        {
+            return 0d;
+        }
+
+        if (!double.TryParse(offset.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+            || !double.IsFinite(parsed))
+        {
+            throw new FormatException("MusicXML direction offset must be a finite number.");
+        }
+
+        return parsed / divisions;
+    }
+
+    private static void AddTempoMarker(List<TempoMarker> markers, double quarter, double bpm)
+    {
+        if (!double.IsFinite(quarter) || quarter < -PositionTolerance)
+        {
+            throw new FormatException("MusicXML tempo marker resolves before the start of the score.");
+        }
+        markers.Add(new TempoMarker(Math.Max(0d, quarter), bpm));
+    }
+
+    private static IReadOnlyList<TempoMarker> BuildTempoMap(IEnumerable<TempoMarker> markers)
+    {
+        var ordered = markers
+            .Append(new TempoMarker(0d, DefaultBpm))
+            .OrderBy(item => item.Quarter)
+            .ThenBy(item => item.Bpm)
+            .ToArray();
+
+        var result = new List<TempoMarker>();
+        foreach (var marker in ordered)
+        {
+            if (result.Count > 0 && Math.Abs(result[^1].Quarter - marker.Quarter) <= PositionTolerance)
+            {
+                // An explicit tempo at score start overrides the synthetic 120 BPM default.
+                if (Math.Abs(result[^1].Quarter) <= PositionTolerance && Math.Abs(result[^1].Bpm - DefaultBpm) <= PositionTolerance)
+                {
+                    result[^1] = marker;
+                    continue;
+                }
+                if (Math.Abs(result[^1].Bpm - marker.Bpm) > PositionTolerance)
+                {
+                    throw new FormatException($"MusicXML contains conflicting tempo values at quarter position {marker.Quarter.ToString("0.########", CultureInfo.InvariantCulture)}.");
+                }
+                continue;
+            }
+            result.Add(marker);
+        }
+
+        if (result.Count == 0 || result[0].Quarter > PositionTolerance)
+        {
+            result.Insert(0, new TempoMarker(0d, DefaultBpm));
+        }
+        return result;
+    }
+
+    private static double QuarterToSeconds(double quarter, IReadOnlyList<TempoMarker> tempoMap)
+    {
+        if (!double.IsFinite(quarter) || quarter < 0d)
+        {
+            throw new FormatException("MusicXML timing resolves outside the supported score range.");
+        }
+
+        var seconds = 0d;
+        var position = 0d;
+        var bpm = tempoMap[0].Bpm;
+        for (var index = 1; index < tempoMap.Count && tempoMap[index].Quarter < quarter - PositionTolerance; index++)
+        {
+            var marker = tempoMap[index];
+            seconds += (marker.Quarter - position) * 60d / bpm;
+            position = marker.Quarter;
+            bpm = marker.Bpm;
+        }
+
+        if (tempoMap.Count > 1)
+        {
+            var exact = tempoMap.LastOrDefault(marker => Math.Abs(marker.Quarter - quarter) <= PositionTolerance);
+            if (exact is not null && exact.Quarter > position + PositionTolerance)
+            {
+                seconds += (exact.Quarter - position) * 60d / bpm;
+                position = exact.Quarter;
+                bpm = exact.Bpm;
+            }
+        }
+
+        seconds += (quarter - position) * 60d / bpm;
+        return seconds;
     }
 
     private static double ReadDurationDivisions(XElement parent)
@@ -259,6 +403,9 @@ public static class MusicXmlImporter
             ?? throw new FormatException($"MusicXML {parent.Name.LocalName} is missing duration.");
         return ParsePositiveDouble(duration, "MusicXML duration");
     }
+
+    private static double DivisionsToQuarter(double duration, double divisions)
+        => duration / divisions;
 
     private static int ReadMidiPitch(XElement note)
     {
@@ -305,9 +452,6 @@ public static class MusicXmlImporter
         return parsed;
     }
 
-    private static double DivisionsToSeconds(double duration, double divisions, double bpm)
-        => duration / divisions * 60d / bpm;
-
     private static long ToTicks(double seconds)
     {
         var ticks = seconds * TimeSpan.TicksPerSecond;
@@ -321,5 +465,7 @@ public static class MusicXmlImporter
     private static XElement? Child(XElement? parent, string localName)
         => parent?.Elements().FirstOrDefault(element => element.Name.LocalName == localName);
 
-    private sealed record ParsedNote(double StartSeconds, double EndSeconds, int MidiPitch, char Key);
+    private sealed record ParsedNote(double StartQuarter, double EndQuarter, int MidiPitch, char Key);
+    private sealed record TimedNote(double StartSeconds, double EndSeconds, int MidiPitch, char Key);
+    private sealed record TempoMarker(double Quarter, double Bpm);
 }
