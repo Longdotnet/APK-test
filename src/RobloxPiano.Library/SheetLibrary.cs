@@ -18,7 +18,9 @@ public sealed record SheetLibraryEntry(
     TimeSpan? Duration,
     SheetValidationStatus Status,
     string? Error,
-    bool IsManaged)
+    bool IsManaged,
+    string? ImportSummary = null,
+    bool HasCompatibilityAdjustment = false)
 {
     public string Format => System.IO.Path.GetExtension(Path).ToLowerInvariant() switch
     {
@@ -28,6 +30,12 @@ public sealed record SheetLibraryEntry(
         ".txt" => "TXT",
         _ => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant()
     };
+
+    public string Compatibility => Status != SheetValidationStatus.Valid
+        ? "Needs repair"
+        : string.IsNullOrWhiteSpace(ImportSummary)
+            ? "—"
+            : ImportSummary;
 }
 
 public sealed record SheetImportFailure(string SourcePath, string Error);
@@ -38,6 +46,7 @@ public sealed record SheetImportBatchResult(
     IReadOnlyList<SheetImportFailure> Failed)
 {
     public int TotalCandidates => Imported.Count + Existing.Count + Failed.Count;
+    public int AdjustedCount => Imported.Count(entry => entry.HasCompatibilityAdjustment);
 }
 
 public sealed class SheetLibraryService
@@ -362,7 +371,9 @@ public sealed class SheetLibraryService
                 track.TimelineDuration,
                 SheetValidationStatus.Valid,
                 null,
-                isManaged);
+                isManaged,
+                loaded.Metadata?.Summary,
+                loaded.Metadata?.HasCompatibilityAdjustment ?? false);
         }
         catch (Exception exception) when (
             exception is IOException

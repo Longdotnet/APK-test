@@ -9,6 +9,9 @@ var tests = new (string Name, Action Run)[]
     ("single-channel CC64 compiles sustain", SustainCompilation),
     ("out-of-range melodic notes auto-fit deterministically", OutOfRangeAutoFits),
     ("General MIDI percussion channel is ignored", PercussionChannelIgnored),
+    ("inspection reports auto-fit and ignored percussion", InspectionReportsCompatibilityAdjustments),
+    ("inspection reports source-preserved MIDI", InspectionReportsSourcePreserved),
+    ("best-effort inspection fails soft for malformed bytes", InspectionFailsSoft),
     ("strict range policy still fails closed", StrictOutOfRangeFails),
     ("melodic range wider than the Roblox profile fails closed", WideRangeFails),
     ("dangling notes fail closed", DanglingNoteFails),
@@ -92,7 +95,6 @@ static void TempoChangeTiming()
 
 static void RunningStatus()
 {
-    // NoteOn status 0x90, then running-status velocity-zero NoteOff for the same pitch.
     var track = new List<byte>();
     track.AddRange(Vlq(0));
     track.AddRange([0x90, 60, 100]);
@@ -148,6 +150,49 @@ static void PercussionChannelIgnored()
     var imported = MidiFileImporter.ImportCompiled(midi);
     Equal(1, imported.Events.Count);
     Equal('t', imported.Events[0].Keys.Single());
+}
+
+static void InspectionReportsCompatibilityAdjustments()
+{
+    var midi = BuildMidi(
+        480,
+        [
+            Ch(0, 0x99, 38, 100),
+            Ch(0, 0x90, 35, 100),
+            Ch(120, 0x89, 38, 0),
+            Ch(0, 0x80, 35, 0),
+            End(0)
+        ]);
+
+    var inspection = MidiImportInspector.Inspect(midi);
+    Equal(1, inspection.MelodicNoteOnCount);
+    Equal(1, inspection.IgnoredPercussionNoteOnCount);
+    Equal(35, inspection.SourceLowestMidiNote);
+    Equal(35, inspection.SourceHighestMidiNote);
+    Equal(1, inspection.AutomaticRangeAdjustmentSemitones);
+    Equal(1, inspection.EffectiveTransposeSemitones);
+    Equal(36, inspection.EffectiveLowestMidiNote);
+    Equal(36, inspection.EffectiveHighestMidiNote);
+    True(inspection.WasRangeAutoFitted);
+    True(inspection.IgnoredPercussion);
+    True(inspection.HasCompatibilityAdjustment);
+    True(inspection.Summary.Contains("range auto-fit +1 st", StringComparison.Ordinal));
+    True(inspection.Summary.Contains("ignored 1 drum note", StringComparison.Ordinal));
+}
+
+static void InspectionReportsSourcePreserved()
+{
+    var midi = BuildMidi(480, [Ch(0, 0x90, 60, 100), Ch(120, 0x80, 60, 0), End(0)]);
+    var inspection = MidiImportInspector.Inspect(midi);
+    Equal(0, inspection.EffectiveTransposeSemitones);
+    Equal("source preserved", inspection.Summary);
+    True(!inspection.HasCompatibilityAdjustment);
+}
+
+static void InspectionFailsSoft()
+{
+    var inspection = MidiImportInspector.TryInspect([0x00, 0x01, 0x02]);
+    True(inspection is null);
 }
 
 static void StrictOutOfRangeFails()
@@ -252,6 +297,12 @@ static void Nearly(double expected, double actual)
 {
     if (Math.Abs(expected - actual) > 0.0001)
         throw new InvalidOperationException($"Expected approximately {expected}, actual {actual}.");
+}
+
+static void True(bool condition)
+{
+    if (!condition)
+        throw new InvalidOperationException("Expected condition to be true.");
 }
 
 static void Throws<TException>(Action action) where TException : Exception

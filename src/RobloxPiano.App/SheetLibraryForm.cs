@@ -41,8 +41,8 @@ internal sealed class SheetLibraryForm : Form
     {
         Text = "Roblox Piano";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(800, 560);
-        Size = new Size(980, 720);
+        MinimumSize = new Size(860, 580);
+        Size = new Size(1080, 740);
 
         var localRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -77,12 +77,13 @@ internal sealed class SheetLibraryForm : Form
 
     private void BuildLayout()
     {
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SheetLibraryEntry.Title), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 46 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SheetLibraryEntry.Format), Width = 85 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SheetLibraryEntry.Title), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 44 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SheetLibraryEntry.Format), Width = 80 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Import compatibility", DataPropertyName = nameof(SheetLibraryEntry.Compatibility), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 30 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "BPM", DataPropertyName = nameof(SheetLibraryEntry.Bpm), Width = 70 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Duration", Name = "Duration", Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Status", DataPropertyName = nameof(SheetLibraryEntry.Status), Width = 90 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(SheetLibraryEntry.FileName), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 28 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(SheetLibraryEntry.FileName), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 26 });
         _grid.CellFormatting += (_, e) =>
         {
             if (e.RowIndex < 0 || _grid.Rows[e.RowIndex].DataBoundItem is not SheetLibraryEntry entry)
@@ -100,7 +101,7 @@ internal sealed class SheetLibraryForm : Form
         var title = new Label { Text = "Roblox Piano", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Import one MIDI, many MIDI files, or an entire MIDI folder. Every valid song becomes a persistent Library row; duplicates are skipped automatically.",
+            Text = "Import MIDI collections into the Library. Any deterministic range auto-fit or ignored drum notes are shown before you press Play.",
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 4)
         };
@@ -172,12 +173,14 @@ internal sealed class SheetLibraryForm : Form
             ApplyFilter(selectPath);
             var valid = _entries.Count(entry => entry.Status == SheetValidationStatus.Valid);
             var invalid = _entries.Count - valid;
+            var adjusted = _entries.Count(entry => entry.HasCompatibilityAdjustment);
             var importHint = _dragDropAvailable
                 ? "Drop MIDI files/folders here or use Import MIDI."
                 : "Use Import MIDI or Import MIDI Folder to add songs.";
+            var adjustmentHint = adjusted > 0 ? $" {adjusted} MIDI song(s) use visible compatibility adjustments." : string.Empty;
             _status.Text = statusOverride ?? (invalid == 0
-                ? $"{valid} playable song(s). {importHint}"
-                : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.");
+                ? $"{valid} playable song(s). {importHint}{adjustmentHint}"
+                : $"{valid} playable, {invalid} need repair. Broken files stay visible instead of failing silently.{adjustmentHint}");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -206,7 +209,8 @@ internal sealed class SheetLibraryForm : Form
             : _entries.Where(entry =>
                 entry.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)
                 || entry.FileName.Contains(query, StringComparison.CurrentCultureIgnoreCase)
-                || entry.Format.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
+                || entry.Format.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+                || entry.Compatibility.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
 
         _grid.DataSource = filtered.ToList();
         if (selectPath is not null)
@@ -231,6 +235,11 @@ internal sealed class SheetLibraryForm : Form
         var playable = selected?.Status == SheetValidationStatus.Valid;
         _playButton.Enabled = playable && _robloxReady;
         _playButton.Text = !playable ? "Select a Song" : _robloxReady ? "Play" : "Open Roblox to Play";
+
+        if (selected?.HasCompatibilityAdjustment == true)
+        {
+            _status.Text = $"Compatibility adjustment for {selected.Title}: {selected.Compatibility}. Playback uses this deterministic imported interpretation.";
+        }
     }
 
     private void ImportMidiWithPicker()
@@ -305,11 +314,11 @@ internal sealed class SheetLibraryForm : Form
             var result = _library.ImportBatch(paths);
             foreach (var entry in result.Imported)
             {
-                ClientDiagnostics.Log($"Song imported into Library: managed='{entry.Path}', type={entry.Format}.");
+                ClientDiagnostics.Log($"Song imported into Library: managed='{entry.Path}', type={entry.Format}, compatibility='{entry.Compatibility}'.");
             }
             foreach (var duplicate in result.Existing)
             {
-                ClientDiagnostics.Log($"Song import skipped duplicate content: managed='{duplicate.Path}'.");
+                ClientDiagnostics.Log($"Song import skipped duplicate content: managed='{duplicate.Path}', compatibility='{duplicate.Compatibility}'.");
             }
             foreach (var failure in result.Failed)
             {
@@ -318,6 +327,10 @@ internal sealed class SheetLibraryForm : Form
 
             var selectPath = result.Imported.LastOrDefault()?.Path ?? result.Existing.LastOrDefault()?.Path;
             var summary = $"Imported {result.Imported.Count} new song(s) into the Library";
+            if (result.AdjustedCount > 0)
+            {
+                summary += $", {result.AdjustedCount} with visible compatibility adjustment(s)";
+            }
             if (result.Existing.Count > 0)
             {
                 summary += $", skipped {result.Existing.Count} duplicate(s)";
