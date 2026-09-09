@@ -8,6 +8,8 @@ internal static class SelfUpdateBootstrap
 {
     private const string ApplyCommand = "--apply-update";
     private const string ExecutableName = "RobloxPiano.exe";
+    private const string CiNoRestartArgument = "--ci-no-restart";
+    private const string CiUpdateTestVariable = "ROBLOXPIANO_UPDATE_TEST";
 
     [ModuleInitializer]
     internal static void Initialize()
@@ -27,16 +29,19 @@ internal static class SelfUpdateBootstrap
         catch (Exception exception)
         {
             ClientDiagnostics.Log($"Self-update bootstrap failed: {exception}");
-            try
+            if (!IsCiUpdateSmoke())
             {
-                MessageBox.Show(
-                    "The update could not be installed. Your current Roblox Piano executable was left unchanged.\n\n" + exception.Message,
-                    "Roblox Piano update",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-            catch
-            {
+                try
+                {
+                    MessageBox.Show(
+                        "The update could not be installed. Your current Roblox Piano executable was left unchanged.\n\n" + exception.Message,
+                        "Roblox Piano update",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                catch
+                {
+                }
             }
             Environment.Exit(71);
         }
@@ -147,9 +152,20 @@ internal static class SelfUpdateBootstrap
 
     private static async Task<int> RunApplyCommandAsync(string[] args)
     {
-        if (!TryParseApplyArguments(args, out var targetPath, out var parentProcessId, out var expectedSha256, out var error))
+        if (!TryParseApplyArguments(
+                args,
+                out var targetPath,
+                out var parentProcessId,
+                out var expectedSha256,
+                out var suppressRestart,
+                out var error))
         {
             throw new ArgumentException(error ?? "Invalid self-update command.");
+        }
+
+        if (suppressRestart && !IsCiUpdateSmoke())
+        {
+            throw new InvalidOperationException("The no-restart updater mode is reserved for the production CI smoke test.");
         }
 
         var stagedPath = Environment.ProcessPath;
@@ -178,8 +194,14 @@ internal static class SelfUpdateBootstrap
             $"Self-update apply starting: parent={parentProcessId}, staged='{stagedPath}', target='{targetPath}', sha256={expectedSha256}.");
         await AtomicUpdateApplier.WaitForProcessExitAsync(parentProcessId, TimeSpan.FromSeconds(90)).ConfigureAwait(false);
         await AtomicUpdateApplier.ReplaceVerifiedFileAsync(stagedPath, targetPath, expectedSha256).ConfigureAwait(false);
-        ClientDiagnostics.Log("Self-update replacement verified; restarting installed client.");
 
+        if (suppressRestart)
+        {
+            ClientDiagnostics.Log("Self-update replacement verified in CI smoke mode; restart intentionally suppressed.");
+            return 0;
+        }
+
+        ClientDiagnostics.Log("Self-update replacement verified; restarting installed client.");
         var restart = new ProcessStartInfo
         {
             FileName = targetPath,
@@ -199,11 +221,13 @@ internal static class SelfUpdateBootstrap
         out string targetPath,
         out int parentProcessId,
         out string expectedSha256,
+        out bool suppressRestart,
         out string? error)
     {
         targetPath = string.Empty;
         parentProcessId = 0;
         expectedSha256 = string.Empty;
+        suppressRestart = false;
         error = null;
 
         for (var index = 0; index < args.Length; index++)
@@ -236,6 +260,10 @@ internal static class SelfUpdateBootstrap
                 }
                 expectedSha256 = expectedSha256.ToLowerInvariant();
             }
+            else if (args[index].Equals(CiNoRestartArgument, StringComparison.OrdinalIgnoreCase))
+            {
+                suppressRestart = true;
+            }
             else
             {
                 error = $"Unknown self-update argument '{args[index]}'.";
@@ -262,6 +290,9 @@ internal static class SelfUpdateBootstrap
         value = args[index];
         return true;
     }
+
+    private static bool IsCiUpdateSmoke()
+        => Environment.GetEnvironmentVariable(CiUpdateTestVariable).Equals("1", StringComparison.Ordinal);
 
     private static bool IsPathUnderRoot(string path, string root)
     {
