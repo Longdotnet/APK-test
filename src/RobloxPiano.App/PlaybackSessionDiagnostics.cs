@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using RobloxPiano.Core;
+using RobloxPiano.Library;
 
 namespace RobloxPiano.App;
 
@@ -41,7 +42,10 @@ internal sealed record PlaybackSessionDiagnosticRecord(
     string? ExceptionType,
     string? ExceptionMessage,
     string ClientVersion,
-    PlaybackSessionQualityDiagnostic? Quality = null);
+    PlaybackSessionQualityDiagnostic? Quality = null,
+    string? CanonicalSourceFingerprint = null,
+    string PlaybackEngine = PlaybackRuntimeIdentity.Engine,
+    string InputProfile = PlaybackRuntimeIdentity.InputProfile);
 
 internal sealed record PlaybackSupportSession(
     string SessionId,
@@ -58,7 +62,10 @@ internal sealed record PlaybackSupportSession(
     long? RobloxProcessStartTimeUtcTicks,
     string? ExceptionType,
     string? ExceptionMessage,
-    PlaybackSessionQualityDiagnostic? Quality = null);
+    PlaybackSessionQualityDiagnostic? Quality = null,
+    string? CanonicalSourceFingerprint = null,
+    string PlaybackEngine = PlaybackRuntimeIdentity.Engine,
+    string InputProfile = PlaybackRuntimeIdentity.InputProfile);
 
 internal sealed record PlaybackSupportEnvironment(
     string OperatingSystem,
@@ -98,8 +105,8 @@ internal sealed record PlaybackSupportManifest(
 
 internal static class PlaybackSessionDiagnostics
 {
-    internal const string SchemaVersion = "2";
-    internal const string SupportBundleSchemaVersion = "3";
+    internal const string SchemaVersion = "3";
+    internal const string SupportBundleSchemaVersion = "4";
     internal const string SupportManifestSchemaVersion = "1";
     internal const int MaxSupportSessions = 20;
     private const int MaxSessionFiles = 30;
@@ -184,6 +191,7 @@ internal static class PlaybackSessionDiagnostics
         var sourcePath = string.IsNullOrWhiteSpace(state.LastSheetPath)
             ? null
             : Path.GetFullPath(state.LastSheetPath);
+        var canonicalSourceFingerprint = TryCreateCanonicalSourceFingerprint(sourcePath);
 
         return new PlaybackSessionDiagnosticRecord(
             SchemaVersion,
@@ -202,7 +210,10 @@ internal static class PlaybackSessionDiagnostics
             result.Exception?.GetType().FullName,
             result.Exception?.Message,
             typeof(PlaybackSessionDiagnostics).Assembly.GetName().Version?.ToString() ?? "unknown",
-            ToDiagnosticQuality(quality));
+            ToDiagnosticQuality(quality),
+            canonicalSourceFingerprint,
+            PlaybackRuntimeIdentity.Engine,
+            PlaybackRuntimeIdentity.InputProfile);
     }
 
     internal static void AppendRecord(string path, PlaybackSessionDiagnosticRecord record)
@@ -315,7 +326,10 @@ internal static class PlaybackSessionDiagnostics
                 record.RobloxProcessStartTimeUtcTicks,
                 record.ExceptionType,
                 SanitizeExceptionMessage(record.ExceptionMessage, record.SourcePath),
-                record.Quality))
+                record.Quality,
+                record.CanonicalSourceFingerprint,
+                record.PlaybackEngine,
+                record.InputProfile))
             .ToArray();
 
         return new PlaybackSupportBundleDocument(
@@ -381,6 +395,7 @@ internal static class PlaybackSessionDiagnostics
                 readme.WriteLine("Generated automatically from recent local playback-session diagnostics.");
                 readme.WriteLine("The bundle intentionally excludes full local sheet paths, raw logs and raw key-by-key timing samples.");
                 readme.WriteLine("Transport-aware aggregate quality metrics include timing error, input-call latency, focus interruption, seek interruption and unexpected playback loss counts.");
+                readme.WriteLine("Each new session includes a SHA-256 identity derived from the canonical PerformanceTrack plus explicit playback-engine/input-profile identifiers; source bytes and full paths are not included.");
                 readme.WriteLine("manifest.json contains the SHA-256 and byte length of support.json so support staff can detect a damaged or partially transferred bundle.");
                 readme.WriteLine("Environment fields are limited to OS/runtime/architecture facts needed to diagnose clean-machine compatibility; no username, machine name or account identifier is collected.");
                 readme.WriteLine($"Sessions included: {document.SessionCount}");
@@ -635,6 +650,31 @@ internal static class PlaybackSessionDiagnostics
             ".txt" => "TXT",
             _ => "Unknown"
         };
+    }
+
+    private static string? TryCreateCanonicalSourceFingerprint(string? sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return PerformanceTrackFingerprint.ComputeSha256(SongSourceLoader.Load(sourcePath).Track);
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or FormatException
+            or InvalidOperationException
+            or NotSupportedException
+            or OverflowException)
+        {
+            ClientDiagnostics.Log($"Canonical source fingerprint could not be captured: {exception.GetType().Name}.");
+            return null;
+        }
     }
 
     private static void TrimOldSessionFiles(string directory)
