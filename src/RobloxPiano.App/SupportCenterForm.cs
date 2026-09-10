@@ -60,7 +60,7 @@ internal sealed class SupportCenterForm : Form
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Start a campaign to bind the two Legacy runs to one explicit canonical experiment instead of relying on historical adjacency. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Guided campaigns admit exactly Legacy 1.00x first, then Legacy x2 2.00x; wrong-order or changed-condition playback remains normal but is excluded from campaign evidence. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
             MaximumSize = new Size(1130, 0),
             Padding = new Padding(0, 0, 0, 4)
@@ -90,20 +90,29 @@ internal sealed class SupportCenterForm : Form
     {
         try
         {
+            var nowUtc = DateTimeOffset.UtcNow;
             var diagnostics = PlaybackSessionDiagnostics.ReadRecentRecords(ClientDiagnostics.DirectoryPath);
-            var document = PlaybackSessionDiagnostics.CreateSupportDocument(diagnostics, DateTimeOffset.UtcNow);
+            var document = PlaybackSessionDiagnostics.CreateSupportDocument(diagnostics, nowUtc);
             _records = document.Sessions;
             _sessions.DataSource = _records.Select(record => new SessionRow(record, _records)).ToList();
 
-            var campaign = PlaybackBaselineCampaignStore.LoadActive(DateTimeOffset.UtcNow);
+            var campaign = PlaybackBaselineCampaignStore.LoadActive(nowUtc);
+            var progress = campaign is null
+                ? null
+                : PlaybackBaselineCampaignStore.EvaluateProgress(campaign, _records, nowUtc);
+
             _cancelCampaignButton.Enabled = campaign is not null;
+            _startCampaignButton.Enabled = campaign is null
+                || progress?.State is PlaybackBaselineCampaignProgressState.Completed
+                    or PlaybackBaselineCampaignProgressState.Invalidated;
+
             var campaignStatus = campaign is null
                 ? "No explicit Legacy A/B campaign is active."
-                : $"Active Legacy A/B campaign {ShortCampaignId(campaign.CampaignId)} until {campaign.ExpiresAtUtc.ToLocalTime():HH:mm}; run the unchanged TXT/VPS song at 1.00x then 2.00x.";
+                : $"Campaign {ShortCampaignId(campaign.CampaignId)} — {progress!.Summary} Next: {progress.NextAction} Expires {campaign.ExpiresAtUtc.ToLocalTime():HH:mm}.";
 
             _status.Text = _records.Count == 0
                 ? $"No playback sessions have been recorded yet. Play a song, then return here. {campaignStatus}"
-                : $"Showing {_records.Count} recent session(s). {campaignStatus} Same-settings A/B requires identical canonical/runtime/settings history; explicit Legacy campaigns pair only sessions carrying the same campaign provenance and still require proportionally equivalent transport history. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
+                : $"Showing {_records.Count} recent session(s). {campaignStatus} Same-settings A/B requires identical canonical/runtime/settings history; explicit Legacy campaigns admit exactly one ordered 1.00x → 2.00x pair and still require proportionally equivalent transport history. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
             ShowSelectedDetails();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
