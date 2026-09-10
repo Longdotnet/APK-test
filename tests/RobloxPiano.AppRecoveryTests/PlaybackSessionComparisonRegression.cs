@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using RobloxPiano.App;
+using RobloxPiano.Core;
 
 namespace RobloxPiano.AppRecoveryTests;
 
@@ -19,7 +20,9 @@ internal static class PlaybackSessionComparisonRegression
         TestSameFilenameDifferentCanonicalPerformanceIsNotCompared();
         TestRenamedCanonicalPerformanceIsCompared();
         TestDifferentRuntimeIdentityIsNotCompared();
-        Console.WriteLine("PASS  controlled canonical session A/B comparison policy (8 cases)");
+        TestDifferentTransportHistoryIsNotCompared();
+        TestMissingTransportLedgerIsNotCompared();
+        Console.WriteLine("PASS  controlled canonical session A/B comparison policy (10 cases)");
     }
 
     private static void TestNoCompatibleBaseline()
@@ -27,7 +30,7 @@ internal static class PlaybackSessionComparisonRegression
         var current = Session("current", 20, Quality());
         var assessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(current, [current]);
         Equal(PlaybackSessionComparisonVerdict.NotComparable, assessment.Verdict, "no-baseline verdict");
-        Contains(assessment.Guidance, "canonical", "no-baseline canonical reproduction guidance");
+        Contains(assessment.Guidance, "transport", "no-baseline transport reproduction guidance");
     }
 
     private static void TestHealthyToTimingRegression()
@@ -104,6 +107,36 @@ internal static class PlaybackSessionComparisonRegression
         Equal(PlaybackSessionComparisonVerdict.NotComparable, profileAssessment.Verdict, "input-profile mismatch must prevent comparison");
     }
 
+    private static void TestDifferentTransportHistoryIsNotCompared()
+    {
+        var baseline = Session("baseline", 10, Quality());
+        var changedSpeed = Session("changed-speed", 20, Quality(controlEvents:
+        [
+            Start(1d),
+            new PlaybackTransportControlEvent(1, PlaybackTransportControlKind.SpeedChanged, 1.5d, 1.25d)
+        ]));
+        var speedAssessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(changedSpeed, [changedSpeed, baseline]);
+        Equal(PlaybackSessionComparisonVerdict.NotComparable, speedAssessment.Verdict, "runtime speed history mismatch must prevent comparison");
+
+        var seeked = Session("seeked", 30, Quality(controlEvents:
+        [
+            Start(1d),
+            new PlaybackTransportControlEvent(1, PlaybackTransportControlKind.SeekRequested, 2d, null)
+        ]));
+        var seekAssessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(seeked, [seeked, baseline]);
+        Equal(PlaybackSessionComparisonVerdict.NotComparable, seekAssessment.Verdict, "seek history mismatch must prevent comparison");
+    }
+
+    private static void TestMissingTransportLedgerIsNotCompared()
+    {
+        var baseline = Session("baseline", 10, Quality());
+        var oldSession = Session("old", 20, Quality(includeLedger: false));
+        var assessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(oldSession, [oldSession, baseline]);
+
+        Equal(PlaybackSessionComparisonVerdict.NotComparable, assessment.Verdict, "sessions without persisted transport history must fail closed");
+        Contains(assessment.Guidance, "Older sessions", "legacy diagnostic fail-closed guidance");
+    }
+
     private static PlaybackSupportSession Session(
         string id,
         int endedSecond,
@@ -142,9 +175,11 @@ internal static class PlaybackSessionComparisonRegression
         double p95 = 2,
         double maxTiming = 4,
         double meanInput = 0.2,
-        double maxInput = 0.5)
+        double maxInput = 0.5,
+        IReadOnlyList<PlaybackTransportControlEvent>? controlEvents = null,
+        bool includeLedger = true)
         => new(
-            1,
+            2,
             1,
             0,
             20,
@@ -158,7 +193,11 @@ internal static class PlaybackSessionComparisonRegression
             p95,
             maxTiming,
             meanInput,
-            maxInput);
+            maxInput,
+            includeLedger ? controlEvents ?? [Start(1d)] : null);
+
+    private static PlaybackTransportControlEvent Start(double speed)
+        => new(0, PlaybackTransportControlKind.SessionStarted, 0d, speed);
 
     private static void Contains(string actual, string expected, string message)
     {
