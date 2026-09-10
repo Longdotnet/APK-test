@@ -1,5 +1,8 @@
 using System.IO.Compression;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using RobloxPiano.App;
 
 namespace RobloxPiano.AppRecoveryTests;
@@ -10,9 +13,10 @@ internal static class SupportBundleRegression
     internal static void Run()
     {
         TestRecentRecordsIgnoreMalformedTailAndStayBounded();
-        TestSupportDocumentRedactsLocalSourcePath();
-        TestSupportBundleIsSendableAndPrivacySafe();
-        Console.WriteLine("PASS  support bundle regressions (3)");
+        TestSupportDocumentRedactsLocalSourcePathAndSummarizesOutcomes();
+        TestSupportBundleIsSendablePrivacySafeAndSelfVerifying();
+        TestSupportBundleVerificationRejectsTamperedPayload();
+        Console.WriteLine("PASS  support bundle regressions (4)");
     }
 
     private static void TestRecentRecordsIgnoreMalformedTailAndStayBounded()
@@ -38,7 +42,7 @@ internal static class SupportBundleRegression
         }
     }
 
-    private static void TestSupportDocumentRedactsLocalSourcePath()
+    private static void TestSupportDocumentRedactsLocalSourcePathAndSummarizesOutcomes()
     {
         var sourcePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -55,7 +59,14 @@ internal static class SupportBundleRegression
             new[] { record },
             DateTimeOffset.UnixEpoch.AddMinutes(5));
 
+        Equal("2", document.SchemaVersion, "support schema version");
         Equal(1, document.SessionCount, "support session count");
+        Equal(1, document.OutcomeSummary.RuntimeFailed, "runtime failure summary");
+        Equal(1, document.OutcomeSummary.TotalFailures, "total failure summary");
+        True(!string.IsNullOrWhiteSpace(document.Environment.OperatingSystem), "OS evidence must be present");
+        True(!string.IsNullOrWhiteSpace(document.Environment.ProcessArchitecture), "process architecture evidence must be present");
+        True(!string.IsNullOrWhiteSpace(document.Environment.Runtime), "runtime evidence must be present");
+
         var session = document.Sessions[0];
         Equal("support-song.mid", session.SourceFileName!, "support bundle keeps only source filename");
         False(
@@ -66,7 +77,7 @@ internal static class SupportBundleRegression
             "support exception must not expose source parent folders");
     }
 
-    private static void TestSupportBundleIsSendableAndPrivacySafe()
+    private static void TestSupportBundleIsSendablePrivacySafeAndSelfVerifying()
     {
         var directory = CreateTemporaryDirectory();
         try
@@ -88,23 +99,95 @@ internal static class SupportBundleRegression
                 DateTimeOffset.UnixEpoch.AddMinutes(7));
 
             True(File.Exists(destination), "support ZIP must be created");
+            True(
+                PlaybackSessionDiagnostics.VerifySupportBundle(destination, out var verificationError),
+                $"fresh support bundle must self-verify: {verificationError}");
+
             using var archive = ZipFile.OpenRead(destination);
             var support = archive.GetEntry("support.json")
                 ?? throw new InvalidOperationException("support.json missing from bundle");
+            var manifestEntry = archive.GetEntry("manifest.json")
+                ?? throw new InvalidOperationException("manifest.json missing from bundle");
             _ = archive.GetEntry("README.txt")
                 ?? throw new InvalidOperationException("README.txt missing from bundle");
-            Equal(2, archive.Entries.Count, "bundle must not silently include raw JSONL/log files");
+            Equal(3, archive.Entries.Count, "bundle must contain only the bounded support payload, manifest and README");
 
-            using var reader = new StreamReader(support.Open());
-            var json = reader.ReadToEnd();
+            string json;
+            using (var reader = new StreamReader(support.Open()))
+            {
+                json = reader.ReadToEnd();
+            }
+
+            PlaybackSupportManifest manifest;
+            using (var reader = new StreamReader(manifestEntry.Open()))
+            {
+                manifest = JsonSerializer.Deserialize<PlaybackSupportManifest>(reader.ReadToEnd(), new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                }) ?? throw new InvalidOperationException("manifest.json did not deserialize");
+            }
+
+            var supportBytes = Encoding.UTF8.GetBytes(json);
+            var actualHash = Convert.ToHexString(SHA256.HashData(supportBytes)).ToLowerInvariant();
+            Equal(actualHash, manifest.SupportJsonSha256, "manifest SHA-256 must cover exact support.json bytes");
+            Equal((long)supportBytes.Length, manifest.SupportJsonBytes, "manifest byte length must cover exact support.json bytes");
             True(json.Contains("bundle-song.musicxml", StringComparison.Ordinal), "bundle should retain source filename for support correlation");
             False(json.Contains(sourcePath, StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain the full local source path");
             False(json.Contains("private-client-path", StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain source parent folders");
             False(json.Contains("sessions-20260910.jsonl", StringComparison.OrdinalIgnoreCase), "bundle must not embed raw diagnostic filenames");
+            False(json.Contains(Environment.MachineName, StringComparison.OrdinalIgnoreCase), "bundle must not add machine-name identity");
+            False(json.Contains(Environment.UserName, StringComparison.OrdinalIgnoreCase), "bundle must not add username identity");
         }
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void TestSupportBundleVerificationRejectsTamperedPayload()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var sessionPath = Path.Combine(directory, "sessions-20260910.jsonl");
+            PlaybackSessionDiagnostics.AppendRecord(
+                sessionPath,
+                CreateRecord("tamper", DateTimeOffset.UnixEpoch.AddMinutes(8), Path.Combine(directory, "tamper.mid")));
+
+            var original = Path.Combine(directory, "original.zip");
+            PlaybackSessionDiagnostics.CreateSupportBundle(directory, original, DateTimeOffset.UnixEpoch.AddMinutes(9));
+            var tampered = Path.Combine(directory, "tampered.zip");
+            CreateTamperedBundle(original, tampered);
+
+            False(
+                PlaybackSessionDiagnostics.VerifySupportBundle(tampered, out var error),
+                "tampered support payload must fail deterministic verification");
+            True(
+                (error ?? string.Empty).Contains("SHA-256", StringComparison.OrdinalIgnoreCase),
+                "tamper verdict should identify integrity mismatch");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void CreateTamperedBundle(string originalPath, string destinationPath)
+    {
+        using var original = ZipFile.OpenRead(originalPath);
+        using var destination = ZipFile.Open(destinationPath, ZipArchiveMode.Create);
+
+        foreach (var entry in original.Entries)
+        {
+            var copy = destination.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+            using var input = entry.Open();
+            using var output = copy.Open();
+            input.CopyTo(output);
+            if (entry.FullName.Equals("support.json", StringComparison.Ordinal))
+            {
+                var tamper = Encoding.UTF8.GetBytes(" ");
+                output.Write(tamper);
+            }
         }
     }
 
@@ -129,7 +212,7 @@ internal static class SupportBundleRegression
             638930000000000000L,
             typeof(InvalidOperationException).FullName,
             exceptionMessage,
-            "0.20.0");
+            "0.21.0");
 
     private static string CreateTemporaryDirectory()
     {
