@@ -44,7 +44,8 @@ public sealed record PlaybackTransportQualityReport(
     double MaxAbsoluteTimingErrorMilliseconds,
     double MeanInputCallMilliseconds,
     double MaxInputCallMilliseconds,
-    IReadOnlyList<PlaybackTransportSegmentQuality> Segments)
+    IReadOnlyList<PlaybackTransportSegmentQuality> Segments,
+    string? CanonicalTrackFingerprint = null)
 {
     public const int CurrentSchemaVersion = 1;
 
