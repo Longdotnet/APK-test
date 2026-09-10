@@ -23,7 +23,8 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         TestStaleHistoricalCounterpartIsRejected();
         TestNewerSameVariantBlocksHistoricalCherryPick();
         TestNewerMismatchedTransportBlocksHistoricalCherryPick();
-        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (11 cases)");
+        TestDifferentSongBaselineBreaksReproductionAdjacency();
+        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (12 cases)");
     }
 
     private static void TestClassifiesLegacyVariants()
@@ -146,6 +147,20 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "newest opposite variant with mismatched transport must block fallback to older clean evidence");
         Contains(assessment.Guidance, "fails closed", "transport mismatch must explain fail-closed behavior");
         True(!assessment.HasCounterpart, "older clean run must not be selected after a newer mismatched reproduction attempt");
+    }
+
+    private static void TestDifferentSongBaselineBreaksReproductionAdjacency()
+    {
+        var oldLegacyA = Session("legacy-a", 10, 1d, Quality(1d), fingerprint: FingerprintA);
+        var interveningLegacyB = Session("legacy-b", 20, 1d, Quality(1d), fingerprint: FingerprintB);
+        var currentX2A = Session("x2-a", 30, 2d, Quality(2d), fingerprint: FingerprintA);
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(
+            currentX2A,
+            [currentX2A, interveningLegacyB, oldLegacyA]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "an intervening protected baseline for another song must break the reproduction sequence");
+        Contains(assessment.Summary, "immediately previous", "support guidance must explain strict baseline adjacency");
+        True(!assessment.HasCounterpart, "comparator must not skip a different-song baseline to cherry-pick older matching evidence");
     }
 
     private static PlaybackSupportSession Session(
