@@ -79,6 +79,19 @@ public sealed record PlaybackTimingSample(
     double TimingErrorMilliseconds,
     double InputCallMilliseconds);
 
+public sealed record PlaybackQualitySnapshot(
+    int DispatchedEdgeCount,
+    int FailureCount,
+    int FocusPauseCount,
+    double FocusPausedMilliseconds,
+    int ReleaseAllCount,
+    double MeanSignedTimingErrorMilliseconds,
+    double MeanAbsoluteTimingErrorMilliseconds,
+    double P95AbsoluteTimingErrorMilliseconds,
+    double MaxAbsoluteTimingErrorMilliseconds,
+    double MeanInputCallMilliseconds,
+    double MaxInputCallMilliseconds);
+
 public sealed record PlaybackQualityReport(
     int SchemaVersion,
     string TrackTitle,
@@ -118,6 +131,31 @@ public sealed class PlaybackQualityCollector : IPlaybackObserver
         }
     }
 
+    public PlaybackQualitySnapshot BuildSnapshot()
+    {
+        var snapshot = SnapshotObservations();
+        var timingSamples = BuildTimingSamples(snapshot);
+        var signedErrors = timingSamples.Select(sample => sample.TimingErrorMilliseconds).ToArray();
+        var absoluteErrors = signedErrors.Select(Math.Abs).ToArray();
+        var inputCalls = timingSamples.Select(sample => sample.InputCallMilliseconds).ToArray();
+        var focusPaused = snapshot
+            .Where(item => item.Kind == PlaybackObservationKind.FocusResumed && item.PauseDuration.HasValue)
+            .Sum(item => item.PauseDuration!.Value.TotalMilliseconds);
+
+        return new PlaybackQualitySnapshot(
+            timingSamples.Length,
+            snapshot.Count(item => item.Kind == PlaybackObservationKind.PlaybackFailed),
+            snapshot.Count(item => item.Kind == PlaybackObservationKind.FocusResumed),
+            focusPaused,
+            snapshot.Count(item => item.Kind == PlaybackObservationKind.ReleaseAll),
+            Mean(signedErrors),
+            Mean(absoluteErrors),
+            Percentile95(absoluteErrors),
+            Max(absoluteErrors),
+            Mean(inputCalls),
+            Max(inputCalls));
+    }
+
     public PlaybackQualityReport BuildReport(PerformanceTrack track, double speed, int worstSampleLimit = 20)
     {
         ArgumentNullException.ThrowIfNull(track);
@@ -126,37 +164,9 @@ public sealed class PlaybackQualityCollector : IPlaybackObserver
             throw new ArgumentOutOfRangeException(nameof(worstSampleLimit));
         }
 
-        PlaybackObservation[] snapshot;
-        lock (_gate)
-        {
-            snapshot = _observations.ToArray();
-        }
-
+        var snapshot = SnapshotObservations();
         var plannedEdges = PlaybackPlanner.BuildEdges(track);
-        var dispatches = snapshot
-            .Where(item => item.Kind == PlaybackObservationKind.EdgeDispatched)
-            .ToArray();
-
-        var timingSamples = dispatches
-            .Where(item => item.EdgeIndex.HasValue
-                && item.EdgeKind.HasValue
-                && item.PlannedTrackTime.HasValue
-                && item.ExpectedClockTime.HasValue)
-            .Select(item =>
-            {
-                var dispatchCompleted = item.DispatchCompletedClockTime ?? item.ClockTime;
-                return new PlaybackTimingSample(
-                    item.EdgeIndex!.Value,
-                    item.EdgeKind!.Value,
-                    item.Keys,
-                    item.PlannedTrackTime!.Value.TotalMilliseconds,
-                    item.ExpectedClockTime!.Value.TotalMilliseconds,
-                    item.ClockTime.TotalMilliseconds,
-                    (item.ClockTime - item.ExpectedClockTime.Value).TotalMilliseconds,
-                    Math.Max(0d, (dispatchCompleted - item.ClockTime).TotalMilliseconds));
-            })
-            .ToArray();
-
+        var timingSamples = BuildTimingSamples(snapshot);
         var signedErrors = timingSamples.Select(sample => sample.TimingErrorMilliseconds).ToArray();
         var absoluteErrors = signedErrors.Select(Math.Abs).ToArray();
         var inputCalls = timingSamples.Select(sample => sample.InputCallMilliseconds).ToArray();
@@ -177,8 +187,8 @@ public sealed class PlaybackQualityCollector : IPlaybackObserver
             PlaybackPlanFingerprint.Compute(track, speed),
             speed,
             plannedEdges.Count,
-            dispatches.Length,
-            Math.Max(0, plannedEdges.Count - dispatches.Length),
+            timingSamples.Length,
+            Math.Max(0, plannedEdges.Count - timingSamples.Length),
             snapshot.Count(item => item.Kind == PlaybackObservationKind.PlaybackFailed),
             snapshot.Count(item => item.Kind == PlaybackObservationKind.FocusResumed),
             focusPaused,
@@ -191,6 +201,36 @@ public sealed class PlaybackQualityCollector : IPlaybackObserver
             Max(inputCalls),
             worst);
     }
+
+    private PlaybackObservation[] SnapshotObservations()
+    {
+        lock (_gate)
+        {
+            return _observations.ToArray();
+        }
+    }
+
+    private static PlaybackTimingSample[] BuildTimingSamples(IEnumerable<PlaybackObservation> observations)
+        => observations
+            .Where(item => item.Kind == PlaybackObservationKind.EdgeDispatched
+                && item.EdgeIndex.HasValue
+                && item.EdgeKind.HasValue
+                && item.PlannedTrackTime.HasValue
+                && item.ExpectedClockTime.HasValue)
+            .Select(item =>
+            {
+                var dispatchCompleted = item.DispatchCompletedClockTime ?? item.ClockTime;
+                return new PlaybackTimingSample(
+                    item.EdgeIndex!.Value,
+                    item.EdgeKind!.Value,
+                    item.Keys,
+                    item.PlannedTrackTime!.Value.TotalMilliseconds,
+                    item.ExpectedClockTime!.Value.TotalMilliseconds,
+                    item.ClockTime.TotalMilliseconds,
+                    (item.ClockTime - item.ExpectedClockTime.Value).TotalMilliseconds,
+                    Math.Max(0d, (dispatchCompleted - item.ClockTime).TotalMilliseconds));
+            })
+            .ToArray();
 
     private static double Mean(double[] values) => values.Length == 0 ? 0d : values.Average();
 
