@@ -20,7 +20,10 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         TestNonProportionalRuntimeSpeedHistoryIsRejected();
         TestInterferenceBlocksConclusion();
         TestMidiIsNotBaselineComparable();
-        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (8 cases)");
+        TestStaleHistoricalCounterpartIsRejected();
+        TestNewerSameVariantBlocksHistoricalCherryPick();
+        TestNewerMismatchedTransportBlocksHistoricalCherryPick();
+        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (11 cases)");
     }
 
     private static void TestClassifiesLegacyVariants()
@@ -47,6 +50,7 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         var second = Session("legacy-2", 20, 1d, Quality(1d));
         var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(second, [second, first]);
         Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "same baseline variant must not satisfy cross-variant comparison");
+        Contains(assessment.Guidance, "will not skip", "same-variant run must block historical cherry-picking");
     }
 
     private static void TestDifferentCanonicalPerformanceIsRejected()
@@ -104,6 +108,44 @@ internal static class PlaybackLegacyBaselineComparisonRegression
     {
         var midi = Session("midi", 20, 2d, Quality(2d), sourceType: "MIDI");
         Equal(PlaybackLegacyBaselineVariant.None, PlaybackLegacyBaselineComparisonPolicy.Classify(midi), "MIDI x2 must not be mislabeled Legacy x2");
+    }
+
+    private static void TestStaleHistoricalCounterpartIsRejected()
+    {
+        var legacy = Session("legacy-old", 10, 1d, Quality(1d));
+        var x2 = Session("x2-now", 4000, 2d, Quality(2d));
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(x2, [x2, legacy]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "stale historical run must not be reused as reproduction evidence");
+        Contains(assessment.Summary, "30", "bounded pairing window must be visible to support");
+        True(!assessment.HasCounterpart, "stale historical run must not be attached as counterpart");
+    }
+
+    private static void TestNewerSameVariantBlocksHistoricalCherryPick()
+    {
+        var oldLegacy = Session("legacy-old", 10, 1d, Quality(1d));
+        var newerX2 = Session("x2-newer", 20, 2d, Quality(2d));
+        var currentX2 = Session("x2-current", 30, 2d, Quality(2d));
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(currentX2, [currentX2, newerX2, oldLegacy]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "newer same-variant baseline must block fallback to an older opposite variant");
+        True(!assessment.HasCounterpart, "comparator must not cherry-pick the older legacy run");
+    }
+
+    private static void TestNewerMismatchedTransportBlocksHistoricalCherryPick()
+    {
+        var oldLegacy = Session("legacy-old", 10, 1d, Quality(1d));
+        var changedLegacy = Session("legacy-changed", 20, 1d, Quality(1d, controls:
+        [
+            Start(1d),
+            new PlaybackTransportControlEvent(1, PlaybackTransportControlKind.SeekRequested, 3d, null)
+        ]));
+        var currentX2 = Session("x2-current", 30, 2d, Quality(2d));
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(currentX2, [currentX2, changedLegacy, oldLegacy]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "newest opposite variant with mismatched transport must block fallback to older clean evidence");
+        Contains(assessment.Guidance, "fails closed", "transport mismatch must explain fail-closed behavior");
+        True(!assessment.HasCounterpart, "older clean run must not be selected after a newer mismatched reproduction attempt");
     }
 
     private static PlaybackSupportSession Session(
