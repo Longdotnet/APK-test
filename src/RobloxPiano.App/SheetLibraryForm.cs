@@ -29,6 +29,7 @@ internal sealed class SheetLibraryForm : Form
         Padding = new Padding(14, 5, 14, 5)
     };
     private readonly Button _inputCheckButton = new() { Text = "Test Roblox Input", AutoSize = true };
+    private readonly Button _supportButton = new() { Text = "Support Center", AutoSize = true };
     private readonly Button _importMidiButton = new() { Text = "Import MIDI...", AutoSize = true };
     private readonly Button _importMidiFolderButton = new() { Text = "Import MIDI Folder...", AutoSize = true };
     private readonly Button _importButton = new() { Text = "Import Other...", AutoSize = true };
@@ -61,6 +62,7 @@ internal sealed class SheetLibraryForm : Form
         _search.TextChanged += (_, _) => ApplyFilter();
         _refreshButton.Click += (_, _) => RefreshLibrary();
         _inputCheckButton.Click += (_, _) => ShowInputCheck();
+        _supportButton.Click += (_, _) => ShowSupportCenter();
         _importMidiButton.Click += (_, _) => ImportMidiWithPicker();
         _importMidiFolderButton.Click += (_, _) => ImportMidiFolder();
         _importButton.Click += (_, _) => ImportOtherWithPicker();
@@ -108,7 +110,7 @@ internal sealed class SheetLibraryForm : Form
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_playButton, _inputCheckButton, _importMidiButton, _importMidiFolderButton, _importButton, _refreshButton]);
+        buttons.Controls.AddRange([_playButton, _inputCheckButton, _supportButton, _importMidiButton, _importMidiFolderButton, _importButton, _refreshButton]);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 8 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -259,6 +261,12 @@ internal sealed class SheetLibraryForm : Form
         using var dialog = new RobloxInputCheckDialog();
         dialog.ShowDialog(this);
         RefreshRobloxStatus();
+    }
+
+    private void ShowSupportCenter()
+    {
+        using var support = new SupportCenterForm();
+        support.ShowDialog(this);
     }
 
     private void ImportMidiWithPicker()
