@@ -29,8 +29,8 @@ internal sealed class SupportCenterForm : Form
     {
         Text = "Roblox Piano Support Center";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(900, 580);
-        Size = new Size(1120, 720);
+        MinimumSize = new Size(940, 600);
+        Size = new Size(1200, 740);
 
         BuildLayout();
         _refreshButton.Click += (_, _) => RefreshSessions();
@@ -42,26 +42,27 @@ internal sealed class SupportCenterForm : Form
     private void BuildLayout()
     {
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "When", DataPropertyName = nameof(SessionRow.When), Width = 145 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 120 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Quality", DataPropertyName = nameof(SessionRow.QualityVerdict), Width = 120 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 115 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Quality", DataPropertyName = nameof(SessionRow.QualityVerdict), Width = 110 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "A/B", DataPropertyName = nameof(SessionRow.Comparison), Width = 105 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SessionRow.Song), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 80 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 80 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "P95", DataPropertyName = nameof(SessionRow.P95Timing), Width = 80 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Roblox PID", DataPropertyName = nameof(SessionRow.RobloxPid), Width = 90 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 75 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 75 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "P95", DataPropertyName = nameof(SessionRow.P95Timing), Width = 75 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Roblox PID", DataPropertyName = nameof(SessionRow.RobloxPid), Width = 85 });
 
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent local playback outcomes, deterministic quality verdicts and transport-aware timing evidence. Full sheet paths, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent playback outcomes, deterministic quality verdicts and controlled same-settings A/B evidence. Full sheet paths, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
-            MaximumSize = new Size(1050, 0),
+            MaximumSize = new Size(1130, 0),
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         buttons.Controls.AddRange([_refreshButton, _saveBundleButton]);
 
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 330 };
+        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 340 };
         split.Panel1.Controls.Add(_sessions);
         split.Panel2.Controls.Add(_details);
 
@@ -86,10 +87,10 @@ internal sealed class SupportCenterForm : Form
             var diagnostics = PlaybackSessionDiagnostics.ReadRecentRecords(ClientDiagnostics.DirectoryPath);
             var document = PlaybackSessionDiagnostics.CreateSupportDocument(diagnostics, DateTimeOffset.UtcNow);
             _records = document.Sessions;
-            _sessions.DataSource = _records.Select(record => new SessionRow(record)).ToList();
+            _sessions.DataSource = _records.Select(record => new SessionRow(record, _records)).ToList();
             _status.Text = _records.Count == 0
                 ? "No playback sessions have been recorded yet. Play a song, then return here."
-                : $"Showing {_records.Count} recent session(s). Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
+                : $"Showing {_records.Count} recent session(s). A/B uses the most recent prior run with the same song/type/speed/input-latency settings. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
             ShowSelectedDetails();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
@@ -113,12 +114,21 @@ internal sealed class SupportCenterForm : Form
         var record = row.Record;
         var quality = record.Quality;
         var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(quality);
+        var comparison = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(record, _records);
         var lines = new[]
         {
             $"Outcome: {record.ResultKind}",
             $"Quality verdict: {assessment.Verdict}",
             $"Quality summary: {assessment.Summary}",
             $"Client guidance: {assessment.Guidance}",
+            "",
+            $"Controlled A/B verdict: {comparison.Verdict}",
+            $"A/B summary: {comparison.Summary}",
+            $"A/B guidance: {comparison.Guidance}",
+            $"Baseline session: {comparison.BaselineSessionId ?? "(none)"}",
+            comparison.P95TimingDeltaMilliseconds is null ? string.Empty : $"P95 timing delta vs baseline: {comparison.P95TimingDeltaMilliseconds:+0.###;-0.###;0} ms",
+            comparison.MaxInputCallDeltaMilliseconds is null ? string.Empty : $"Max input-call delta vs baseline: {comparison.MaxInputCallDeltaMilliseconds:+0.###;-0.###;0} ms",
+            "",
             $"Started (UTC): {record.StartedAtUtc:O}",
             $"Ended (UTC): {record.EndedAtUtc:O}",
             $"Song: {record.SourceFileName ?? "(unknown)"}",
@@ -184,18 +194,20 @@ internal sealed class SupportCenterForm : Form
         string When,
         string Outcome,
         string QualityVerdict,
+        string Comparison,
         string Song,
         string SourceType,
         string Position,
         string P95Timing,
         string RobloxPid)
     {
-        public SessionRow(PlaybackSupportSession record)
+        public SessionRow(PlaybackSupportSession record, IReadOnlyList<PlaybackSupportSession> sessions)
             : this(
                 record,
                 record.EndedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
                 record.ResultKind,
                 PlaybackSessionQualityAssessmentPolicy.Assess(record.Quality).Verdict.ToString(),
+                PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(record, sessions).Verdict.ToString(),
                 record.SourceFileName ?? "(unknown)",
                 record.SourceType,
                 TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)).ToString(@"mm\:ss"),
