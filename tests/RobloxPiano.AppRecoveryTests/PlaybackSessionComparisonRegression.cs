@@ -5,6 +5,9 @@ namespace RobloxPiano.AppRecoveryTests;
 
 internal static class PlaybackSessionComparisonRegression
 {
+    private const string FingerprintA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string FingerprintB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
     [ModuleInitializer]
     internal static void VerifyControlledComparisonPolicy()
     {
@@ -13,7 +16,10 @@ internal static class PlaybackSessionComparisonRegression
         TestInputLatencyRegressionExplainsEnvironment();
         TestInterferenceBlocksPromotion();
         TestDifferentSettingsAreNotCompared();
-        Console.WriteLine("PASS  controlled session A/B comparison policy (5 cases)");
+        TestSameFilenameDifferentCanonicalPerformanceIsNotCompared();
+        TestRenamedCanonicalPerformanceIsCompared();
+        TestDifferentRuntimeIdentityIsNotCompared();
+        Console.WriteLine("PASS  controlled canonical session A/B comparison policy (8 cases)");
     }
 
     private static void TestNoCompatibleBaseline()
@@ -21,7 +27,7 @@ internal static class PlaybackSessionComparisonRegression
         var current = Session("current", 20, Quality());
         var assessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(current, [current]);
         Equal(PlaybackSessionComparisonVerdict.NotComparable, assessment.Verdict, "no-baseline verdict");
-        Contains(assessment.Guidance, "same song", "no-baseline reproduction guidance");
+        Contains(assessment.Guidance, "canonical", "no-baseline canonical reproduction guidance");
     }
 
     private static void TestHealthyToTimingRegression()
@@ -67,12 +73,47 @@ internal static class PlaybackSessionComparisonRegression
         Equal(PlaybackSessionComparisonVerdict.NotComparable, assessment.Verdict, "speed mismatch must prevent comparison");
     }
 
+    private static void TestSameFilenameDifferentCanonicalPerformanceIsNotCompared()
+    {
+        var baseline = Session("baseline", 10, Quality(), fingerprint: FingerprintA);
+        var current = Session("current", 20, Quality(), fingerprint: FingerprintB);
+        var assessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(current, [current, baseline]);
+
+        Equal(PlaybackSessionComparisonVerdict.NotComparable, assessment.Verdict, "same filename with changed canonical performance must not compare");
+    }
+
+    private static void TestRenamedCanonicalPerformanceIsCompared()
+    {
+        var baseline = Session("baseline", 10, Quality(), fileName: "old-name.mid", fingerprint: FingerprintA);
+        var current = Session("current", 20, Quality(), fileName: "renamed.mid", fingerprint: FingerprintA);
+        var assessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(current, [current, baseline]);
+
+        Equal(PlaybackSessionComparisonVerdict.StableHealthy, assessment.Verdict, "renaming the same canonical performance must not break A/B identity");
+        Equal("baseline", assessment.BaselineSessionId!, "renamed canonical baseline");
+    }
+
+    private static void TestDifferentRuntimeIdentityIsNotCompared()
+    {
+        var baseline = Session("baseline", 10, Quality());
+        var differentEngine = Session("engine", 20, Quality(), engine: "experimental-transport-v2");
+        var engineAssessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(differentEngine, [differentEngine, baseline]);
+        Equal(PlaybackSessionComparisonVerdict.NotComparable, engineAssessment.Verdict, "engine mismatch must prevent comparison");
+
+        var differentProfile = Session("profile", 30, Quality(), inputProfile: "other-input-profile");
+        var profileAssessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(differentProfile, [differentProfile, baseline]);
+        Equal(PlaybackSessionComparisonVerdict.NotComparable, profileAssessment.Verdict, "input-profile mismatch must prevent comparison");
+    }
+
     private static PlaybackSupportSession Session(
         string id,
         int endedSecond,
         PlaybackSessionQualityDiagnostic quality,
         double speed = 1d,
-        int inputLatencyMs = 0)
+        int inputLatencyMs = 0,
+        string fileName = "song.mid",
+        string fingerprint = FingerprintA,
+        string engine = PlaybackRuntimeIdentity.Engine,
+        string inputProfile = PlaybackRuntimeIdentity.InputProfile)
         => new(
             id,
             DateTimeOffset.UnixEpoch.AddSeconds(endedSecond - 5),
@@ -80,7 +121,7 @@ internal static class PlaybackSessionComparisonRegression
             "Completed",
             5d,
             null,
-            "song.mid",
+            fileName,
             "MIDI",
             speed,
             inputLatencyMs,
@@ -88,7 +129,10 @@ internal static class PlaybackSessionComparisonRegression
             1234L,
             null,
             null,
-            quality);
+            quality,
+            fingerprint,
+            engine,
+            inputProfile);
 
     private static PlaybackSessionQualityDiagnostic Quality(
         int missing = 0,
