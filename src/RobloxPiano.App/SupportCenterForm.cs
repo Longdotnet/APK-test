@@ -24,6 +24,7 @@ internal sealed class SupportCenterForm : Form
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
     private readonly Button _startCampaignButton = new() { Text = "Start Legacy A/B Campaign", AutoSize = true };
     private readonly Button _cancelCampaignButton = new() { Text = "Cancel Campaign", AutoSize = true };
+    private readonly Button _archiveButton = new() { Text = "Verified A/B History...", AutoSize = true };
     private readonly Button _saveBundleButton = new() { Text = "Save Support Bundle...", AutoSize = true };
     private IReadOnlyList<PlaybackSupportSession> _records = Array.Empty<PlaybackSupportSession>();
 
@@ -38,6 +39,7 @@ internal sealed class SupportCenterForm : Form
         _refreshButton.Click += (_, _) => RefreshSessions();
         _startCampaignButton.Click += (_, _) => StartBaselineCampaign();
         _cancelCampaignButton.Click += (_, _) => CancelBaselineCampaign();
+        _archiveButton.Click += (_, _) => ShowExperimentArchive();
         _saveBundleButton.Click += (_, _) => SaveSupportBundle();
         _sessions.SelectionChanged += (_, _) => ShowSelectedDetails();
         Shown += (_, _) => RefreshSessions();
@@ -60,13 +62,13 @@ internal sealed class SupportCenterForm : Form
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Guided campaigns admit exactly Legacy 1.00x first, then Legacy x2 2.00x; wrong-order or changed-condition playback remains normal but is excluded from campaign evidence. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Guided campaigns admit exactly Legacy 1.00x first, then Legacy x2 2.00x; wrong-order or changed-condition playback remains normal but is excluded from campaign evidence. Verified completed experiments remain browsable after recent session history rotates. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from support evidence.",
             AutoSize = true,
             MaximumSize = new Size(1130, 0),
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_refreshButton, _startCampaignButton, _cancelCampaignButton, _saveBundleButton]);
+        buttons.Controls.AddRange([_refreshButton, _startCampaignButton, _cancelCampaignButton, _archiveButton, _saveBundleButton]);
 
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 340 };
         split.Panel1.Controls.Add(_sessions);
@@ -109,13 +111,15 @@ internal sealed class SupportCenterForm : Form
             var campaignStatus = campaign is null
                 ? "No explicit Legacy A/B campaign is active."
                 : $"Campaign {ShortCampaignId(campaign.CampaignId)} — {progress!.Summary} Next: {progress.NextAction} Expires {campaign.ExpiresAtUtc.ToLocalTime():HH:mm}.";
+            var archivedCount = PlaybackBaselineExperimentArchive.ReadVerified(
+                PlaybackBaselineExperimentArchive.ArchiveDirectoryPath).Count;
 
             _status.Text = _records.Count == 0
-                ? $"No playback sessions have been recorded yet. Play a song, then return here. {campaignStatus}"
-                : $"Showing {_records.Count} recent session(s). {campaignStatus} Same-settings A/B requires identical canonical/runtime/settings history; explicit Legacy campaigns admit exactly one ordered 1.00x → 2.00x pair and still require proportionally equivalent transport history. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
+                ? $"No playback sessions have been recorded yet. Play a song, then return here. {campaignStatus} Verified archived experiments: {archivedCount}."
+                : $"Showing {_records.Count} recent session(s). {campaignStatus} Verified archived experiments: {archivedCount}. Same-settings A/B requires identical canonical/runtime/settings history; explicit Legacy campaigns admit exactly one ordered 1.00x → 2.00x pair and still require proportionally equivalent transport history. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
             ShowSelectedDetails();
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException or NotSupportedException)
         {
             ClientDiagnostics.Log($"Support Center could not load session history: {exception}");
             _status.Text = $"Could not load session diagnostics: {exception.Message}";
@@ -144,6 +148,13 @@ internal sealed class SupportCenterForm : Form
         PlaybackBaselineCampaignStore.Cancel();
         RefreshSessions();
         _status.Text = "Legacy A/B campaign cancelled. Existing recorded session evidence remains intact; future sessions are unscoped until a new campaign is started.";
+    }
+
+    private void ShowExperimentArchive()
+    {
+        using var archive = new ArchivedBaselineExperimentsForm();
+        archive.ShowDialog(this);
+        RefreshSessions();
     }
 
     private void ShowSelectedDetails()
