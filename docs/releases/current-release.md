@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.34.0
+version: 0.35.0
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,8 +15,8 @@ SHA256: `{{SHA256}}`
 2. Open Roblox, enter the target piano game, select or import a playable song, and use **Verify Input & Play** when the current Roblox process has not yet been confirmed.
 3. Keep Roblox focused while playback is active. Losing target focus fails closed for input and transport cleanup releases held keys/pedal state.
 4. Use Play/Pause/Stop/Seek and speed controls from the production desktop client; deterministic transport state remains authoritative.
-5. When investigating Legacy x2 quality, open Support Center and start **Legacy A/B Campaign**. The guided campaign shows the exact next action: Step 1 is Legacy 1.00x; after that evidence is recorded, Step 2 is Legacy x2 2.00x on the same unchanged TXT/VPS performance and controlled transport history.
-6. Save the verified Support Bundle when troubleshooting or sharing diagnostic evidence. A completed explicit Legacy A/B campaign also emits a verified `.legacy-ab.json` experiment sidecar beside the exported ZIP.
+5. When investigating Legacy x2 quality, open Support Center and start **Legacy A/B Campaign**. Step 1 is Legacy 1.00x and Step 2 is Legacy x2 2.00x on the same unchanged TXT/VPS performance and controlled transport history.
+6. Completed explicit campaigns are now persisted into a verified local experiment archive automatically; saving a Support Bundle can still emit a verified `.legacy-ab.json` sidecar for sharing.
 
 ## Production capability and reliability in this release
 
@@ -30,36 +30,38 @@ SHA256: `{{SHA256}}`
 - Support Center exposes a controlled Legacy ↔ Legacy x2 runtime comparison for TXT/VPS baseline runs: 1.0x and 2.0x must use the same canonical performance/runtime/input identity, the same latency compensation, identical seek positions, and speed transitions proportional by exactly 2x.
 - Explicit Legacy reproduction campaigns carry privacy-safe campaign provenance through opaque session IDs into the verified Support Bundle and never fall back to unrelated historical sessions.
 - Guided campaign admission enforces exactly one Legacy 1.00x session first and one Legacy x2 2.00x session second. Wrong-order, duplicate or changed-condition playback remains normal but is excluded from new campaign evidence.
-- A completed explicit campaign can now emit a verifiable immutable experiment manifest containing the exact locked session IDs, canonical/runtime identity, deterministic runtime verdict, measured deltas, normalized transport-equivalence SHA-256 and a second SHA-256 over all manifest evidence fields.
-- Experiment manifest verification fails closed on malformed campaign/session provenance or content tampering, and export uses temporary-file read-back verification before atomic replacement.
-- Experiment manifest generation is diagnostics-only: a sidecar failure is logged without weakening the already-verified support ZIP or changing playback behavior.
+- A completed explicit campaign emits a verifiable immutable experiment manifest containing the exact locked session IDs, canonical/runtime identity, deterministic runtime verdict, measured deltas, normalized transport-equivalence SHA-256 and a second SHA-256 over all manifest evidence fields.
+- Completed manifests are now copied into a durable bounded archive immediately after the completing session is safely persisted. Historical experiment evidence therefore survives active-campaign expiry and recent-session rotation.
+- Archive admission and reads verify the manifest; identical re-archive is idempotent, conflicting evidence for the same campaign identity is rejected, and corrupt entries fail closed without hiding other valid experiments.
+- Archive retention is bounded to the newest 50 verified experiments; unverifiable entries are retained for manual inspection rather than silently deleted.
+- Experiment archive/manifest generation is diagnostics-only: archive or sidecar failure is logged without weakening the verified support bundle or changing playback behavior.
 - Campaign progress is derived deterministically from persisted support-safe session evidence as `AwaitLegacy`, `AwaitLegacyX2`, `Completed` or `Invalidated`.
 - Completed or invalid campaigns stop accepting new tagged sessions, preventing later playback from changing an already established experiment pair.
-- Older unscoped diagnostics retain the Phase 45 strict-adjacency/30-minute policy for backward-compatible support only.
+- Older unscoped diagnostics retain the strict-adjacency/30-minute policy for backward-compatible support only.
 - The Legacy ↔ Legacy x2 runtime verdict is diagnostic evidence only. It cannot replace the protected perceptual/listening baseline or automatically promote another playback behavior.
 - Support Bundles persist privacy-safe quality and transport evidence, include an integrity manifest, and are verified before and after atomic export.
 - Runtime authorization is scoped to the exact Roblox process lifetime; process replacement/restart requires verification again rather than reusing stale trust.
 - Focus loss, pause/stop, failure, and cancellation retain emergency release-all/stuck-key prevention behavior.
 
-## Phase 48 verifiable completed experiment manifest
+## Phase 49 durable completed experiment archive
 
-- Support export derives the manifest only from an explicit campaign that still evaluates to `Completed`; incomplete, expired, invalidated or unscoped histories do not produce one.
-- The locked Step-1 and Step-2 session IDs must both still exist in recent structured diagnostics, match the campaign canonical/runtime identity and satisfy the existing proportional-speed/identical-seek controlled-counterpart policy.
-- The x2 comparison must resolve back to the exact locked Legacy session. A `NotComparable` result cannot be serialized as completed experiment evidence.
-- `transportEquivalenceSha256` fingerprints the ordered Legacy/x2 control histories used for the controlled-pair proof.
-- `evidenceSha256` covers campaign identity, timestamps, canonical fingerprint, source type, latency compensation, engine/input profile, both session IDs, verdict/deltas and the transport proof hash.
-- Verification additionally proves both opaque session IDs belong to the manifest campaign. Recomputing a content hash with session IDs from another campaign still fails closed.
-- The sidecar intentionally excludes full local sheet paths, source bytes, usernames, machine names, account identifiers and raw key-by-key timing samples.
-- The export contract is additive and backward compatible: the existing three-entry verified support ZIP is unchanged; when completed experiment evidence exists, `<support-zip>.legacy-ab.json` is written beside it.
-- If no completed campaign exists, any stale sidecar at the selected destination is removed rather than being accidentally reused for a later unrelated support export.
-- Sidecar creation/verification errors are diagnostic failures only and cannot block or mutate deterministic playback truth.
+- The Step-2 session persistence path attempts archive capture only after structured diagnostics and the latest support bundle are written and verified.
+- Archive capture reuses the Phase 48 completed-manifest builder, so incomplete, expired, invalidated, malformed, cross-campaign, or uncontrolled transport pairs cannot enter the archive.
+- Archive files use completion time plus campaign id as stable identity and are written with the same verified atomic writer as exported manifests.
+- Repeating capture for an identical campaign/evidence hash returns the same entry without creating duplicates.
+- If the same archive identity already exists with different verified evidence, persistence fails closed rather than overwriting prior experiment history.
+- Reading the archive verifies every returned manifest. A corrupt/unreadable entry is logged and skipped while remaining valid experiments stay available.
+- Retention keeps the newest 50 verified experiments. Unverifiable files are intentionally not garbage-collected because their chronology/identity cannot be trusted.
+- The durable archive keeps only privacy-safe experiment evidence and adds no sheet paths, source bytes, usernames, machine names, account identifiers, or raw input samples.
+- Archive failure is isolated from playback/session truth: a completed playback session remains completed even when diagnostics storage is unavailable.
 
 ## Current boundaries
 
 - AI is optional and is not required for playback/import/validation truth.
 - Runtime timing/input evidence does not measure whether two performances sound perceptually equivalent; the protected Legacy/Legacy x2 perceptual baseline remains a separate acceptance requirement.
 - Guided campaigns deliberately do not auto-run playback, change speed, seek, authorize Roblox, or inject input; client control remains explicit.
-- The completed experiment manifest is a support-export sidecar rather than a fourth entry inside the support ZIP, preserving the existing support-bundle schema/verifier contract.
+- The completed experiment manifest remains a support-export sidecar rather than a fourth entry inside the support ZIP, preserving the support-bundle verifier contract.
+- The archive is local diagnostics evidence; client-facing archive browsing/re-export UX can build on this verified store without reconstructing old experiments from current session history.
 - Sessions from older versions with no campaign provenance continue using the stricter legacy adjacency heuristic rather than being retroactively assigned to a campaign.
 - CI cannot observe a live Roblox client consuming synthetic input; explicit GUI input verification remains the client-side acceptance check for a real Roblox process.
 - MIDI and MusicXML import canonical note/timing data; audio transcription/OMR is not silently attempted when confidence cannot be established.
