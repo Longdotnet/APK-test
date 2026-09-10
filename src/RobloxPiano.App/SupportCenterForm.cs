@@ -42,19 +42,20 @@ internal sealed class SupportCenterForm : Form
     private void BuildLayout()
     {
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "When", DataPropertyName = nameof(SessionRow.When), Width = 145 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 115 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Quality", DataPropertyName = nameof(SessionRow.QualityVerdict), Width = 110 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "A/B", DataPropertyName = nameof(SessionRow.Comparison), Width = 105 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 105 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Quality", DataPropertyName = nameof(SessionRow.QualityVerdict), Width = 105 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "A/B", DataPropertyName = nameof(SessionRow.Comparison), Width = 100 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Legacy A/B", DataPropertyName = nameof(SessionRow.LegacyComparison), Width = 125 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SessionRow.Song), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 75 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 75 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "P95", DataPropertyName = nameof(SessionRow.P95Timing), Width = 75 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Roblox PID", DataPropertyName = nameof(SessionRow.RobloxPid), Width = 85 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 70 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 70 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "P95", DataPropertyName = nameof(SessionRow.P95Timing), Width = 70 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Roblox PID", DataPropertyName = nameof(SessionRow.RobloxPid), Width = 80 });
 
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent playback outcomes, deterministic quality verdicts and canonical-identity-controlled A/B evidence. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
             MaximumSize = new Size(1130, 0),
             Padding = new Padding(0, 0, 0, 4)
@@ -90,7 +91,7 @@ internal sealed class SupportCenterForm : Form
             _sessions.DataSource = _records.Select(record => new SessionRow(record, _records)).ToList();
             _status.Text = _records.Count == 0
                 ? "No playback sessions have been recorded yet. Play a song, then return here."
-                : $"Showing {_records.Count} recent session(s). A/B requires the same canonical performance, source type, playback engine, input profile, speed and input-latency settings. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
+                : $"Showing {_records.Count} recent session(s). Same-settings A/B requires identical canonical/runtime/settings history; Legacy ↔ Legacy x2 additionally requires TXT/VPS baseline starts at 1x/2x with proportionally equivalent speed transitions and identical seek targets. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
             ShowSelectedDetails();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
@@ -115,6 +116,7 @@ internal sealed class SupportCenterForm : Form
         var quality = record.Quality;
         var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(quality);
         var comparison = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(record, _records);
+        var legacyComparison = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(record, _records);
         var lines = new[]
         {
             $"Outcome: {record.ResultKind}",
@@ -122,12 +124,21 @@ internal sealed class SupportCenterForm : Form
             $"Quality summary: {assessment.Summary}",
             $"Client guidance: {assessment.Guidance}",
             "",
-            $"Controlled A/B verdict: {comparison.Verdict}",
+            $"Controlled same-settings A/B verdict: {comparison.Verdict}",
             $"A/B summary: {comparison.Summary}",
             $"A/B guidance: {comparison.Guidance}",
             $"Baseline session: {comparison.BaselineSessionId ?? "(none)"}",
             comparison.P95TimingDeltaMilliseconds is null ? string.Empty : $"P95 timing delta vs baseline: {comparison.P95TimingDeltaMilliseconds:+0.###;-0.###;0} ms",
             comparison.MaxInputCallDeltaMilliseconds is null ? string.Empty : $"Max input-call delta vs baseline: {comparison.MaxInputCallDeltaMilliseconds:+0.###;-0.###;0} ms",
+            "",
+            $"Protected baseline variant: {legacyComparison.CurrentVariant}",
+            $"Legacy ↔ Legacy x2 runtime verdict: {legacyComparison.Verdict}",
+            $"Legacy baseline summary: {legacyComparison.Summary}",
+            $"Legacy baseline guidance: {legacyComparison.Guidance}",
+            $"Counterpart variant: {(legacyComparison.CounterpartVariant?.ToString() ?? "(none)")}",
+            $"Counterpart session: {legacyComparison.CounterpartSessionId ?? "(none)"}",
+            legacyComparison.LegacyX2P95TimingDeltaMilliseconds is null ? string.Empty : $"Legacy x2 minus Legacy P95 timing: {legacyComparison.LegacyX2P95TimingDeltaMilliseconds:+0.###;-0.###;0} ms",
+            legacyComparison.LegacyX2MaxInputCallDeltaMilliseconds is null ? string.Empty : $"Legacy x2 minus Legacy max input-call: {legacyComparison.LegacyX2MaxInputCallDeltaMilliseconds:+0.###;-0.###;0} ms",
             "",
             $"Started (UTC): {record.StartedAtUtc:O}",
             $"Ended (UTC): {record.EndedAtUtc:O}",
@@ -137,7 +148,7 @@ internal sealed class SupportCenterForm : Form
             $"Playback engine: {record.PlaybackEngine}",
             $"Input profile: {record.InputProfile}",
             $"Final position: {TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)):mm\\:ss\\.fff}",
-            $"Preferred speed at session end: {record.PreferredSpeed:0.###}x",
+            $"Preferred speed at session start: {record.PreferredSpeed:0.###}x",
             $"Input latency compensation: {record.InputLatencyMs} ms",
             $"Roblox PID: {(record.RobloxProcessId?.ToString() ?? "(none)")}",
             $"Roblox process start ticks: {(record.RobloxProcessStartTimeUtcTicks?.ToString() ?? "(none)")}",
@@ -203,6 +214,7 @@ internal sealed class SupportCenterForm : Form
         string Outcome,
         string QualityVerdict,
         string Comparison,
+        string LegacyComparison,
         string Song,
         string SourceType,
         string Position,
@@ -216,6 +228,7 @@ internal sealed class SupportCenterForm : Form
                 record.ResultKind,
                 PlaybackSessionQualityAssessmentPolicy.Assess(record.Quality).Verdict.ToString(),
                 PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(record, sessions).Verdict.ToString(),
+                PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(record, sessions).Verdict.ToString(),
                 record.SourceFileName ?? "(unknown)",
                 record.SourceType,
                 TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)).ToString(@"mm\:ss"),
