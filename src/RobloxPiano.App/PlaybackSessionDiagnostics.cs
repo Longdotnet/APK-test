@@ -105,7 +105,7 @@ internal sealed record PlaybackSupportManifest(
 
 internal static class PlaybackSessionDiagnostics
 {
-    internal const string SchemaVersion = "3";
+    internal const string SchemaVersion = "4";
     internal const string SupportBundleSchemaVersion = "4";
     internal const string SupportManifestSchemaVersion = "1";
     internal const int MaxSupportSessions = 20;
@@ -191,7 +191,9 @@ internal static class PlaybackSessionDiagnostics
         var sourcePath = string.IsNullOrWhiteSpace(state.LastSheetPath)
             ? null
             : Path.GetFullPath(state.LastSheetPath);
-        var canonicalSourceFingerprint = TryCreateCanonicalSourceFingerprint(sourcePath);
+        var canonicalSourceFingerprint = !string.IsNullOrWhiteSpace(quality?.CanonicalTrackFingerprint)
+            ? quality.CanonicalTrackFingerprint
+            : TryCreateCanonicalSourceFingerprint(sourcePath);
 
         return new PlaybackSessionDiagnosticRecord(
             SchemaVersion,
@@ -395,7 +397,7 @@ internal static class PlaybackSessionDiagnostics
                 readme.WriteLine("Generated automatically from recent local playback-session diagnostics.");
                 readme.WriteLine("The bundle intentionally excludes full local sheet paths, raw logs and raw key-by-key timing samples.");
                 readme.WriteLine("Transport-aware aggregate quality metrics include timing error, input-call latency, focus interruption, seek interruption and unexpected playback loss counts.");
-                readme.WriteLine("Each new session includes a SHA-256 identity derived from the canonical PerformanceTrack plus explicit playback-engine/input-profile identifiers; source bytes and full paths are not included.");
+                readme.WriteLine("Each new live playback session carries a SHA-256 identity snapshotted from the canonical PerformanceTrack owned by the transport; later source-file edits cannot change that session identity. Source bytes and full paths are not included.");
                 readme.WriteLine("manifest.json contains the SHA-256 and byte length of support.json so support staff can detect a damaged or partially transferred bundle.");
                 readme.WriteLine("Environment fields are limited to OS/runtime/architecture facts needed to diagnose clean-machine compatibility; no username, machine name or account identifier is collected.");
                 readme.WriteLine($"Sessions included: {document.SessionCount}");
