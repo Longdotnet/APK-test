@@ -29,8 +29,8 @@ internal sealed class SupportCenterForm : Form
     {
         Text = "Roblox Piano Support Center";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(820, 540);
-        Size = new Size(980, 680);
+        MinimumSize = new Size(900, 580);
+        Size = new Size(1080, 720);
 
         BuildLayout();
         _refreshButton.Click += (_, _) => RefreshSessions();
@@ -42,23 +42,25 @@ internal sealed class SupportCenterForm : Form
     private void BuildLayout()
     {
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "When", DataPropertyName = nameof(SessionRow.When), Width = 145 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 130 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 125 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SessionRow.Song), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 90 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 85 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 80 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 80 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "P95", DataPropertyName = nameof(SessionRow.P95Timing), Width = 80 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Roblox PID", DataPropertyName = nameof(SessionRow.RobloxPid), Width = 90 });
 
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent local playback outcomes. Full sheet paths and raw logs are excluded from the support bundle.",
+            Text = "Recent local playback outcomes and transport-aware timing evidence. Full sheet paths, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
+            MaximumSize = new Size(1020, 0),
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         buttons.Controls.AddRange([_refreshButton, _saveBundleButton]);
 
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 320 };
+        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 330 };
         split.Panel1.Controls.Add(_sessions);
         split.Panel2.Controls.Add(_details);
 
@@ -108,22 +110,36 @@ internal sealed class SupportCenterForm : Form
         }
 
         var record = row.Record;
-        _details.Text = string.Join(Environment.NewLine,
-        [
+        var quality = record.Quality;
+        var lines = new[]
+        {
             $"Outcome: {record.ResultKind}",
             $"Started (UTC): {record.StartedAtUtc:O}",
             $"Ended (UTC): {record.EndedAtUtc:O}",
             $"Song: {record.SourceFileName ?? "(unknown)"}",
             $"Source type: {record.SourceType}",
             $"Final position: {TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)):mm\\:ss\\.fff}",
-            $"Preferred speed: {record.PreferredSpeed:0.###}x",
+            $"Preferred speed at session end: {record.PreferredSpeed:0.###}x",
             $"Input latency compensation: {record.InputLatencyMs} ms",
             $"Roblox PID: {(record.RobloxProcessId?.ToString() ?? "(none)")}",
             $"Roblox process start ticks: {(record.RobloxProcessStartTimeUtcTicks?.ToString() ?? "(none)")}",
             $"Authorization failure: {record.AuthorizationFailure ?? "(none)"}",
+            "",
+            "Playback quality:",
+            quality is null ? "  Not captured by this client version/session." : $"  Segments: {quality.SegmentCount} (seeks: {quality.SeekCount})",
+            quality is null ? string.Empty : $"  Dispatched edges: {quality.DispatchedEdgeCount}",
+            quality is null ? string.Empty : $"  Unexpected missing edges: {quality.UnexpectedMissingEdgeCount}",
+            quality is null ? string.Empty : $"  Interrupted edges (seek/stop/failure boundary): {quality.InterruptedEdgeCount}",
+            quality is null ? string.Empty : $"  Playback failures: {quality.FailureCount}",
+            quality is null ? string.Empty : $"  Focus pauses: {quality.FocusPauseCount} / {quality.FocusPausedMilliseconds:0.###} ms",
+            quality is null ? string.Empty : $"  Timing error mean abs / p95 / max: {quality.MeanAbsoluteTimingErrorMilliseconds:0.###} / {quality.P95AbsoluteTimingErrorMilliseconds:0.###} / {quality.MaxAbsoluteTimingErrorMilliseconds:0.###} ms",
+            quality is null ? string.Empty : $"  Input call mean / max: {quality.MeanInputCallMilliseconds:0.###} / {quality.MaxInputCallMilliseconds:0.###} ms",
+            quality is null ? string.Empty : $"  Release-all count: {quality.ReleaseAllCount}",
+            "",
             $"Exception type: {record.ExceptionType ?? "(none)"}",
             $"Exception: {record.ExceptionMessage ?? "(none)"}"
-        ]);
+        };
+        _details.Text = string.Join(Environment.NewLine, lines.Where(line => line.Length > 0));
     }
 
     private void SaveSupportBundle()
@@ -165,6 +181,7 @@ internal sealed class SupportCenterForm : Form
         string Song,
         string SourceType,
         string Position,
+        string P95Timing,
         string RobloxPid)
     {
         public SessionRow(PlaybackSupportSession record)
@@ -175,6 +192,7 @@ internal sealed class SupportCenterForm : Form
                 record.SourceFileName ?? "(unknown)",
                 record.SourceType,
                 TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)).ToString(@"mm\:ss"),
+                record.Quality is null ? "—" : $"{record.Quality.P95AbsoluteTimingErrorMilliseconds:0.#} ms",
                 record.RobloxProcessId?.ToString() ?? "—")
         {
         }

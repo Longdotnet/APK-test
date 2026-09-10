@@ -432,7 +432,8 @@ internal sealed class ClientMainForm : Form
         {
             sessionResult = await PlaybackSessionResultCapture.RunAsync(
                 () => task,
-                () => transport.Position).ConfigureAwait(true);
+                () => transport.Position,
+                () => transport.QualityReport).ConfigureAwait(true);
 
             if (sessionResult.Kind == PlaybackSessionResultKind.Completed)
             {
