@@ -90,12 +90,17 @@ internal static class PlaybackSessionProvenance
 
         try
         {
+            // Campaign provenance is encoded into the otherwise opaque session id only when
+            // the immutable session-start snapshot still matches the explicitly persisted
+            // campaign. This keeps support schema backward-compatible while allowing an
+            // exported Support Bundle to prove campaign membership without local side files.
+            var sessionId = PlaybackBaselineCampaignStore.CreateSessionIdForSnapshot(snapshot, startedAtUtc);
             var record = CreateRecord(
                 result,
                 snapshot,
                 startedAtUtc,
                 endedAtUtc,
-                Guid.NewGuid().ToString("N"),
+                sessionId,
                 quality);
 
             lock (Gate)
