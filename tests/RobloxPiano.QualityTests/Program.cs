@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using RobloxPiano.Core;
 
 namespace RobloxPiano.QualityTests;
@@ -13,7 +14,10 @@ internal static class Program
             ("focus pauses are measured and removed from scheduler error", TestFocusPauseAsync),
             ("observer failures never interrupt playback", TestObserverIsolationAsync),
             ("A/B comparator distinguishes better worse and incomparable", TestComparatorAsync),
-            ("dispatch-plan mismatch is surfaced as a quality failure", TestPlanMismatchAsync)
+            ("dispatch-plan mismatch is surfaced as a quality failure", TestPlanMismatchAsync),
+            ("reference WAV analysis is deterministic and measures pulse tempo", TestReferenceAudioAnalysisAsync),
+            ("reference WAV content identity changes when bytes change", TestReferenceAudioIdentityAsync),
+            ("reference WAV parser fails closed on malformed and unsupported audio", TestReferenceAudioValidationAsync)
         };
 
         var failures = new List<string>();
@@ -156,6 +160,79 @@ internal static class Program
         True(report.FailureCount > 0, "plan mismatch must be recorded");
     }
 
+    private static Task TestReferenceAudioAnalysisAsync()
+    {
+        var wav = CreatePulseWav(sampleRate: 8000, durationSeconds: 4, pulsePeriodMilliseconds: 500);
+        var first = ReferenceAudioAnalyzer.AnalyzeWav(wav);
+        var second = ReferenceAudioAnalyzer.AnalyzeWav(wav);
+
+        Equal(ReferenceAudioAnalysis.CurrentSchemaVersion, first.SchemaVersion, "reference-audio schema");
+        Equal(8000, first.SampleRate, "sample rate");
+        Equal(1, first.ChannelCount, "channel count");
+        Equal(16, first.BitsPerSample, "bit depth");
+        Equal(first.ContentSha256, second.ContentSha256, "content identity must be deterministic");
+        Equal(first.FeatureSha256, second.FeatureSha256, "feature identity must be deterministic");
+        True(Math.Abs(first.EstimatedTempoBpm - 120d) < 0.01d, "500 ms pulse train should estimate 120 BPM");
+        True(first.Onsets.Count >= 6, "pulse train should expose repeated deterministic onsets");
+        True(first.RmsLevel > 0d && first.PeakLevel > 0.7d, "levels should be measured from decoded PCM");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestReferenceAudioIdentityAsync()
+    {
+        var original = CreatePulseWav(8000, 2, 500);
+        var changed = (byte[])original.Clone();
+        changed[^2] ^= 0x01;
+
+        var originalAnalysis = ReferenceAudioAnalyzer.AnalyzeWav(original);
+        var changedAnalysis = ReferenceAudioAnalyzer.AnalyzeWav(changed);
+        True(!string.Equals(originalAnalysis.ContentSha256, changedAnalysis.ContentSha256, StringComparison.Ordinal),
+            "content SHA must bind exact reference bytes");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestReferenceAudioValidationAsync()
+    {
+        Throws<InvalidDataException>(() => ReferenceAudioAnalyzer.AnalyzeWav(new byte[44]), "malformed WAV must fail closed");
+
+        var wav = CreatePulseWav(8000, 1, 500);
+        wav[34] = 24;
+        wav[35] = 0;
+        Throws<NotSupportedException>(() => ReferenceAudioAnalyzer.AnalyzeWav(wav), "unsupported bit depth must fail closed");
+        return Task.CompletedTask;
+    }
+
+    private static byte[] CreatePulseWav(int sampleRate, int durationSeconds, int pulsePeriodMilliseconds)
+    {
+        var sampleCount = sampleRate * durationSeconds;
+        var pcmBytes = sampleCount * 2;
+        var wav = new byte[44 + pcmBytes];
+        "RIFF"u8.CopyTo(wav.AsSpan(0, 4));
+        BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4, 4), (uint)(36 + pcmBytes));
+        "WAVE"u8.CopyTo(wav.AsSpan(8, 4));
+        "fmt "u8.CopyTo(wav.AsSpan(12, 4));
+        BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16, 4), 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20, 2), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22, 2), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24, 4), (uint)sampleRate);
+        BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28, 4), (uint)(sampleRate * 2));
+        BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32, 2), 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34, 2), 16);
+        "data"u8.CopyTo(wav.AsSpan(36, 4));
+        BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40, 4), (uint)pcmBytes);
+
+        var periodSamples = sampleRate * pulsePeriodMilliseconds / 1000;
+        var pulseSamples = sampleRate * 20 / 1000;
+        for (var i = 0; i < sampleCount; i++)
+        {
+            var withinPulse = i % periodSamples < pulseSamples;
+            var value = withinPulse ? (short)26214 : (short)0;
+            BinaryPrimitives.WriteInt16LittleEndian(wav.AsSpan(44 + i * 2, 2), value);
+        }
+
+        return wav;
+    }
+
     private static PerformanceTrack CreateTrack()
     {
         return new PerformanceTrack(
@@ -209,6 +286,21 @@ internal static class Program
         {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private static void Throws<TException>(Action action, string message)
+        where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(message);
     }
 
     private sealed class FakeClock(TimeSpan overshoot) : IMonotonicClock
