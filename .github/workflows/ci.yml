@@ -38,6 +38,40 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           "Validated release version v$version"
 
+      - name: Validate versioned release notes contract
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $notesPath = 'docs/releases/current-release.md'
+          if (-not (Test-Path $notesPath)) {
+            throw "Versioned release notes source is required: $notesPath"
+          }
+
+          $raw = Get-Content $notesPath -Raw
+          $header = [regex]::Match($raw, '(?ms)\A---\r?\nschema:\s*1\r?\nversion:\s*(\d+\.\d+\.\d+)\r?\n---\r?\n')
+          if (-not $header.Success) {
+            throw 'Release notes must start with schema: 1 and strict SemVer version front matter.'
+          }
+
+          $declaredVersion = $header.Groups[1].Value
+          if ($declaredVersion -ne $env:EXPECTED_VERSION) {
+            throw "Release notes version '$declaredVersion' does not match VersionPrefix '$env:EXPECTED_VERSION'."
+          }
+
+          foreach ($token in @('{{VERSION}}', '{{COMMIT_SHA}}', '{{SHA256}}')) {
+            $count = ([regex]::Matches($raw, [regex]::Escape($token))).Count
+            if ($count -ne 1) {
+              throw "Release notes token '$token' must appear exactly once; found $count."
+            }
+          }
+
+          if ($raw -notmatch 'Sheet Library' -or $raw -notmatch 'Legacy x2' -or $raw -notmatch 'Support Bundle') {
+            throw 'Release notes must retain the current client entrypoint, regression baseline, and support contract.'
+          }
+
+          "Validated versioned release notes for v$declaredVersion"
+
       - name: Build deterministic core
         run: dotnet build src/RobloxPiano.Core/RobloxPiano.Core.csproj -c Release
 
