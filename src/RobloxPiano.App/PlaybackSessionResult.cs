@@ -110,23 +110,23 @@ internal static class PlaybackSessionPresentationPolicy
                 "Playback stopped safely.", null, null, MessageBoxIcon.None, false),
 
             PlaybackSessionResultKind.InputFailed => new PlaybackSessionPresentation(
-                "Windows input delivery failed. Diagnostics were saved automatically.",
+                "Windows input delivery failed. A privacy-safe support bundle was refreshed automatically.",
                 "Input delivery failed",
-                "Playback stopped safely because Windows could not emit one or more piano keys. Open Diagnostics for the exact key/input failure, then use Test Roblox Input before trying again.",
+                $"Playback stopped safely because Windows could not emit one or more piano keys. Use Test Roblox Input before trying again. If you need support, send this bundle:{Environment.NewLine}{PlaybackSessionDiagnostics.SupportBundlePath}",
                 MessageBoxIcon.Warning,
                 false),
 
             PlaybackSessionResultKind.SourceFailed => new PlaybackSessionPresentation(
                 "The selected song could not be loaded for playback.",
                 "Song could not be loaded",
-                result.Exception?.Message ?? "The selected song could not be loaded.",
+                $"{result.Exception?.Message ?? "The selected song could not be loaded."}{Environment.NewLine}{Environment.NewLine}If you need support, send:{Environment.NewLine}{PlaybackSessionDiagnostics.SupportBundlePath}",
                 MessageBoxIcon.Warning,
                 false),
 
             _ => new PlaybackSessionPresentation(
-                "Playback had a problem. Diagnostics were saved automatically.",
+                "Playback had a problem. A privacy-safe support bundle was refreshed automatically.",
                 "Playback stopped",
-                "Playback stopped safely. Try Play again. Technical details were saved automatically in Diagnostics.",
+                $"Playback stopped safely. Try Play again. If the problem repeats, send this bundle:{Environment.NewLine}{PlaybackSessionDiagnostics.SupportBundlePath}",
                 MessageBoxIcon.Warning,
                 false)
         };
