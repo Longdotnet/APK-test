@@ -20,8 +20,10 @@ internal sealed class SupportCenterForm : Form
         Multiline = true,
         ScrollBars = ScrollBars.Vertical
     };
-    private readonly Label _status = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
+    private readonly Label _status = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 6), MaximumSize = new Size(1130, 0) };
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
+    private readonly Button _startCampaignButton = new() { Text = "Start Legacy A/B Campaign", AutoSize = true };
+    private readonly Button _cancelCampaignButton = new() { Text = "Cancel Campaign", AutoSize = true };
     private readonly Button _saveBundleButton = new() { Text = "Save Support Bundle...", AutoSize = true };
     private IReadOnlyList<PlaybackSupportSession> _records = Array.Empty<PlaybackSupportSession>();
 
@@ -34,6 +36,8 @@ internal sealed class SupportCenterForm : Form
 
         BuildLayout();
         _refreshButton.Click += (_, _) => RefreshSessions();
+        _startCampaignButton.Click += (_, _) => StartBaselineCampaign();
+        _cancelCampaignButton.Click += (_, _) => CancelBaselineCampaign();
         _saveBundleButton.Click += (_, _) => SaveSupportBundle();
         _sessions.SelectionChanged += (_, _) => ShowSelectedDetails();
         Shown += (_, _) => RefreshSessions();
@@ -46,6 +50,7 @@ internal sealed class SupportCenterForm : Form
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Quality", DataPropertyName = nameof(SessionRow.QualityVerdict), Width = 105 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "A/B", DataPropertyName = nameof(SessionRow.Comparison), Width = 100 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Legacy A/B", DataPropertyName = nameof(SessionRow.LegacyComparison), Width = 125 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Campaign", DataPropertyName = nameof(SessionRow.Campaign), Width = 82 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SessionRow.Song), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 70 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 70 });
@@ -55,13 +60,13 @@ internal sealed class SupportCenterForm : Form
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent playback outcomes, deterministic quality verdicts, same-settings A/B, and controlled Legacy ↔ Legacy x2 runtime evidence. Start a campaign to bind the two Legacy runs to one explicit canonical experiment instead of relying on historical adjacency. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
             MaximumSize = new Size(1130, 0),
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_refreshButton, _saveBundleButton]);
+        buttons.Controls.AddRange([_refreshButton, _startCampaignButton, _cancelCampaignButton, _saveBundleButton]);
 
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 340 };
         split.Panel1.Controls.Add(_sessions);
@@ -89,9 +94,16 @@ internal sealed class SupportCenterForm : Form
             var document = PlaybackSessionDiagnostics.CreateSupportDocument(diagnostics, DateTimeOffset.UtcNow);
             _records = document.Sessions;
             _sessions.DataSource = _records.Select(record => new SessionRow(record, _records)).ToList();
+
+            var campaign = PlaybackBaselineCampaignStore.LoadActive(DateTimeOffset.UtcNow);
+            _cancelCampaignButton.Enabled = campaign is not null;
+            var campaignStatus = campaign is null
+                ? "No explicit Legacy A/B campaign is active."
+                : $"Active Legacy A/B campaign {ShortCampaignId(campaign.CampaignId)} until {campaign.ExpiresAtUtc.ToLocalTime():HH:mm}; run the unchanged TXT/VPS song at 1.00x then 2.00x.";
+
             _status.Text = _records.Count == 0
-                ? "No playback sessions have been recorded yet. Play a song, then return here."
-                : $"Showing {_records.Count} recent session(s). Same-settings A/B requires identical canonical/runtime/settings history; Legacy ↔ Legacy x2 additionally requires TXT/VPS baseline starts at 1x/2x with proportionally equivalent speed transitions and identical seek targets. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
+                ? $"No playback sessions have been recorded yet. Play a song, then return here. {campaignStatus}"
+                : $"Showing {_records.Count} recent session(s). {campaignStatus} Same-settings A/B requires identical canonical/runtime/settings history; explicit Legacy campaigns pair only sessions carrying the same campaign provenance and still require proportionally equivalent transport history. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
             ShowSelectedDetails();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
@@ -102,6 +114,27 @@ internal sealed class SupportCenterForm : Form
             _sessions.DataSource = null;
             _details.Clear();
         }
+    }
+
+    private void StartBaselineCampaign()
+    {
+        var result = PlaybackBaselineCampaignStore.StartFromCurrentClientState(DateTimeOffset.UtcNow);
+        RefreshSessions();
+        _status.Text = result.Success && result.Campaign is not null
+            ? $"{result.Summary} Campaign: {ShortCampaignId(result.Campaign.CampaignId)}. It expires at {result.Campaign.ExpiresAtUtc.ToLocalTime():HH:mm}."
+            : result.Summary;
+
+        if (!result.Success)
+        {
+            MessageBox.Show(this, result.Summary, "Legacy A/B campaign", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private void CancelBaselineCampaign()
+    {
+        PlaybackBaselineCampaignStore.Cancel();
+        RefreshSessions();
+        _status.Text = "Legacy A/B campaign cancelled. Existing recorded session evidence remains intact; future sessions are unscoped until a new campaign is started.";
     }
 
     private void ShowSelectedDetails()
@@ -117,6 +150,7 @@ internal sealed class SupportCenterForm : Form
         var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(quality);
         var comparison = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(record, _records);
         var legacyComparison = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(record, _records);
+        var campaignId = PlaybackBaselineCampaignStore.TryGetCampaignId(record.SessionId);
         var lines = new[]
         {
             $"Outcome: {record.ResultKind}",
@@ -131,6 +165,7 @@ internal sealed class SupportCenterForm : Form
             comparison.P95TimingDeltaMilliseconds is null ? string.Empty : $"P95 timing delta vs baseline: {comparison.P95TimingDeltaMilliseconds:+0.###;-0.###;0} ms",
             comparison.MaxInputCallDeltaMilliseconds is null ? string.Empty : $"Max input-call delta vs baseline: {comparison.MaxInputCallDeltaMilliseconds:+0.###;-0.###;0} ms",
             "",
+            $"Legacy reproduction campaign: {(campaignId is null ? "(unscoped historical session)" : campaignId)}",
             $"Protected baseline variant: {legacyComparison.CurrentVariant}",
             $"Legacy ↔ Legacy x2 runtime verdict: {legacyComparison.Verdict}",
             $"Legacy baseline summary: {legacyComparison.Summary}",
@@ -208,6 +243,9 @@ internal sealed class SupportCenterForm : Form
             ? "(not captured; older/unavailable session is not A/B comparable)"
             : fingerprint.Length <= 16 ? fingerprint : fingerprint[..16] + "…";
 
+    private static string ShortCampaignId(string campaignId)
+        => campaignId.Length <= 8 ? campaignId : campaignId[..8];
+
     private sealed record SessionRow(
         PlaybackSupportSession Record,
         string When,
@@ -215,6 +253,7 @@ internal sealed class SupportCenterForm : Form
         string QualityVerdict,
         string Comparison,
         string LegacyComparison,
+        string Campaign,
         string Song,
         string SourceType,
         string Position,
@@ -229,6 +268,7 @@ internal sealed class SupportCenterForm : Form
                 PlaybackSessionQualityAssessmentPolicy.Assess(record.Quality).Verdict.ToString(),
                 PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(record, sessions).Verdict.ToString(),
                 PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(record, sessions).Verdict.ToString(),
+                PlaybackBaselineCampaignStore.TryGetCampaignId(record.SessionId) is { } campaignId ? ShortCampaignId(campaignId) : "—",
                 record.SourceFileName ?? "(unknown)",
                 record.SourceType,
                 TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)).ToString(@"mm\:ss"),

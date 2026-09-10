@@ -8,6 +8,8 @@ internal static class PlaybackLegacyBaselineComparisonRegression
 {
     private const string FingerprintA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string FingerprintB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    private const string CampaignA = "11111111111111111111111111111111";
+    private const string CampaignB = "22222222222222222222222222222222";
 
     [ModuleInitializer]
     internal static void VerifyLegacyBaselineComparisonPolicy()
@@ -24,7 +26,11 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         TestNewerSameVariantBlocksHistoricalCherryPick();
         TestNewerMismatchedTransportBlocksHistoricalCherryPick();
         TestDifferentSongBaselineBreaksReproductionAdjacency();
-        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (12 cases)");
+        TestExplicitCampaignSurvivesUnrelatedInterveningSession();
+        TestDifferentExplicitCampaignNeverPairs();
+        TestExplicitCampaignDoesNotFallBackToUnscopedHistory();
+        TestCampaignIdParsingFailsClosed();
+        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (16 cases)");
     }
 
     private static void TestClassifiesLegacyVariants()
@@ -163,6 +169,46 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         True(!assessment.HasCounterpart, "comparator must not skip a different-song baseline to cherry-pick older matching evidence");
     }
 
+    private static void TestExplicitCampaignSurvivesUnrelatedInterveningSession()
+    {
+        var legacy = Session(CampaignSessionId(CampaignA, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 10, 1d, Quality(1d));
+        var unrelated = Session("unscoped-other-song", 20, 1d, Quality(1d), fingerprint: FingerprintB);
+        var x2 = Session(CampaignSessionId(CampaignA, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 30, 2d, Quality(2d));
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(x2, [x2, unrelated, legacy]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.StableHealthy, assessment.Verdict, "explicit campaign provenance must survive unrelated untagged sessions");
+        Equal(legacy.SessionId, assessment.CounterpartSessionId!, "explicit campaign counterpart");
+        Contains(assessment.Summary, CampaignA[..8], "campaign provenance must be visible in runtime evidence");
+    }
+
+    private static void TestDifferentExplicitCampaignNeverPairs()
+    {
+        var legacyA = Session(CampaignSessionId(CampaignA, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 10, 1d, Quality(1d));
+        var x2B = Session(CampaignSessionId(CampaignB, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 20, 2d, Quality(2d));
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(x2B, [x2B, legacyA]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "different explicit campaigns must never pair");
+        True(!assessment.HasCounterpart, "different campaign must not be attached as counterpart");
+        Contains(assessment.Guidance, "will not fall back", "explicit campaign must reject historical fallback");
+    }
+
+    private static void TestExplicitCampaignDoesNotFallBackToUnscopedHistory()
+    {
+        var oldLegacy = Session("legacy-unscoped", 10, 1d, Quality(1d));
+        var currentX2 = Session(CampaignSessionId(CampaignA, "cccccccccccccccccccccccccccccccc"), 20, 2d, Quality(2d));
+        var assessment = PlaybackLegacyBaselineComparisonPolicy.CompareWithMostRecentCounterpart(currentX2, [currentX2, oldLegacy]);
+
+        Equal(PlaybackLegacyBaselineComparisonVerdict.NotComparable, assessment.Verdict, "explicit campaign must not fall back to compatible unscoped history");
+        True(!assessment.HasCounterpart, "unscoped history must never satisfy an explicit campaign");
+    }
+
+    private static void TestCampaignIdParsingFailsClosed()
+    {
+        Equal(CampaignA, PlaybackBaselineCampaignStore.TryGetCampaignId(CampaignSessionId(CampaignA, "dddddddddddddddddddddddddddddddd"))!, "valid campaign id parse");
+        True(PlaybackBaselineCampaignStore.TryGetCampaignId("baseline-not-a-guid-session") is null, "malformed campaign prefix must fail closed");
+        True(PlaybackBaselineCampaignStore.TryGetCampaignId("ordinary-session") is null, "ordinary session id must remain unscoped");
+    }
+
     private static PlaybackSupportSession Session(
         string id,
         int endedSecond,
@@ -216,6 +262,9 @@ internal static class PlaybackLegacyBaselineComparisonRegression
 
     private static PlaybackTransportControlEvent Start(double speed)
         => new(0, PlaybackTransportControlKind.SessionStarted, 0d, speed);
+
+    private static string CampaignSessionId(string campaignId, string sessionSuffix)
+        => $"{PlaybackBaselineCampaignStore.SessionIdPrefix}{campaignId}-{sessionSuffix}";
 
     private static void Contains(string actual, string expected, string message)
     {

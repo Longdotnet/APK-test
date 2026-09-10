@@ -32,9 +32,9 @@ internal sealed record PlaybackLegacyBaselineComparisonAssessment(
 
 /// <summary>
 /// Controlled runtime-quality comparison for the preserved Legacy and Legacy x2 playback
-/// configurations. This is deliberately separate from same-settings A/B and from perceptual
-/// promotion: it can prove whether the two baseline configurations were executed under
-/// equivalent canonical/runtime conditions, but it cannot decide that one sounds better.
+/// configurations. Explicit reproduction campaigns are authoritative when present; older
+/// unscoped sessions retain the strict-adjacency heuristic only for backward-compatible
+/// diagnostics. Runtime evidence never owns perceptual promotion truth.
 /// </summary>
 internal static class PlaybackLegacyBaselineComparisonPolicy
 {
@@ -96,47 +96,76 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
         var counterpartVariant = currentVariant == PlaybackLegacyBaselineVariant.Legacy
             ? PlaybackLegacyBaselineVariant.LegacyX2
             : PlaybackLegacyBaselineVariant.Legacy;
+        var campaignId = PlaybackBaselineCampaignStore.TryGetCampaignId(current.SessionId);
 
-        // A protected reproduction pair must be adjacent in baseline-session history, not merely
-        // adjacent after filtering by song/runtime identity. Otherwise a newer baseline run for a
-        // different song can be silently skipped and an older session can be cherry-picked into a
-        // false experiment. The newest prior protected baseline globally is therefore the only
-        // candidate; identity, variant and transport equivalence are validated after selection.
-        var priorBaseline = sessions
-            .Where(candidate => !ReferenceEquals(candidate, current))
-            .Where(candidate => candidate.EndedAtUtc < current.EndedAtUtc)
-            .Where(candidate => current.EndedAtUtc - candidate.EndedAtUtc <= MaxCounterpartAge)
-            .Where(candidate => Classify(candidate) != PlaybackLegacyBaselineVariant.None)
-            .OrderByDescending(candidate => candidate.EndedAtUtc)
-            .ThenByDescending(candidate => candidate.SessionId, StringComparer.Ordinal)
-            .FirstOrDefault();
-
-        if (priorBaseline is null)
+        PlaybackSupportSession? priorBaseline;
+        if (campaignId is not null)
         {
-            return NotComparable(currentVariant,
-                $"No recent protected baseline run exists within {MaxCounterpartAge.TotalMinutes:0} minutes.",
-                "Run the Legacy 1x and Legacy x2 2x reproduction back-to-back. Keep the same song, input-latency compensation, playback engine and input profile; old historical sessions are intentionally not reused as experimental evidence.");
+            // Explicit provenance is stronger than temporal adjacency. Only sessions tagged by
+            // the same deliberately started campaign may participate; unrelated sessions between
+            // the pair are irrelevant and historical sessions can never be cherry-picked in.
+            priorBaseline = sessions
+                .Where(candidate => !ReferenceEquals(candidate, current))
+                .Where(candidate => candidate.EndedAtUtc < current.EndedAtUtc)
+                .Where(candidate => string.Equals(
+                    PlaybackBaselineCampaignStore.TryGetCampaignId(candidate.SessionId),
+                    campaignId,
+                    StringComparison.Ordinal))
+                .OrderByDescending(candidate => candidate.EndedAtUtc)
+                .ThenByDescending(candidate => candidate.SessionId, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (priorBaseline is null)
+            {
+                return NotComparable(currentVariant,
+                    "This explicit Legacy reproduction campaign does not yet contain a prior baseline run.",
+                    $"Continue campaign {ShortCampaignId(campaignId)} by running {counterpartVariant} next on the unchanged song/settings. The comparator will not fall back to unrelated historical evidence.");
+            }
+        }
+        else
+        {
+            // Backward compatibility for sessions recorded before explicit campaign provenance:
+            // the immediately previous protected baseline globally remains the sole candidate.
+            priorBaseline = sessions
+                .Where(candidate => !ReferenceEquals(candidate, current))
+                .Where(candidate => candidate.EndedAtUtc < current.EndedAtUtc)
+                .Where(candidate => current.EndedAtUtc - candidate.EndedAtUtc <= MaxCounterpartAge)
+                .Where(candidate => Classify(candidate) != PlaybackLegacyBaselineVariant.None)
+                .OrderByDescending(candidate => candidate.EndedAtUtc)
+                .ThenByDescending(candidate => candidate.SessionId, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (priorBaseline is null)
+            {
+                return NotComparable(currentVariant,
+                    $"No recent protected baseline run exists within {MaxCounterpartAge.TotalMinutes:0} minutes.",
+                    "Start an explicit Legacy A/B campaign in Support Center, then run Legacy 1x and Legacy x2 2x on the same unchanged TXT/VPS song. Old historical sessions are intentionally not reused as experimental evidence.");
+            }
         }
 
         if (!HasSameCampaignIdentity(current, priorBaseline))
         {
             return NotComparable(currentVariant,
-                "The immediately previous protected baseline belongs to a different canonical performance/runtime identity.",
-                "Repeat Legacy 1x then Legacy x2 2x back-to-back on the same unchanged TXT/VPS song. Baseline runs for another song or runtime identity intentionally break the reproduction sequence instead of being skipped.");
+                campaignId is null
+                    ? "The immediately previous protected baseline belongs to a different canonical performance/runtime identity."
+                    : "A session tagged with this campaign no longer matches the campaign's canonical/runtime identity.",
+                campaignId is null
+                    ? "Repeat Legacy 1x then Legacy x2 2x back-to-back on the same unchanged TXT/VPS song, or start an explicit campaign in Support Center."
+                    : "Cancel this campaign and start a new one from the intended unchanged TXT/VPS song/settings. Campaign identity mismatches fail closed.");
         }
 
         if (Classify(priorBaseline) != counterpartVariant)
         {
             return NotComparable(currentVariant,
-                $"The immediately previous protected baseline is another {currentVariant} run, not {counterpartVariant}.",
-                $"Run {counterpartVariant} next so the two adjacent baseline sessions form one bounded reproduction pair. The comparator will not skip over the newer run to reuse older evidence.");
+                $"The latest session in this {(campaignId is null ? "reproduction sequence" : "explicit campaign")} is another {currentVariant} run, not {counterpartVariant}.",
+                $"Run {counterpartVariant} next. The comparator will not skip over the newer run to reuse older evidence.");
         }
 
         if (!AreControlledCounterparts(current, priorBaseline))
         {
             return NotComparable(currentVariant,
-                $"The immediately previous {counterpartVariant} run changed controlled transport conditions and cannot be paired.",
-                "Repeat the pair back-to-back with identical seek targets and exactly proportional 2x speed transitions. The comparator fails closed instead of falling back to an older historical match.");
+                $"The latest {counterpartVariant} run changed controlled transport conditions and cannot be paired.",
+                "Repeat the pair with identical seek targets and exactly proportional 2x speed transitions. The comparator fails closed instead of falling back to older evidence.");
         }
 
         var counterpart = priorBaseline;
@@ -176,7 +205,9 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
                 counterpart.SessionId,
                 timingDelta,
                 inputDelta,
-                "Both controlled Legacy baselines are runtime-healthy.",
+                campaignId is null
+                    ? "Both controlled Legacy baselines are runtime-healthy."
+                    : $"Explicit campaign {ShortCampaignId(campaignId)} is runtime-healthy across both Legacy baselines.",
                 "Runtime evidence is stable across Legacy and Legacy x2. Perceptual quality still requires the protected listening/reference baseline before any playback behavior is promoted.");
         }
 
@@ -189,7 +220,7 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
                 counterpart.SessionId,
                 timingDelta,
                 inputDelta,
-                $"Legacy x2 is runtime-healthier than Legacy ({legacyAssessment.Verdict} -> Healthy).",
+                "Legacy x2 is runtime-healthier than Legacy.",
                 "Repeat the controlled pair before treating the runtime improvement as durable. This does not override perceptual Legacy x2 regression protection.");
         }
 
@@ -325,6 +356,9 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
         => quality.FocusPauseCount > 0
            || quality.UnexpectedMissingEdgeCount > 0
            || quality.FailureCount > 0;
+
+    private static string ShortCampaignId(string campaignId)
+        => campaignId.Length <= 8 ? campaignId : campaignId[..8];
 
     private static PlaybackLegacyBaselineComparisonAssessment NotComparable(
         PlaybackLegacyBaselineVariant currentVariant,
