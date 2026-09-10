@@ -41,6 +41,25 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "Release version: $tag"
 
+      - name: Revalidate versioned release notes contract
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $notesPath = 'docs/releases/current-release.md'
+          if (-not (Test-Path $notesPath)) { throw "Versioned release notes source is required: $notesPath" }
+          $raw = Get-Content $notesPath -Raw
+          $header = [regex]::Match($raw, '(?ms)\A---\r?\nschema:\s*1\r?\nversion:\s*(\d+\.\d+\.\d+)\r?\n---\r?\n')
+          if (-not $header.Success) { throw 'Release notes front matter is invalid.' }
+          if ($header.Groups[1].Value -ne $env:EXPECTED_VERSION) {
+            throw "Release notes version '$($header.Groups[1].Value)' does not match '$env:EXPECTED_VERSION'."
+          }
+          foreach ($token in @('{{VERSION}}', '{{COMMIT_SHA}}', '{{SHA256}}')) {
+            if (([regex]::Matches($raw, [regex]::Escape($token))).Count -ne 1) {
+              throw "Release notes token '$token' must appear exactly once."
+            }
+          }
+
       - name: Guard immutable release identity
         id: guard
         shell: pwsh
@@ -128,47 +147,31 @@ jobs:
           & $exe --input-abi-smoke
           if ($LASTEXITCODE -ne 0) { throw "Published executable Windows input compatibility smoke test failed" }
 
-      - name: Generate checksum and release evidence
+      - name: Generate checksum and render release notes
         if: steps.guard.outputs.publish == 'true'
         id: evidence
         shell: pwsh
         env:
           SHA: ${{ github.event.workflow_run.head_sha }}
-          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           $hash = (Get-FileHash artifacts/release/RobloxPiano.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  RobloxPiano.exe" | Set-Content -NoNewline artifacts/release/RobloxPiano.exe.sha256
           "sha256=$hash" >> $env:GITHUB_OUTPUT
-          @"
-          Roblox Piano $env:TAG
 
-          Validated commit: $env:SHA
-          Distribution: self-contained Windows x64 single executable
-          Client dependencies: none required manually
-          SHA256: $hash
-
-          Client flow:
-          1. Download RobloxPiano.exe and double-click it; the Sheet Library remains the normal starting point.
-          2. Open Roblox, enter the target piano game, and select a playable Library song.
-          3. The first Play attempt for a Roblox process instance requires **Verify Input & Play**.
-          4. A successful observation confirms that exact Roblox process lifetime: PID plus process start identity.
-          5. Subsequent songs can Play directly only while that same process instance remains active.
-          6. If Roblox closes/restarts or verification becomes stale during playback, input fails closed, the player explains the exact recovery, then returns to the Sheet Library for a fresh **Verify Input & Play**.
-
-          Production capability and reliability in this release:
-          - Runtime authorization failures no longer collapse into the generic playback-error path.
-          - VerificationRequired, ProcessEnded and ProcessReplaced each have deterministic client-facing recovery guidance.
-          - Authorization failure still travels through playback cleanup/release-all before the player closes and returns to the Library.
-          - Library refresh after the modal player closes re-evaluates the current Roblox process lifetime, so stale trust becomes Verify Input & Play or Open Roblox to Play automatically.
-          - A dedicated desktop authorization recovery regression harness is required by both production-gate and production-release.
-          - Existing process-lifetime authorization, list-first Library UX, GUI input diagnostics, focus safety, release-all, multi-channel MIDI sustain, MIDI range auto-fit, MusicXML normalization, Legacy/Legacy x2, timing, pause/seek/cancellation and held-state safety remain unchanged.
-
-          Notes:
-          - Input confirmation remains intentionally in-memory. Closing Roblox or restarting the client requires verification again rather than persisting stale trust.
-          - CI validates deterministic recovery policy and Windows/process/input contracts but cannot observe a live Roblox client consuming synthetic input; the GUI check still requires explicit human observation.
-          - This release imports MIDI note data. It does not yet transcribe MP3/WAV/FLAC audio into notes or MIDI.
-          - The executable is currently unsigned, so Windows SmartScreen may show a reputation warning.
-          "@ | Set-Content artifacts/release/RELEASE_NOTES.md
+          $raw = Get-Content docs/releases/current-release.md -Raw
+          $header = [regex]::Match($raw, '(?ms)\A---\r?\nschema:\s*1\r?\nversion:\s*(\d+\.\d+\.\d+)\r?\n---\r?\n')
+          if (-not $header.Success -or $header.Groups[1].Value -ne $env:VERSION) {
+            throw 'Release notes version contract changed after validation.'
+          }
+          $rendered = $raw.Substring($header.Length)
+          $rendered = $rendered.Replace('{{VERSION}}', $env:VERSION)
+          $rendered = $rendered.Replace('{{COMMIT_SHA}}', $env:SHA)
+          $rendered = $rendered.Replace('{{SHA256}}', $hash)
+          if ($rendered -match '\{\{[A-Z0-9_]+\}\}') {
+            throw 'Rendered release notes contain unresolved placeholders.'
+          }
+          $rendered | Set-Content artifacts/release/RELEASE_NOTES.md -Encoding utf8
 
       - name: Create GitHub Release
         if: steps.guard.outputs.publish == 'true'
@@ -188,14 +191,31 @@ jobs:
             --notes-file artifacts/release/RELEASE_NOTES.md
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release creation failed" }
 
-      - name: Verify release is client-downloadable
+      - name: Verify release metadata and client download
         if: steps.guard.outputs.publish == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
           EXPECTED_HASH: ${{ steps.evidence.outputs.sha256 }}
         run: |
+          $release = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json tagName,targetCommitish,name,body,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release read-back failed" }
+          if ($release.tagName -ne $env:TAG -or $release.targetCommitish -ne $env:SHA) {
+            throw "Release identity mismatch after publish."
+          }
+          if ($release.name -ne "Roblox Piano v$env:VERSION") { throw "Release title mismatch after publish." }
+          if ($release.body -notmatch [regex]::Escape($env:SHA) -or $release.body -notmatch [regex]::Escape($env:EXPECTED_HASH)) {
+            throw "Release body does not contain exact validated commit/checksum evidence."
+          }
+          if ($release.body -match '\{\{[A-Z0-9_]+\}\}') { throw "Release body contains unresolved placeholders." }
+          $assetNames = @($release.assets | ForEach-Object name)
+          foreach ($required in @('RobloxPiano.exe', 'RobloxPiano.exe.sha256')) {
+            if ($required -notin $assetNames) { throw "Required release asset missing: $required" }
+          }
+
           New-Item -ItemType Directory -Force artifacts/download-check | Out-Null
           gh release download $env:TAG `
             --repo $env:GITHUB_REPOSITORY `
