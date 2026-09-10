@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.38.0
+version: 0.39.0
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -25,21 +25,23 @@ SHA256: `{{SHA256}}`
 - Runtime focus/input authorization, emergency release-all, held-key/pedal ownership, deterministic transport evidence and verified experiment history remain unchanged.
 - AI remains optional and is not required for playback/import/validation truth.
 
-## Phase 52 deterministic reference-to-timeline alignment
+## Phase 53 verified reference-audio experiment evidence
 
-- Adds dependency-free `ReferenceAudioTimelineAligner` to the deterministic Core evidence layer.
-- Aligns analyzed reference-audio onsets with canonical performance event starts at an explicit playback speed without mutating the track.
-- Uses a bounded ±2000 ms global-offset search, fixed 10 ms grid and monotonic one-to-one onset matching with a 120 ms tolerance.
-- Reports match coverage, recovered recording offset, mean/P95 residual timing error and candidate/reference tempo ratio.
-- Binds evidence to exact reference content hash, reference feature hash, canonical performance fingerprint and playback speed, then emits a separate SHA-256 over the normalized alignment evidence.
-- Verification fails closed on malformed identity/count/range fields, inconsistent coverage or tampered metrics/evidence hash.
-- Regression coverage proves deterministic evidence, known-offset recovery without timeline mutation, speed-sensitive comparison and tamper rejection.
-- ADR 0057 fixes the evidence/matching boundary and requires a schema boundary for future semantic changes.
+- Adds a deterministic evidence contract that binds one already-verified Legacy A/B experiment to one exact analyzed WAV reference.
+- Re-verifies normalized reference features before evidence creation so modified tempo/onset/level records fail closed.
+- Requires the completed experiment canonical fingerprint to match the exact canonical `PerformanceTrack` being aligned.
+- Produces separate protected `Legacy 1.00x` and `Legacy x2 2.00x` alignment records against the same reference content/feature identities.
+- Reports x2-minus-Legacy deltas for onset coverage, P95 residual timing error and distance from the reference tempo ratio.
+- Hashes the completed experiment evidence identity, exact reference identities, both nested alignment evidence hashes and derived deltas into a separate evidence SHA-256.
+- Verification rejects nested alignment tampering, reference/canonical identity mixing, non-1x/2x protected speeds and inconsistent derived deltas.
+- The contract deliberately exposes measurements only; it contains no winner/preferred-engine field and cannot promote Legacy x2.
+- Regression coverage includes valid binding, delta tampering, wrong canonical track and modified reference-feature rejection.
+- ADR 0058 defines the provenance and no-auto-promotion boundary.
 
 ## Current boundaries
 
-- Reference alignment is deterministic diagnostics evidence, not a perceptual-quality verdict and not yet an automatic Legacy-vs-Legacy-x2 promotion signal.
-- Reference evidence is not yet embedded into the durable Legacy A/B experiment manifest; that remains the next integration boundary.
+- Reference-audio experiment evidence is deterministic diagnostics evidence, not a perceptual-quality verdict and not an automatic engine-selection signal.
+- The initial contract is programmatic evidence; client selection/export UX for attaching a WAV to an archived experiment remains a later UI boundary.
 - Initial audio-format support remains intentionally narrow: MP3/AAC/float WAV/transcoding are unsupported rather than silently guessed.
 - Reference analysis/alignment performs no network calls, AI calls, playback mutation, Roblox authorization or keyboard dispatch.
 - CI cannot observe a live Roblox client consuming synthetic input; explicit GUI input verification remains the client-side acceptance check for a real Roblox process.
