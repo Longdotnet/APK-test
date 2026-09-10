@@ -41,9 +41,9 @@ internal static class PlaybackReferenceAudioExperimentEvidenceStore
             throw new InvalidDataException($"Legacy A/B experiment manifest must verify before reference evidence can be created. {experimentError}");
         }
 
-        if (!ReferenceAudioAnalyzer.Verify(reference))
+        if (!ReferenceAudioEvidenceVerification.VerifyFeatures(reference))
         {
-            throw new InvalidDataException("Reference-audio analysis must verify before experiment evidence can be created.");
+            throw new InvalidDataException("Reference-audio normalized feature evidence must verify before experiment evidence can be created.");
         }
 
         var canonicalSha = PerformanceTrackFingerprint.ComputeSha256(canonicalTrack);
