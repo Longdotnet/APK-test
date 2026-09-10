@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.32.0
+version: 0.33.0
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,7 +15,7 @@ SHA256: `{{SHA256}}`
 2. Open Roblox, enter the target piano game, select or import a playable song, and use **Verify Input & Play** when the current Roblox process has not yet been confirmed.
 3. Keep Roblox focused while playback is active. Losing target focus fails closed for input and transport cleanup releases held keys/pedal state.
 4. Use Play/Pause/Stop/Seek and speed controls from the production desktop client; deterministic transport state remains authoritative.
-5. When investigating Legacy x2 quality, open Support Center, start **Legacy A/B Campaign**, run the unchanged TXT/VPS song at 1.00x and then 2.00x, and inspect the controlled runtime verdict.
+5. When investigating Legacy x2 quality, open Support Center and start **Legacy A/B Campaign**. The guided campaign shows the exact next action: Step 1 is Legacy 1.00x; after that evidence is recorded, Step 2 is Legacy x2 2.00x on the same unchanged TXT/VPS performance and controlled transport history.
 6. Save the verified Support Bundle when troubleshooting or sharing diagnostic evidence.
 
 ## Production capability and reliability in this release
@@ -28,31 +28,36 @@ SHA256: `{{SHA256}}`
 - Playback-session diagnostics snapshot canonical track identity and immutable runtime/session-start provenance so later source-file edits or preference changes cannot rewrite evidence for the session that actually ran.
 - Controlled same-settings A/B comparison fails closed unless canonical performance identity, runtime/input identity, start settings, latency compensation, and ordered transport history are equivalent.
 - Support Center exposes a controlled Legacy ↔ Legacy x2 runtime comparison for TXT/VPS baseline runs: 1.0x and 2.0x must use the same canonical performance/runtime/input identity, the same latency compensation, identical seek positions, and speed transitions proportional by exactly 2x.
-- Support Center can now create an explicit persisted Legacy reproduction campaign. Matching sessions carry the campaign provenance through their opaque session IDs into the verified Support Bundle.
-- When explicit campaign provenance exists, comparison is restricted to that exact campaign and never falls back to unrelated or unscoped historical sessions.
+- Explicit Legacy reproduction campaigns carry privacy-safe campaign provenance through opaque session IDs into the verified Support Bundle and never fall back to unrelated historical sessions.
+- Guided campaign admission now enforces the experiment order: exactly one Legacy 1.00x session first, then one Legacy x2 2.00x session. Wrong-order, duplicate or changed-condition playback remains normal but is excluded from new campaign evidence.
+- Campaign progress is derived deterministically from persisted support-safe session evidence as `AwaitLegacy`, `AwaitLegacyX2`, `Completed` or `Invalidated`.
+- Completed or invalid campaigns stop accepting new tagged sessions, preventing later playback from changing an already established experiment pair.
 - Older unscoped diagnostics retain the Phase 45 strict-adjacency/30-minute policy for backward-compatible support only.
 - The Legacy ↔ Legacy x2 runtime verdict is diagnostic evidence only. It cannot replace the protected perceptual/listening baseline or automatically promote another playback behavior.
 - Support Bundles persist privacy-safe quality and transport evidence, include an integrity manifest, and are verified before and after atomic export.
 - Runtime authorization is scoped to the exact Roblox process lifetime; process replacement/restart requires verification again rather than reusing stale trust.
 - Focus loss, pause/stop, failure, and cancellation retain emergency release-all/stuck-key prevention behavior.
 
-## Phase 46 explicit Legacy reproduction campaign
+## Phase 47 guided Legacy A/B campaign state machine
 
-- **Start Legacy A/B Campaign** snapshots a random campaign ID, canonical performance fingerprint, TXT/VPS source type, engine identity, Windows input profile and input-latency compensation for 30 minutes.
-- The campaign is observability-only. Starting or cancelling it never starts playback, changes speed, seeks, authorizes Roblox, or injects input.
-- A session receives campaign provenance only if its immutable session-start state still matches the campaign and its protected baseline start speed is exactly 1.00x or 2.00x.
-- Changing the file/canonical track, source type, engine/input identity, latency setting, or starting at another speed fails closed: playback remains normal but the session is not admitted to the experiment.
-- Campaign membership is carried in the existing opaque session ID (`baseline-{campaign}-{session}`), so exported Support Bundles retain experiment provenance without exposing full local paths or source bytes.
-- For a tagged session, only the newest prior session with the same campaign ID can be its counterpart. Different campaign IDs and unscoped historical sessions are never eligible fallbacks.
-- Unrelated untagged playback between the two campaign runs no longer destroys a deliberate experiment, because explicit provenance is stronger than temporal adjacency.
-- Existing canonical/runtime identity, proportional 2x speed history, identical seek history, focus/interference and perceptual-promotion gates remain mandatory.
+- **Start Legacy A/B Campaign** snapshots a random campaign ID, canonical TXT/VPS performance fingerprint, engine identity, Windows input profile and input-latency compensation for 30 minutes.
+- A new campaign begins in `AwaitLegacy`; only an otherwise matching Legacy 1.00x session can be admitted as Step 1.
+- After valid Step 1 evidence is persisted, the campaign transitions to `AwaitLegacyX2`; only an otherwise matching Legacy x2 2.00x session can be admitted as Step 2.
+- A valid ordered pair transitions to `Completed`. Completed campaigns no longer tag later playback, so additional sessions cannot silently replace or contaminate the pair.
+- Persisted campaign evidence that violates canonical/runtime identity, order, protected variant, transport equivalence, campaign lifetime, or contains ambiguous extra tagged sessions transitions to `Invalidated` and fails closed for further membership.
+- Campaign membership remains diagnostics-only. If session history cannot be read or campaign progress cannot be proven, playback continues with an ordinary unscoped session ID; diagnostics problems do not block scheduler/input behavior.
+- Support Center displays the campaign state plus the exact next action and disables starting a replacement campaign while a valid two-step reproduction is still in progress. Cancel remains available.
+- Step 2 must retain the existing controlled transport contract: identical seek targets and speed transitions scaled exactly 2x relative to Step 1.
+- Starting Legacy x2 before Legacy, repeating Legacy when Step 2 is expected, changing the campaign song/runtime/latency conditions, or producing mismatched transport history cannot be repaired by cherry-picking older evidence. Start a fresh campaign instead.
+- Existing opaque campaign/session provenance remains privacy-safe; no full local path, source bytes, raw key stream, username or machine identity is introduced by this state machine.
 
 ## Current boundaries
 
 - AI is optional and is not required for playback/import/validation truth.
 - Runtime timing/input evidence does not measure whether two performances sound perceptually equivalent; the protected Legacy/Legacy x2 perceptual baseline remains a separate acceptance requirement.
-- The campaign guides the two runs but deliberately does not auto-run playback or force speed changes; client control remains explicit.
-- Sessions from older versions have no campaign provenance and therefore use the stricter legacy adjacency heuristic rather than being retroactively assigned to a campaign.
+- Guided campaigns deliberately do not auto-run playback, change speed, seek, authorize Roblox, or inject input; client control remains explicit.
+- An active campaign created by an older client can be invalidated after upgrade if its already-tagged evidence does not satisfy the new ordered state machine; starting a fresh campaign is the fail-closed recovery path.
+- Sessions from older versions with no campaign provenance continue using the stricter legacy adjacency heuristic rather than being retroactively assigned to a campaign.
 - CI cannot observe a live Roblox client consuming synthetic input; explicit GUI input verification remains the client-side acceptance check for a real Roblox process.
 - MIDI and MusicXML import canonical note/timing data; audio transcription/OMR is not silently attempted when confidence cannot be established.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.

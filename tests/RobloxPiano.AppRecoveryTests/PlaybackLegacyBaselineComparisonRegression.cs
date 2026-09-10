@@ -30,7 +30,13 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         TestDifferentExplicitCampaignNeverPairs();
         TestExplicitCampaignDoesNotFallBackToUnscopedHistory();
         TestCampaignIdParsingFailsClosed();
-        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison policy (16 cases)");
+        TestGuidedCampaignStartsAtLegacy();
+        TestGuidedCampaignAdvancesToLegacyX2();
+        TestGuidedCampaignCompletesControlledPair();
+        TestGuidedCampaignRejectsWrongOrder();
+        TestGuidedCampaignRejectsDuplicateLegacyStep();
+        TestGuidedCampaignRejectsChangedTransportStep();
+        Console.WriteLine("PASS  controlled Legacy/Legacy x2 baseline comparison + guided campaign state policy (22 cases)");
     }
 
     private static void TestClassifiesLegacyVariants()
@@ -208,6 +214,79 @@ internal static class PlaybackLegacyBaselineComparisonRegression
         True(PlaybackBaselineCampaignStore.TryGetCampaignId("baseline-not-a-guid-session") is null, "malformed campaign prefix must fail closed");
         True(PlaybackBaselineCampaignStore.TryGetCampaignId("ordinary-session") is null, "ordinary session id must remain unscoped");
     }
+
+    private static void TestGuidedCampaignStartsAtLegacy()
+    {
+        var campaign = Campaign();
+        var progress = PlaybackBaselineCampaignStore.EvaluateProgress(campaign, [], DateTimeOffset.UnixEpoch.AddSeconds(1));
+        Equal(PlaybackBaselineCampaignProgressState.AwaitLegacy, progress.State, "new campaign must start at Legacy step");
+        Contains(progress.NextAction, "1.00x", "first guided action must name Legacy 1.00x");
+    }
+
+    private static void TestGuidedCampaignAdvancesToLegacyX2()
+    {
+        var campaign = Campaign();
+        var legacy = Session(CampaignSessionId(CampaignA, "11111111111111111111111111111111"), 10, 1d, Quality(1d));
+        var progress = PlaybackBaselineCampaignStore.EvaluateProgress(campaign, [legacy], DateTimeOffset.UnixEpoch.AddSeconds(11));
+        Equal(PlaybackBaselineCampaignProgressState.AwaitLegacyX2, progress.State, "valid Legacy step must advance campaign");
+        Equal(legacy.SessionId, progress.LegacySessionId!, "Legacy evidence must be locked into campaign progress");
+        Contains(progress.NextAction, "2.00x", "second guided action must name Legacy x2 2.00x");
+    }
+
+    private static void TestGuidedCampaignCompletesControlledPair()
+    {
+        var campaign = Campaign();
+        var legacy = Session(CampaignSessionId(CampaignA, "11111111111111111111111111111111"), 10, 1d, Quality(1d));
+        var x2 = Session(CampaignSessionId(CampaignA, "22222222222222222222222222222222"), 20, 2d, Quality(2d));
+        var progress = PlaybackBaselineCampaignStore.EvaluateProgress(campaign, [x2, legacy], DateTimeOffset.UnixEpoch.AddSeconds(21));
+        Equal(PlaybackBaselineCampaignProgressState.Completed, progress.State, "controlled ordered pair must complete campaign");
+        True(!progress.AcceptsNewEvidence, "completed campaign must stop accepting evidence");
+        Equal(x2.SessionId, progress.LegacyX2SessionId!, "Legacy x2 evidence must be locked into completed progress");
+    }
+
+    private static void TestGuidedCampaignRejectsWrongOrder()
+    {
+        var campaign = Campaign();
+        var x2 = Session(CampaignSessionId(CampaignA, "11111111111111111111111111111111"), 10, 2d, Quality(2d));
+        var progress = PlaybackBaselineCampaignStore.EvaluateProgress(campaign, [x2], DateTimeOffset.UnixEpoch.AddSeconds(11));
+        Equal(PlaybackBaselineCampaignProgressState.Invalidated, progress.State, "Legacy x2 cannot become Step 1");
+        Contains(progress.NextAction, "Step 1", "wrong-order guidance must explain required first step");
+    }
+
+    private static void TestGuidedCampaignRejectsDuplicateLegacyStep()
+    {
+        var campaign = Campaign();
+        var legacy1 = Session(CampaignSessionId(CampaignA, "11111111111111111111111111111111"), 10, 1d, Quality(1d));
+        var legacy2 = Session(CampaignSessionId(CampaignA, "22222222222222222222222222222222"), 20, 1d, Quality(1d));
+        var progress = PlaybackBaselineCampaignStore.EvaluateProgress(campaign, [legacy2, legacy1], DateTimeOffset.UnixEpoch.AddSeconds(21));
+        Equal(PlaybackBaselineCampaignProgressState.Invalidated, progress.State, "duplicate Legacy cannot replace Legacy x2 Step 2");
+        True(!progress.AcceptsNewEvidence, "invalid campaign must stop accepting evidence");
+    }
+
+    private static void TestGuidedCampaignRejectsChangedTransportStep()
+    {
+        var campaign = Campaign();
+        var legacy = Session(CampaignSessionId(CampaignA, "11111111111111111111111111111111"), 10, 1d, Quality(1d, controls:
+        [
+            Start(1d),
+            new PlaybackTransportControlEvent(1, PlaybackTransportControlKind.SeekRequested, 3d, null)
+        ]));
+        var x2 = Session(CampaignSessionId(CampaignA, "22222222222222222222222222222222"), 20, 2d, Quality(2d));
+        var progress = PlaybackBaselineCampaignStore.EvaluateProgress(campaign, [x2, legacy], DateTimeOffset.UnixEpoch.AddSeconds(21));
+        Equal(PlaybackBaselineCampaignProgressState.Invalidated, progress.State, "changed transport history must invalidate guided pair");
+        Contains(progress.Summary, "transport", "invalid campaign must expose transport mismatch");
+    }
+
+    private static PlaybackBaselineCampaign Campaign()
+        => new(
+            CampaignA,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddMinutes(30),
+            FingerprintA,
+            "TXT",
+            0,
+            PlaybackRuntimeIdentity.Engine,
+            PlaybackRuntimeIdentity.InputProfile);
 
     private static PlaybackSupportSession Session(
         string id,
