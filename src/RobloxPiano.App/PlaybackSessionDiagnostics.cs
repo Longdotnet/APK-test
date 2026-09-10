@@ -3,8 +3,26 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using RobloxPiano.Core;
 
 namespace RobloxPiano.App;
+
+internal sealed record PlaybackSessionQualityDiagnostic(
+    int SchemaVersion,
+    int SegmentCount,
+    int SeekCount,
+    int DispatchedEdgeCount,
+    int UnexpectedMissingEdgeCount,
+    int InterruptedEdgeCount,
+    int FailureCount,
+    int FocusPauseCount,
+    double FocusPausedMilliseconds,
+    int ReleaseAllCount,
+    double MeanAbsoluteTimingErrorMilliseconds,
+    double P95AbsoluteTimingErrorMilliseconds,
+    double MaxAbsoluteTimingErrorMilliseconds,
+    double MeanInputCallMilliseconds,
+    double MaxInputCallMilliseconds);
 
 internal sealed record PlaybackSessionDiagnosticRecord(
     string SchemaVersion,
@@ -22,7 +40,8 @@ internal sealed record PlaybackSessionDiagnosticRecord(
     long? RobloxProcessStartTimeUtcTicks,
     string? ExceptionType,
     string? ExceptionMessage,
-    string ClientVersion);
+    string ClientVersion,
+    PlaybackSessionQualityDiagnostic? Quality = null);
 
 internal sealed record PlaybackSupportSession(
     string SessionId,
@@ -38,7 +57,8 @@ internal sealed record PlaybackSupportSession(
     int? RobloxProcessId,
     long? RobloxProcessStartTimeUtcTicks,
     string? ExceptionType,
-    string? ExceptionMessage);
+    string? ExceptionMessage,
+    PlaybackSessionQualityDiagnostic? Quality = null);
 
 internal sealed record PlaybackSupportEnvironment(
     string OperatingSystem,
@@ -78,8 +98,8 @@ internal sealed record PlaybackSupportManifest(
 
 internal static class PlaybackSessionDiagnostics
 {
-    internal const string SchemaVersion = "1";
-    internal const string SupportBundleSchemaVersion = "2";
+    internal const string SchemaVersion = "2";
+    internal const string SupportBundleSchemaVersion = "3";
     internal const string SupportManifestSchemaVersion = "1";
     internal const int MaxSupportSessions = 20;
     private const int MaxSessionFiles = 30;
@@ -102,7 +122,8 @@ internal static class PlaybackSessionDiagnostics
     public static void Persist(
         PlaybackSessionResult result,
         DateTimeOffset startedAtUtc,
-        DateTimeOffset endedAtUtc)
+        DateTimeOffset endedAtUtc,
+        PlaybackTransportQualityReport? quality = null)
     {
         ArgumentNullException.ThrowIfNull(result);
 
@@ -116,7 +137,8 @@ internal static class PlaybackSessionDiagnostics
                 RobloxPlaybackLaunchAuthorization.AuthorizedProcessStartTimeUtcTicksForTests,
                 startedAtUtc,
                 endedAtUtc,
-                Guid.NewGuid().ToString("N"));
+                Guid.NewGuid().ToString("N"),
+                quality);
 
             lock (Gate)
             {
@@ -147,7 +169,8 @@ internal static class PlaybackSessionDiagnostics
         long? robloxProcessStartTimeUtcTicks,
         DateTimeOffset startedAtUtc,
         DateTimeOffset endedAtUtc,
-        string sessionId)
+        string sessionId,
+        PlaybackTransportQualityReport? quality = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(state);
@@ -178,7 +201,8 @@ internal static class PlaybackSessionDiagnostics
             robloxProcessStartTimeUtcTicks,
             result.Exception?.GetType().FullName,
             result.Exception?.Message,
-            typeof(PlaybackSessionDiagnostics).Assembly.GetName().Version?.ToString() ?? "unknown");
+            typeof(PlaybackSessionDiagnostics).Assembly.GetName().Version?.ToString() ?? "unknown",
+            ToDiagnosticQuality(quality));
     }
 
     internal static void AppendRecord(string path, PlaybackSessionDiagnosticRecord record)
@@ -290,7 +314,8 @@ internal static class PlaybackSessionDiagnostics
                 record.RobloxProcessId,
                 record.RobloxProcessStartTimeUtcTicks,
                 record.ExceptionType,
-                SanitizeExceptionMessage(record.ExceptionMessage, record.SourcePath)))
+                SanitizeExceptionMessage(record.ExceptionMessage, record.SourcePath),
+                record.Quality))
             .ToArray();
 
         return new PlaybackSupportBundleDocument(
@@ -354,7 +379,8 @@ internal static class PlaybackSessionDiagnostics
                 using var readme = new StreamWriter(readmeEntry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
                 readme.WriteLine("Roblox Piano support bundle");
                 readme.WriteLine("Generated automatically from recent local playback-session diagnostics.");
-                readme.WriteLine("The bundle intentionally excludes full local sheet paths and raw log files.");
+                readme.WriteLine("The bundle intentionally excludes full local sheet paths, raw logs and raw key-by-key timing samples.");
+                readme.WriteLine("Transport-aware aggregate quality metrics include timing error, input-call latency, focus interruption, seek interruption and unexpected playback loss counts.");
                 readme.WriteLine("manifest.json contains the SHA-256 and byte length of support.json so support staff can detect a damaged or partially transferred bundle.");
                 readme.WriteLine("Environment fields are limited to OS/runtime/architecture facts needed to diagnose clean-machine compatibility; no username, machine name or account identifier is collected.");
                 readme.WriteLine($"Sessions included: {document.SessionCount}");
@@ -473,6 +499,26 @@ internal static class PlaybackSessionDiagnostics
             ClientDiagnostics.Log($"Latest support bundle could not be refreshed: {exception.Message}");
         }
     }
+
+    private static PlaybackSessionQualityDiagnostic? ToDiagnosticQuality(PlaybackTransportQualityReport? quality)
+        => quality is null
+            ? null
+            : new PlaybackSessionQualityDiagnostic(
+                quality.SchemaVersion,
+                quality.SegmentCount,
+                quality.SeekCount,
+                quality.DispatchedEdgeCount,
+                quality.UnexpectedMissingEdgeCount,
+                quality.InterruptedEdgeCount,
+                quality.FailureCount,
+                quality.FocusPauseCount,
+                quality.FocusPausedMilliseconds,
+                quality.ReleaseAllCount,
+                quality.MeanAbsoluteTimingErrorMilliseconds,
+                quality.P95AbsoluteTimingErrorMilliseconds,
+                quality.MaxAbsoluteTimingErrorMilliseconds,
+                quality.MeanInputCallMilliseconds,
+                quality.MaxInputCallMilliseconds);
 
     private static PlaybackSupportEnvironment CaptureEnvironment()
         => new(
