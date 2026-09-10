@@ -1,10 +1,5 @@
 namespace RobloxPiano.Core;
 
-/// <summary>
-/// Builds a canonical track slice for transport seek without teaching the playback
-/// kernel where the track came from. Events crossing the seek boundary are clipped
-/// and re-entered at t=0 so a seek never leaves the output in an undefined held-key state.
-/// </summary>
 public static class PlaybackTransport
 {
     public static PerformanceTrack Slice(PerformanceTrack track, TimeSpan startPosition)
@@ -73,15 +68,10 @@ public static class PlaybackTransport
 }
 
 /// <summary>
-/// Interactive transport over the one canonical PlaybackKernel scheduler. Seek is
-/// implemented by safely cancelling the current kernel slice (which releases all
-/// held keys), rebuilding a canonical slice, and restarting from the requested
-/// position. No second scheduler or UI-owned note state is introduced.
-///
-/// Quality instrumentation is slice-aware: each seek starts a fresh canonical
-/// observation segment, while aggregate timing remains in the monotonic logical
-/// playback clock domain. Therefore dynamic speed changes do not invalidate timing
-/// evidence and intentionally skipped edges are not reported as playback loss.
+/// Interactive transport over the canonical PlaybackKernel scheduler. Runtime
+/// quality evidence also owns an append-only control ledger: initial speed,
+/// dynamic speed changes and seek targets are captured in canonical position space.
+/// The ledger is observational and can never affect scheduling or input safety.
 /// </summary>
 public sealed class PlaybackTransportSession : IDisposable
 {
@@ -95,6 +85,7 @@ public sealed class PlaybackTransportSession : IDisposable
     private readonly PlaybackTimingProfile _timingProfile;
     private readonly PlaybackTransportQualityAccumulator _quality = new();
     private readonly string _canonicalTrackFingerprint;
+    private readonly PlaybackSessionClock? _sessionClock;
 
     private CancellationTokenSource? _activeSliceCancellation;
     private TimeSpan? _pendingSeek;
@@ -103,6 +94,7 @@ public sealed class PlaybackTransportSession : IDisposable
     private TimeSpan _inactiveAtSliceStart;
     private TimeSpan _settledPosition;
     private bool _sliceRunning;
+    private bool _sessionStartRecorded;
     private bool _disposed;
 
     public PlaybackTransportSession(
@@ -115,6 +107,12 @@ public sealed class PlaybackTransportSession : IDisposable
         _track = track ?? throw new ArgumentNullException(nameof(track));
         _canonicalTrackFingerprint = PerformanceTrackFingerprint.ComputeSha256(_track);
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _sessionClock = clock as PlaybackSessionClock;
+        if (_sessionClock is not null)
+        {
+            _sessionClock.SpeedChanged += HandleSpeedChanged;
+        }
+
         ArgumentNullException.ThrowIfNull(input);
         _input = input is ReferenceCountedInputSink
             ? input
@@ -159,6 +157,7 @@ public sealed class PlaybackTransportSession : IDisposable
     {
         ThrowIfDisposed();
         var clamped = PlaybackTransport.ClampPosition(_track, position);
+        _quality.RecordSeekRequested(clamped);
 
         CancellationTokenSource? active;
         lock (_gate)
@@ -171,12 +170,19 @@ public sealed class PlaybackTransportSession : IDisposable
         active?.Cancel();
     }
 
-    public async Task PlayAsync(
-        TimeSpan startPosition,
-        CancellationToken cancellationToken = default)
+    public async Task PlayAsync(TimeSpan startPosition, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         var nextPosition = PlaybackTransport.ClampPosition(_track, startPosition);
+
+        lock (_gate)
+        {
+            if (!_sessionStartRecorded)
+            {
+                _sessionStartRecorded = true;
+                _quality.RecordSessionStarted(nextPosition, _sessionClock?.Speed);
+            }
+        }
 
         while (true)
         {
@@ -237,11 +243,7 @@ public sealed class PlaybackTransportSession : IDisposable
                         DispatchLead: _timingProfile.DispatchLead),
                     sliceCancellation.Token).ConfigureAwait(false);
 
-                _quality.CompleteSegment(
-                    nextPosition,
-                    slice,
-                    segmentCollector,
-                    PlaybackTransportSegmentEndReason.Completed);
+                _quality.CompleteSegment(nextPosition, slice, segmentCollector, PlaybackTransportSegmentEndReason.Completed);
 
                 lock (_gate)
                 {
@@ -267,9 +269,7 @@ public sealed class PlaybackTransportSession : IDisposable
                     nextPosition,
                     slice,
                     segmentCollector,
-                    seek.HasValue
-                        ? PlaybackTransportSegmentEndReason.Seeked
-                        : PlaybackTransportSegmentEndReason.Cancelled);
+                    seek.HasValue ? PlaybackTransportSegmentEndReason.Seeked : PlaybackTransportSegmentEndReason.Cancelled);
 
                 if (!seek.HasValue)
                 {
@@ -280,20 +280,12 @@ public sealed class PlaybackTransportSession : IDisposable
             }
             catch (OperationCanceledException)
             {
-                _quality.CompleteSegment(
-                    nextPosition,
-                    slice,
-                    segmentCollector,
-                    PlaybackTransportSegmentEndReason.Cancelled);
+                _quality.CompleteSegment(nextPosition, slice, segmentCollector, PlaybackTransportSegmentEndReason.Cancelled);
                 throw;
             }
             catch
             {
-                _quality.CompleteSegment(
-                    nextPosition,
-                    slice,
-                    segmentCollector,
-                    PlaybackTransportSegmentEndReason.Failed);
+                _quality.CompleteSegment(nextPosition, slice, segmentCollector, PlaybackTransportSegmentEndReason.Failed);
                 throw;
             }
             finally
@@ -324,7 +316,29 @@ public sealed class PlaybackTransportSession : IDisposable
             _activeSliceCancellation = null;
         }
 
+        if (_sessionClock is not null)
+        {
+            _sessionClock.SpeedChanged -= HandleSpeedChanged;
+        }
+
         active?.Cancel();
+    }
+
+    private void HandleSpeedChanged(double speed)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _quality.RecordSpeedChanged(Position, speed);
+        }
+        catch
+        {
+            // Diagnostics must never be allowed to perturb playback.
+        }
     }
 
     private void ThrowIfDisposed()
