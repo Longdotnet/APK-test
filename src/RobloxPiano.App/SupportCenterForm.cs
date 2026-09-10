@@ -111,8 +111,8 @@ internal sealed class SupportCenterForm : Form
 
         var record = row.Record;
         var quality = record.Quality;
-        _details.Text = string.Join(Environment.NewLine,
-        [
+        var lines = new[]
+        {
             $"Outcome: {record.ResultKind}",
             $"Started (UTC): {record.StartedAtUtc:O}",
             $"Ended (UTC): {record.EndedAtUtc:O}",
@@ -138,7 +138,8 @@ internal sealed class SupportCenterForm : Form
             "",
             $"Exception type: {record.ExceptionType ?? "(none)"}",
             $"Exception: {record.ExceptionMessage ?? "(none)"}"
-        ].Where(line => line is not null));
+        };
+        _details.Text = string.Join(Environment.NewLine, lines.Where(line => line.Length > 0));
     }
 
     private void SaveSupportBundle()
