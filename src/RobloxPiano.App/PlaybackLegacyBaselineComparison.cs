@@ -97,16 +97,16 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
             ? PlaybackLegacyBaselineVariant.LegacyX2
             : PlaybackLegacyBaselineVariant.Legacy;
 
-        // Fail closed instead of searching arbitrarily far back through history. The newest prior
-        // protected baseline with the same immutable campaign identity is the only eligible pair.
-        // If that run is stale, the same variant, or has a different transport history, support must
-        // ask for a fresh reproduction rather than cherry-picking an older run that happens to fit.
+        // A protected reproduction pair must be adjacent in baseline-session history, not merely
+        // adjacent after filtering by song/runtime identity. Otherwise a newer baseline run for a
+        // different song can be silently skipped and an older session can be cherry-picked into a
+        // false experiment. The newest prior protected baseline globally is therefore the only
+        // candidate; identity, variant and transport equivalence are validated after selection.
         var priorBaseline = sessions
             .Where(candidate => !ReferenceEquals(candidate, current))
             .Where(candidate => candidate.EndedAtUtc < current.EndedAtUtc)
             .Where(candidate => current.EndedAtUtc - candidate.EndedAtUtc <= MaxCounterpartAge)
             .Where(candidate => Classify(candidate) != PlaybackLegacyBaselineVariant.None)
-            .Where(candidate => HasSameCampaignIdentity(current, candidate))
             .OrderByDescending(candidate => candidate.EndedAtUtc)
             .ThenByDescending(candidate => candidate.SessionId, StringComparer.Ordinal)
             .FirstOrDefault();
@@ -114,21 +114,28 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
         if (priorBaseline is null)
         {
             return NotComparable(currentVariant,
-                $"No recent protected baseline run exists within {MaxCounterpartAge.TotalMinutes:0} minutes for the same canonical performance/runtime identity.",
-                "Run the Legacy 1x and Legacy x2 2x reproduction back-to-back. Keep input-latency compensation, playback engine and input profile unchanged; old historical sessions are intentionally not reused as experimental evidence.");
+                $"No recent protected baseline run exists within {MaxCounterpartAge.TotalMinutes:0} minutes.",
+                "Run the Legacy 1x and Legacy x2 2x reproduction back-to-back. Keep the same song, input-latency compensation, playback engine and input profile; old historical sessions are intentionally not reused as experimental evidence.");
+        }
+
+        if (!HasSameCampaignIdentity(current, priorBaseline))
+        {
+            return NotComparable(currentVariant,
+                "The immediately previous protected baseline belongs to a different canonical performance/runtime identity.",
+                "Repeat Legacy 1x then Legacy x2 2x back-to-back on the same unchanged TXT/VPS song. Baseline runs for another song or runtime identity intentionally break the reproduction sequence instead of being skipped.");
         }
 
         if (Classify(priorBaseline) != counterpartVariant)
         {
             return NotComparable(currentVariant,
-                $"The most recent protected baseline for this canonical/runtime identity is another {currentVariant} run, not {counterpartVariant}.",
+                $"The immediately previous protected baseline is another {currentVariant} run, not {counterpartVariant}.",
                 $"Run {counterpartVariant} next so the two adjacent baseline sessions form one bounded reproduction pair. The comparator will not skip over the newer run to reuse older evidence.");
         }
 
         if (!AreControlledCounterparts(current, priorBaseline))
         {
             return NotComparable(currentVariant,
-                $"The most recent {counterpartVariant} run changed controlled transport conditions and cannot be paired.",
+                $"The immediately previous {counterpartVariant} run changed controlled transport conditions and cannot be paired.",
                 "Repeat the pair back-to-back with identical seek targets and exactly proportional 2x speed transitions. The comparator fails closed instead of falling back to an older historical match.");
         }
 
