@@ -99,7 +99,6 @@ internal static class PlaybackBaselineExperimentArchive
                 or UnauthorizedAccessException
                 or ArgumentException
                 or System.Text.Json.JsonException
-                or InvalidDataException
                 or NotSupportedException)
             {
                 ClientDiagnostics.Log(
@@ -147,7 +146,6 @@ internal static class PlaybackBaselineExperimentArchive
                 or UnauthorizedAccessException
                 or ArgumentException
                 or System.Text.Json.JsonException
-                or InvalidDataException
                 or NotSupportedException)
             {
                 ClientDiagnostics.Log(
