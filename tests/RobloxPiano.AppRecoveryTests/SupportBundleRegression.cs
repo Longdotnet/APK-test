@@ -202,7 +202,8 @@ internal static class SupportBundleRegression
             True(json.Contains("bundle-song.musicxml", StringComparison.Ordinal), "bundle should retain source filename for support correlation");
             True(json.Contains(PlaybackRuntimeIdentity.Engine, StringComparison.Ordinal), "bundle should contain explicit engine identity");
             True(json.Contains(PlaybackRuntimeIdentity.InputProfile, StringComparison.Ordinal), "bundle should contain explicit input-profile identity");
-            True(json.Contains("sessionStarted", StringComparison.OrdinalIgnoreCase), "bundle should contain privacy-safe transport control evidence");
+            True(json.Contains("\"controlEvents\"", StringComparison.Ordinal), "bundle should contain privacy-safe transport control evidence");
+            True(json.Contains("\"positionSeconds\"", StringComparison.Ordinal), "transport evidence should remain in canonical position space");
             False(json.Contains(sourcePath, StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain the full local source path");
             False(json.Contains("private-client-path", StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain source parent folders");
             False(json.Contains("sessions-20260910.jsonl", StringComparison.OrdinalIgnoreCase), "bundle must not embed raw diagnostic filenames");
