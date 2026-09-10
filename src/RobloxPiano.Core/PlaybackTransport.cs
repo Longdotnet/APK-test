@@ -94,6 +94,7 @@ public sealed class PlaybackTransportSession : IDisposable
     private readonly ObservedTransportFocusGate _focus;
     private readonly PlaybackTimingProfile _timingProfile;
     private readonly PlaybackTransportQualityAccumulator _quality = new();
+    private readonly string _canonicalTrackFingerprint;
 
     private CancellationTokenSource? _activeSliceCancellation;
     private TimeSpan? _pendingSeek;
@@ -112,6 +113,7 @@ public sealed class PlaybackTransportSession : IDisposable
         PlaybackTimingProfile? timingProfile = null)
     {
         _track = track ?? throw new ArgumentNullException(nameof(track));
+        _canonicalTrackFingerprint = PerformanceTrackFingerprint.ComputeSha256(_track);
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         ArgumentNullException.ThrowIfNull(input);
         _input = input is ReferenceCountedInputSink
@@ -124,7 +126,10 @@ public sealed class PlaybackTransportSession : IDisposable
 
     public TimeSpan Duration => _track.TimelineDuration;
     public PlaybackTimingProfile TimingProfile => _timingProfile;
-    public PlaybackTransportQualityReport QualityReport => _quality.BuildReport();
+    public PlaybackTransportQualityReport QualityReport => _quality.BuildReport() with
+    {
+        CanonicalTrackFingerprint = _canonicalTrackFingerprint
+    };
 
     public TimeSpan Position
     {
