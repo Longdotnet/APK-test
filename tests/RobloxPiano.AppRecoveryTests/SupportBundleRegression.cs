@@ -54,13 +54,18 @@ internal static class SupportBundleRegression
             "privacy",
             DateTimeOffset.UnixEpoch.AddMinutes(4),
             sourcePath,
-            exceptionMessage: $"Could not read {sourcePath}");
+            exceptionMessage: $"Could not read {sourcePath}") with
+        {
+            CanonicalSourceFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            PlaybackEngine = PlaybackRuntimeIdentity.Engine,
+            InputProfile = PlaybackRuntimeIdentity.InputProfile
+        };
 
         var document = PlaybackSessionDiagnostics.CreateSupportDocument(
             new[] { record },
             DateTimeOffset.UnixEpoch.AddMinutes(5));
 
-        Equal("3", document.SchemaVersion, "support schema version");
+        Equal("4", document.SchemaVersion, "support schema version");
         Equal(1, document.SessionCount, "support session count");
         Equal(1, document.OutcomeSummary.RuntimeFailed, "runtime failure summary");
         Equal(1, document.OutcomeSummary.TotalFailures, "total failure summary");
@@ -70,6 +75,9 @@ internal static class SupportBundleRegression
 
         var session = document.Sessions[0];
         Equal("support-song.mid", session.SourceFileName!, "support bundle keeps only source filename");
+        Equal(record.CanonicalSourceFingerprint!, session.CanonicalSourceFingerprint!, "support projection preserves privacy-safe canonical identity");
+        Equal(PlaybackRuntimeIdentity.Engine, session.PlaybackEngine, "support projection preserves playback engine identity");
+        Equal(PlaybackRuntimeIdentity.InputProfile, session.InputProfile, "support projection preserves input profile identity");
         False(
             (session.ExceptionMessage ?? string.Empty).Contains(sourcePath, StringComparison.OrdinalIgnoreCase),
             "support exception must not expose the full source path");
@@ -130,7 +138,12 @@ internal static class SupportBundleRegression
                     "bundle",
                     DateTimeOffset.UnixEpoch.AddMinutes(6),
                     sourcePath,
-                    exceptionMessage: $"Parser rejected {sourcePath}"));
+                    exceptionMessage: $"Parser rejected {sourcePath}") with
+                {
+                    CanonicalSourceFingerprint = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    PlaybackEngine = PlaybackRuntimeIdentity.Engine,
+                    InputProfile = PlaybackRuntimeIdentity.InputProfile
+                });
 
             var destination = Path.Combine(directory, "RobloxPiano-support-latest.zip");
             PlaybackSessionDiagnostics.CreateSupportBundle(
@@ -172,6 +185,8 @@ internal static class SupportBundleRegression
             Equal(actualHash, manifest.SupportJsonSha256, "manifest SHA-256 must cover exact support.json bytes");
             Equal((long)supportBytes.Length, manifest.SupportJsonBytes, "manifest byte length must cover exact support.json bytes");
             True(json.Contains("bundle-song.musicxml", StringComparison.Ordinal), "bundle should retain source filename for support correlation");
+            True(json.Contains(PlaybackRuntimeIdentity.Engine, StringComparison.Ordinal), "bundle should contain explicit engine identity");
+            True(json.Contains(PlaybackRuntimeIdentity.InputProfile, StringComparison.Ordinal), "bundle should contain explicit input-profile identity");
             False(json.Contains(sourcePath, StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain the full local source path");
             False(json.Contains("private-client-path", StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain source parent folders");
             False(json.Contains("sessions-20260910.jsonl", StringComparison.OrdinalIgnoreCase), "bundle must not embed raw diagnostic filenames");
@@ -252,7 +267,7 @@ internal static class SupportBundleRegression
             638930000000000000L,
             typeof(InvalidOperationException).FullName,
             exceptionMessage,
-            "0.23.0");
+            "0.26.0");
 
     private static string CreateTemporaryDirectory()
     {
