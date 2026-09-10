@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.31.0
+version: 0.31.1
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -26,25 +26,27 @@ SHA256: `{{SHA256}}`
 - Runtime transport evidence records deterministic timing, Windows input-call latency, focus interruptions, missing/interrupted edges, release-all evidence, and an ordered speed/seek control ledger.
 - Playback-session diagnostics snapshot canonical track identity and immutable runtime/session-start provenance so later source-file edits or preference changes cannot rewrite evidence for the session that actually ran.
 - Controlled same-settings A/B comparison fails closed unless canonical performance identity, runtime/input identity, start settings, latency compensation, and ordered transport history are equivalent.
-- Support Center now also exposes a controlled Legacy ↔ Legacy x2 runtime comparison for TXT/VPS baseline runs: 1.0x and 2.0x must use the same canonical performance/runtime/input identity, the same latency compensation, identical seek positions, and speed transitions proportional by exactly 2x.
+- Support Center exposes a controlled Legacy ↔ Legacy x2 runtime comparison for TXT/VPS baseline runs: 1.0x and 2.0x must use the same canonical performance/runtime/input identity, the same latency compensation, identical seek positions, and speed transitions proportional by exactly 2x.
+- Legacy ↔ Legacy x2 counterpart selection is now bounded to the newest same-identity protected baseline within 30 minutes. It never skips a newer failed/mismatched reproduction attempt to cherry-pick an older session.
 - The Legacy ↔ Legacy x2 runtime verdict is diagnostic evidence only. It cannot replace the protected perceptual/listening baseline or automatically promote another playback behavior.
 - Support Bundles persist privacy-safe quality and transport evidence, include an integrity manifest, and are verified before and after atomic export.
 - Runtime authorization is scoped to the exact Roblox process lifetime; process replacement/restart requires verification again rather than reusing stale trust.
 - Focus loss, pause/stop, failure, and cancellation retain emergency release-all/stuck-key prevention behavior.
 
-## Phase 43 controlled Legacy baseline comparison
+## Phase 44 bounded Legacy reproduction pairing
 
-- Legacy and Legacy x2 are modeled as protected baseline configurations, not falsely advertised as different playback engines: TXT/VPS sessions must begin at exactly 1.0x or 2.0x using the immutable session-start state plus the first transport ledger event.
-- Arbitrary speeds, MIDI and MusicXML runs are intentionally outside this protected cross-variant comparison.
-- Counterparts require the same canonical track fingerprint, source type, production engine, Windows input profile and input-latency compensation.
-- Ordered transport histories must match structurally: seek targets stay at the same canonical position and every runtime speed transition must preserve the 2x relationship. Otherwise comparison fails closed.
-- Focus interruptions, unexpected dispatch loss or playback failures produce an Interfered verdict so noisy runtime evidence cannot promote or condemn Legacy x2.
-- Support Center shows x2-minus-Legacy P95 timing and max input-call deltas while retaining the separate same-settings A/B workflow.
+- Protected Legacy baseline evidence must be fresh: only prior same-identity baseline sessions from the last 30 minutes are eligible.
+- The newest protected baseline with the same canonical fingerprint, source type, engine, Windows input profile and latency compensation is the only candidate. Older sessions are never searched as fallback evidence.
+- If that newest run is the same variant, Support Center returns `NotComparable` and asks for the opposite variant next instead of reusing an older run.
+- If that newest opposite variant changed seek targets or violated the exact 2x speed-history relationship, Support Center returns `NotComparable` and asks for a fresh back-to-back pair.
+- This prevents stale-session reuse and historical cherry-picking while preserving the existing focus/dispatch/playback interference gate.
+- The 30-minute bound affects diagnostics evidence only; it does not alter playback, authorization lifetime, scheduler timing, input dispatch or release-all behavior.
 
 ## Current boundaries
 
 - AI is optional and is not required for playback/import/validation truth.
 - Runtime timing/input evidence does not measure whether two performances sound perceptually equivalent; the protected Legacy/Legacy x2 perceptual baseline remains a separate acceptance requirement.
+- This release hardens historical pairing but does not yet create an explicit persisted comparison campaign ID or automatically run the two baselines.
 - CI cannot observe a live Roblox client consuming synthetic input; explicit GUI input verification remains the client-side acceptance check for a real Roblox process.
 - MIDI and MusicXML import canonical note/timing data; audio transcription/OMR is not silently attempted when confidence cannot be established.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.
