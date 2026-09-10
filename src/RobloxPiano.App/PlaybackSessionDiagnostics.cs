@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -38,17 +40,47 @@ internal sealed record PlaybackSupportSession(
     string? ExceptionType,
     string? ExceptionMessage);
 
+internal sealed record PlaybackSupportEnvironment(
+    string OperatingSystem,
+    string OsArchitecture,
+    string ProcessArchitecture,
+    string Runtime,
+    bool Is64BitProcess,
+    int ProcessorCount);
+
+internal sealed record PlaybackSupportOutcomeSummary(
+    int Completed,
+    int Cancelled,
+    int AuthorizationLost,
+    int InputFailed,
+    int SourceFailed,
+    int RuntimeFailed,
+    int Other,
+    int TotalFailures);
+
 internal sealed record PlaybackSupportBundleDocument(
     string SchemaVersion,
     DateTimeOffset GeneratedAtUtc,
     string ClientVersion,
     int SessionCount,
+    PlaybackSupportEnvironment Environment,
+    PlaybackSupportOutcomeSummary OutcomeSummary,
     IReadOnlyList<PlaybackSupportSession> Sessions);
+
+internal sealed record PlaybackSupportManifest(
+    string SchemaVersion,
+    DateTimeOffset GeneratedAtUtc,
+    string ClientVersion,
+    string SupportJsonSha256,
+    long SupportJsonBytes,
+    int SessionCount,
+    IReadOnlyList<string> Entries);
 
 internal static class PlaybackSessionDiagnostics
 {
     internal const string SchemaVersion = "1";
-    internal const string SupportBundleSchemaVersion = "1";
+    internal const string SupportBundleSchemaVersion = "2";
+    internal const string SupportManifestSchemaVersion = "1";
     internal const int MaxSupportSessions = 20;
     private const int MaxSessionFiles = 30;
     private const int MaxSupportExceptionMessageLength = 500;
@@ -266,6 +298,8 @@ internal static class PlaybackSessionDiagnostics
             generatedAtUtc.ToUniversalTime(),
             typeof(PlaybackSessionDiagnostics).Assembly.GetName().Version?.ToString() ?? "unknown",
             sessions.Length,
+            CaptureEnvironment(),
+            SummarizeOutcomes(sessions),
             sessions);
     }
 
@@ -279,6 +313,19 @@ internal static class PlaybackSessionDiagnostics
 
         var records = ReadRecentRecords(diagnosticsDirectory, MaxSupportSessions);
         var document = CreateSupportDocument(records, generatedAtUtc);
+        var supportJson = JsonSerializer.Serialize(document, SupportJsonOptions);
+        var supportJsonBytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(supportJson);
+        var supportJsonSha256 = Convert.ToHexString(SHA256.HashData(supportJsonBytes)).ToLowerInvariant();
+        var manifest = new PlaybackSupportManifest(
+            SupportManifestSchemaVersion,
+            generatedAtUtc.ToUniversalTime(),
+            document.ClientVersion,
+            supportJsonSha256,
+            supportJsonBytes.LongLength,
+            document.SessionCount,
+            new[] { "support.json", "manifest.json", "README.txt" });
+        var manifestJson = JsonSerializer.Serialize(manifest, SupportJsonOptions);
+
         var destinationDirectory = Path.GetDirectoryName(destinationPath);
         if (!string.IsNullOrWhiteSpace(destinationDirectory))
         {
@@ -292,9 +339,15 @@ internal static class PlaybackSessionDiagnostics
             using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: false))
             {
                 var supportEntry = archive.CreateEntry("support.json", CompressionLevel.Optimal);
-                using (var writer = new StreamWriter(supportEntry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+                using (var supportStream = supportEntry.Open())
                 {
-                    writer.Write(JsonSerializer.Serialize(document, SupportJsonOptions));
+                    supportStream.Write(supportJsonBytes);
+                }
+
+                var manifestEntry = archive.CreateEntry("manifest.json", CompressionLevel.Optimal);
+                using (var writer = new StreamWriter(manifestEntry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+                {
+                    writer.Write(manifestJson);
                 }
 
                 var readmeEntry = archive.CreateEntry("README.txt", CompressionLevel.Optimal);
@@ -302,7 +355,10 @@ internal static class PlaybackSessionDiagnostics
                 readme.WriteLine("Roblox Piano support bundle");
                 readme.WriteLine("Generated automatically from recent local playback-session diagnostics.");
                 readme.WriteLine("The bundle intentionally excludes full local sheet paths and raw log files.");
+                readme.WriteLine("manifest.json contains the SHA-256 and byte length of support.json so support staff can detect a damaged or partially transferred bundle.");
+                readme.WriteLine("Environment fields are limited to OS/runtime/architecture facts needed to diagnose clean-machine compatibility; no username, machine name or account identifier is collected.");
                 readme.WriteLine($"Sessions included: {document.SessionCount}");
+                readme.WriteLine($"support.json SHA-256: {supportJsonSha256}");
             }
 
             File.Move(temporaryPath, destinationPath, overwrite: true);
@@ -316,6 +372,84 @@ internal static class PlaybackSessionDiagnostics
         }
     }
 
+    internal static bool VerifySupportBundle(string path, out string? error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        error = null;
+
+        try
+        {
+            using var archive = ZipFile.OpenRead(path);
+            var supportEntry = archive.GetEntry("support.json");
+            var manifestEntry = archive.GetEntry("manifest.json");
+            var readmeEntry = archive.GetEntry("README.txt");
+            if (supportEntry is null || manifestEntry is null || readmeEntry is null)
+            {
+                error = "Support bundle is missing one or more required entries.";
+                return false;
+            }
+
+            if (archive.Entries.Count != 3)
+            {
+                error = "Support bundle contains unexpected entries.";
+                return false;
+            }
+
+            byte[] supportBytes;
+            using (var supportStream = supportEntry.Open())
+            using (var memory = new MemoryStream())
+            {
+                supportStream.CopyTo(memory);
+                supportBytes = memory.ToArray();
+            }
+
+            PlaybackSupportManifest? manifest;
+            using (var manifestStream = manifestEntry.Open())
+            {
+                manifest = JsonSerializer.Deserialize<PlaybackSupportManifest>(manifestStream, SupportJsonOptions);
+            }
+
+            if (manifest is null)
+            {
+                error = "Support manifest is empty or invalid.";
+                return false;
+            }
+
+            var actualHash = Convert.ToHexString(SHA256.HashData(supportBytes)).ToLowerInvariant();
+            if (!string.Equals(actualHash, manifest.SupportJsonSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "support.json SHA-256 does not match manifest.json.";
+                return false;
+            }
+
+            if (supportBytes.LongLength != manifest.SupportJsonBytes)
+            {
+                error = "support.json byte length does not match manifest.json.";
+                return false;
+            }
+
+            var document = JsonSerializer.Deserialize<PlaybackSupportBundleDocument>(supportBytes, SupportJsonOptions);
+            if (document is null || document.SessionCount != manifest.SessionCount)
+            {
+                error = "support.json session count does not match manifest.json.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or InvalidDataException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or JsonException
+            or NotSupportedException)
+        {
+            error = exception.Message;
+            return false;
+        }
+    }
+
     private static void TryRefreshSupportBundle(
         string diagnosticsDirectory,
         string destinationPath,
@@ -324,6 +458,10 @@ internal static class PlaybackSessionDiagnostics
         try
         {
             CreateSupportBundle(diagnosticsDirectory, destinationPath, generatedAtUtc);
+            if (!VerifySupportBundle(destinationPath, out var verificationError))
+            {
+                ClientDiagnostics.Log($"Latest support bundle failed post-write verification: {verificationError}");
+            }
         }
         catch (Exception exception) when (
             exception is IOException
@@ -334,6 +472,64 @@ internal static class PlaybackSessionDiagnostics
         {
             ClientDiagnostics.Log($"Latest support bundle could not be refreshed: {exception.Message}");
         }
+    }
+
+    private static PlaybackSupportEnvironment CaptureEnvironment()
+        => new(
+            RuntimeInformation.OSDescription.Trim(),
+            RuntimeInformation.OSArchitecture.ToString(),
+            RuntimeInformation.ProcessArchitecture.ToString(),
+            RuntimeInformation.FrameworkDescription.Trim(),
+            Environment.Is64BitProcess,
+            Environment.ProcessorCount);
+
+    private static PlaybackSupportOutcomeSummary SummarizeOutcomes(IReadOnlyList<PlaybackSupportSession> sessions)
+    {
+        var completed = 0;
+        var cancelled = 0;
+        var authorizationLost = 0;
+        var inputFailed = 0;
+        var sourceFailed = 0;
+        var runtimeFailed = 0;
+        var other = 0;
+
+        foreach (var session in sessions)
+        {
+            switch (session.ResultKind)
+            {
+                case nameof(PlaybackSessionResultKind.Completed):
+                    completed++;
+                    break;
+                case nameof(PlaybackSessionResultKind.Cancelled):
+                    cancelled++;
+                    break;
+                case nameof(PlaybackSessionResultKind.AuthorizationLost):
+                    authorizationLost++;
+                    break;
+                case nameof(PlaybackSessionResultKind.InputFailed):
+                    inputFailed++;
+                    break;
+                case nameof(PlaybackSessionResultKind.SourceFailed):
+                    sourceFailed++;
+                    break;
+                case nameof(PlaybackSessionResultKind.RuntimeFailed):
+                    runtimeFailed++;
+                    break;
+                default:
+                    other++;
+                    break;
+            }
+        }
+
+        return new PlaybackSupportOutcomeSummary(
+            completed,
+            cancelled,
+            authorizationLost,
+            inputFailed,
+            sourceFailed,
+            runtimeFailed,
+            other,
+            authorizationLost + inputFailed + sourceFailed + runtimeFailed + other);
     }
 
     private static string? GetSupportSourceFileName(string? sourcePath)
