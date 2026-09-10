@@ -130,11 +130,6 @@ internal sealed class SupportCenterForm : Form
     {
         try
         {
-            PlaybackSessionDiagnostics.CreateSupportBundle(
-                ClientDiagnostics.DirectoryPath,
-                PlaybackSessionDiagnostics.SupportBundlePath,
-                DateTimeOffset.UtcNow);
-
             using var dialog = new SaveFileDialog
             {
                 Title = "Save Roblox Piano support bundle",
@@ -148,8 +143,13 @@ internal sealed class SupportCenterForm : Form
                 return;
             }
 
-            File.Copy(PlaybackSessionDiagnostics.SupportBundlePath, dialog.FileName, overwrite: true);
-            _status.Text = $"Support bundle saved: {dialog.FileName}";
+            SupportBundleExport.CreateAndExportVerified(
+                ClientDiagnostics.DirectoryPath,
+                PlaybackSessionDiagnostics.SupportBundlePath,
+                dialog.FileName,
+                DateTimeOffset.UtcNow);
+
+            _status.Text = $"Verified support bundle saved: {dialog.FileName}";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException or NotSupportedException)
         {
