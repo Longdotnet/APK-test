@@ -18,6 +18,28 @@ internal static class SupportBundleExport
             generatedAtUtc);
 
         CopyVerified(generatedBundlePath, destinationPath);
+
+        // Completed explicit Legacy A/B campaigns get a separate privacy-safe,
+        // cryptographically verifiable experiment manifest next to the support ZIP.
+        // The sidecar is diagnostics evidence only; failure to produce it must not
+        // mutate playback/session truth or weaken verification of the primary bundle.
+        try
+        {
+            _ = PlaybackBaselineExperimentManifestStore.ExportCompletedIfAvailable(
+                diagnosticsDirectory,
+                destinationPath,
+                generatedAtUtc);
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or InvalidDataException
+            or System.Text.Json.JsonException
+            or NotSupportedException)
+        {
+            ClientDiagnostics.Log($"Legacy A/B experiment sidecar could not be exported: {exception.Message}");
+        }
     }
 
     internal static void CopyVerified(string sourcePath, string destinationPath)
