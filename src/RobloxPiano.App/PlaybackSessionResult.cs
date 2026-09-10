@@ -1,3 +1,5 @@
+using RobloxPiano.Core;
+
 namespace RobloxPiano.App;
 
 internal enum PlaybackSessionResultKind
@@ -23,7 +25,7 @@ internal sealed record PlaybackSessionResult(
         ArgumentNullException.ThrowIfNull(exception);
         var result = new PlaybackSessionResult(PlaybackSessionResultKind.SourceFailed, position, Exception: exception);
         var now = DateTimeOffset.UtcNow;
-        PlaybackSessionDiagnostics.Persist(result, now, now);
+        PlaybackSessionDiagnostics.Persist(result, now, now, quality: null);
         return result;
     }
 }
@@ -32,7 +34,8 @@ internal static class PlaybackSessionResultCapture
 {
     public static async Task<PlaybackSessionResult> RunAsync(
         Func<Task> runSession,
-        Func<TimeSpan> positionProvider)
+        Func<TimeSpan> positionProvider,
+        Func<PlaybackTransportQualityReport?>? qualityProvider = null)
     {
         ArgumentNullException.ThrowIfNull(runSession);
         ArgumentNullException.ThrowIfNull(positionProvider);
@@ -71,7 +74,20 @@ internal static class PlaybackSessionResultCapture
             result = new PlaybackSessionResult(PlaybackSessionResultKind.RuntimeFailed, positionProvider(), Exception: exception);
         }
 
-        PlaybackSessionDiagnostics.Persist(result, startedAtUtc, DateTimeOffset.UtcNow);
+        PlaybackTransportQualityReport? quality = null;
+        try
+        {
+            quality = qualityProvider?.Invoke();
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or ArgumentException
+            or OverflowException)
+        {
+            ClientDiagnostics.Log($"Playback quality snapshot could not be captured: {exception.Message}");
+        }
+
+        PlaybackSessionDiagnostics.Persist(result, startedAtUtc, DateTimeOffset.UtcNow, quality);
         return result;
     }
 }
