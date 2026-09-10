@@ -41,6 +41,7 @@ internal static class PlaybackSessionResultCapture
         ArgumentNullException.ThrowIfNull(positionProvider);
 
         var startedAtUtc = DateTimeOffset.UtcNow;
+        var provenance = PlaybackSessionProvenance.TryCapture();
         PlaybackSessionResult result;
 
         try
@@ -87,7 +88,7 @@ internal static class PlaybackSessionResultCapture
             ClientDiagnostics.Log($"Playback quality snapshot could not be captured: {exception.Message}");
         }
 
-        PlaybackSessionDiagnostics.Persist(result, startedAtUtc, DateTimeOffset.UtcNow, quality);
+        PlaybackSessionProvenance.Persist(result, provenance, startedAtUtc, DateTimeOffset.UtcNow, quality);
         return result;
     }
 }
