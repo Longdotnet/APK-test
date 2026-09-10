@@ -11,7 +11,9 @@ internal static class Program
             ("slice clips an active note at seek boundary", TestSliceClipsActiveNoteAsync),
             ("slice rejects impossible seek positions", TestInvalidSeekAsync),
             ("runtime seek releases old state and re-enters canonical note", TestRuntimeSeekSafetyAsync),
-            ("transport position excludes target-focus downtime", TestPositionExcludesFocusDowntimeAsync)
+            ("transport position excludes target-focus downtime", TestPositionExcludesFocusDowntimeAsync),
+            ("transport quality treats seek omissions as intentional", TestTransportQualitySeekSegmentationAsync),
+            ("transport quality survives dynamic speed changes", TestTransportQualityDynamicSpeedAsync)
         };
 
         var failures = new List<string>();
@@ -125,6 +127,67 @@ internal static class Program
         }
     }
 
+    private static async Task TestTransportQualitySeekSegmentationAsync()
+    {
+        var clock = new HookClock();
+        var input = new RecordingInput(clock);
+        using var session = new PlaybackTransportSession(CreateTrack(), clock, input, new AlwaysFocused());
+
+        var requested = false;
+        clock.BeforeDelay = () =>
+        {
+            if (requested)
+            {
+                return;
+            }
+
+            requested = true;
+            session.Seek(TimeSpan.FromMilliseconds(250));
+        };
+
+        await session.PlayAsync(TimeSpan.Zero).ConfigureAwait(false);
+        var quality = session.QualityReport;
+
+        Equal(2, quality.SegmentCount, "seek should produce two quality segments");
+        Equal(1, quality.SeekCount, "seek segment count");
+        Equal(0, quality.UnexpectedMissingEdgeCount, "edges intentionally skipped by seek must not look lost");
+        True(quality.InterruptedEdgeCount > 0, "seek should explain interrupted planned edges");
+        Equal(0, quality.FailureCount, "seek must not be classified as playback failure");
+        True(quality.DispatchedEdgeCount > 0, "quality must include actual dispatched edges");
+        True(double.IsFinite(quality.P95AbsoluteTimingErrorMilliseconds), "p95 timing evidence must be finite");
+    }
+
+    private static async Task TestTransportQualityDynamicSpeedAsync()
+    {
+        var wallClock = new HookClock();
+        var sessionClock = new PlaybackSessionClock(wallClock, 1d);
+        var input = new RecordingInput(sessionClock);
+        using var session = new PlaybackTransportSession(CreateTrack(), sessionClock, input, new AlwaysFocused());
+
+        var changed = false;
+        wallClock.BeforeDelay = () =>
+        {
+            if (changed)
+            {
+                return;
+            }
+
+            changed = true;
+            sessionClock.SetSpeed(2d);
+        };
+
+        await session.PlayAsync(TimeSpan.Zero).ConfigureAwait(false);
+        var quality = session.QualityReport;
+
+        Equal(1, quality.SegmentCount, "speed change must not split canonical transport segment");
+        Equal(0, quality.SeekCount, "speed change is not a seek");
+        Equal(0, quality.UnexpectedMissingEdgeCount, "dynamic speed must not create false missing edges");
+        Equal(0, quality.FailureCount, "dynamic speed must not create playback failures");
+        Equal(PlaybackPlanner.BuildEdges(CreateTrack()).Count, quality.DispatchedEdgeCount, "all canonical edges must remain observed");
+        True(double.IsFinite(quality.MeanAbsoluteTimingErrorMilliseconds), "mean timing evidence must remain finite");
+        True(double.IsFinite(quality.MaxInputCallMilliseconds), "input-call evidence must remain finite");
+    }
+
     private static PerformanceTrack CreateTrack()
     {
         return new PerformanceTrack(
@@ -206,6 +269,7 @@ internal static class Program
         public ValueTask KeyDownAsync(IReadOnlyList<char> keys, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            _ = clock.Elapsed;
             Operations.Add($"down:{new string(keys.ToArray())}");
             return ValueTask.CompletedTask;
         }
@@ -213,6 +277,7 @@ internal static class Program
         public ValueTask KeyUpAsync(IReadOnlyList<char> keys, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            _ = clock.Elapsed;
             Operations.Add($"up:{new string(keys.ToArray())}");
             return ValueTask.CompletedTask;
         }
