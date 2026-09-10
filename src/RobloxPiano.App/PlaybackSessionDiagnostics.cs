@@ -23,7 +23,12 @@ internal sealed record PlaybackSessionQualityDiagnostic(
     double P95AbsoluteTimingErrorMilliseconds,
     double MaxAbsoluteTimingErrorMilliseconds,
     double MeanInputCallMilliseconds,
-    double MaxInputCallMilliseconds);
+    double MaxInputCallMilliseconds,
+    IReadOnlyList<PlaybackTransportControlEvent>? ControlEvents = null)
+{
+    public IReadOnlyList<PlaybackTransportControlEvent> TransportControlEvents =>
+        ControlEvents ?? Array.Empty<PlaybackTransportControlEvent>();
+}
 
 internal sealed record PlaybackSessionDiagnosticRecord(
     string SchemaVersion,
@@ -105,8 +110,8 @@ internal sealed record PlaybackSupportManifest(
 
 internal static class PlaybackSessionDiagnostics
 {
-    internal const string SchemaVersion = "4";
-    internal const string SupportBundleSchemaVersion = "4";
+    internal const string SchemaVersion = "5";
+    internal const string SupportBundleSchemaVersion = "5";
     internal const string SupportManifestSchemaVersion = "1";
     internal const int MaxSupportSessions = 20;
     private const int MaxSessionFiles = 30;
@@ -397,6 +402,7 @@ internal static class PlaybackSessionDiagnostics
                 readme.WriteLine("Generated automatically from recent local playback-session diagnostics.");
                 readme.WriteLine("The bundle intentionally excludes full local sheet paths, raw logs and raw key-by-key timing samples.");
                 readme.WriteLine("Transport-aware aggregate quality metrics include timing error, input-call latency, focus interruption, seek interruption and unexpected playback loss counts.");
+                readme.WriteLine("Transport control evidence includes only ordered canonical positions, speed transitions and seek targets so controlled A/B can fail closed when runtime transport histories differ.");
                 readme.WriteLine("Each new live playback session carries a SHA-256 identity snapshotted from the canonical PerformanceTrack owned by the transport; later source-file edits cannot change that session identity. Source bytes and full paths are not included.");
                 readme.WriteLine("manifest.json contains the SHA-256 and byte length of support.json so support staff can detect a damaged or partially transferred bundle.");
                 readme.WriteLine("Environment fields are limited to OS/runtime/architecture facts needed to diagnose clean-machine compatibility; no username, machine name or account identifier is collected.");
@@ -535,7 +541,8 @@ internal static class PlaybackSessionDiagnostics
                 quality.P95AbsoluteTimingErrorMilliseconds,
                 quality.MaxAbsoluteTimingErrorMilliseconds,
                 quality.MeanInputCallMilliseconds,
-                quality.MaxInputCallMilliseconds);
+                quality.MaxInputCallMilliseconds,
+                quality.TransportControlEvents.ToArray());
 
     private static PlaybackSupportEnvironment CaptureEnvironment()
         => new(
