@@ -130,7 +130,7 @@ internal static class PlaybackSessionComparisonRegression
     private static void TestMissingTransportLedgerIsNotCompared()
     {
         var baseline = Session("baseline", 10, Quality());
-        var oldSession = Session("old", 20, Quality(controlEvents: null));
+        var oldSession = Session("old", 20, Quality(includeLedger: false));
         var assessment = PlaybackSessionComparisonPolicy.CompareWithMostRecentCompatible(oldSession, [oldSession, baseline]);
 
         Equal(PlaybackSessionComparisonVerdict.NotComparable, assessment.Verdict, "sessions without persisted transport history must fail closed");
@@ -176,7 +176,8 @@ internal static class PlaybackSessionComparisonRegression
         double maxTiming = 4,
         double meanInput = 0.2,
         double maxInput = 0.5,
-        IReadOnlyList<PlaybackTransportControlEvent>? controlEvents = default)
+        IReadOnlyList<PlaybackTransportControlEvent>? controlEvents = null,
+        bool includeLedger = true)
         => new(
             2,
             1,
@@ -193,7 +194,7 @@ internal static class PlaybackSessionComparisonRegression
             maxTiming,
             meanInput,
             maxInput,
-            controlEvents ?? [Start(1d)]);
+            includeLedger ? controlEvents ?? [Start(1d)] : null);
 
     private static PlaybackTransportControlEvent Start(double speed)
         => new(0, PlaybackTransportControlKind.SessionStarted, 0d, speed);
