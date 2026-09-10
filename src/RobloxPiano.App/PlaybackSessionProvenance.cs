@@ -63,9 +63,6 @@ internal static class PlaybackSessionProvenance
             sessionId,
             quality);
 
-        // Engine/input profile are compile-time runtime identities today, but keep the
-        // snapshot authoritative so a future selectable engine/profile cannot make old
-        // session provenance depend on end-of-run global state.
         return record with
         {
             PlaybackEngine = snapshot.PlaybackEngine,
@@ -90,10 +87,6 @@ internal static class PlaybackSessionProvenance
 
         try
         {
-            // Campaign provenance is encoded into the otherwise opaque session id only when
-            // the immutable session-start snapshot still matches the explicitly persisted
-            // campaign. This keeps support schema backward-compatible while allowing an
-            // exported Support Bundle to prove campaign membership without local side files.
             var sessionId = PlaybackBaselineCampaignStore.CreateSessionIdForSnapshot(snapshot, startedAtUtc);
             var record = CreateRecord(
                 result,
@@ -122,6 +115,22 @@ internal static class PlaybackSessionProvenance
                         out var verificationError))
                 {
                     ClientDiagnostics.Log($"Latest support bundle failed post-write verification: {verificationError}");
+                }
+
+                try
+                {
+                    _ = PlaybackBaselineExperimentArchive.CaptureCompletedIfAvailable(
+                        ClientDiagnostics.DirectoryPath,
+                        endedAtUtc);
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                    or UnauthorizedAccessException
+                    or ArgumentException
+                    or System.Text.Json.JsonException
+                    or NotSupportedException)
+                {
+                    ClientDiagnostics.Log($"Completed Legacy A/B experiment could not be archived: {exception.Message}");
                 }
             }
         }
