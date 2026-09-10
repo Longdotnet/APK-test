@@ -123,6 +123,25 @@ internal static class PlaybackSessionProvenance
                 {
                     ClientDiagnostics.Log($"Latest support bundle failed post-write verification: {verificationError}");
                 }
+
+                try
+                {
+                    _ = PlaybackBaselineExperimentArchive.CaptureCompletedIfAvailable(
+                        ClientDiagnostics.DirectoryPath,
+                        endedAtUtc);
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                    or UnauthorizedAccessException
+                    or ArgumentException
+                    or System.Text.Json.JsonException
+                    or InvalidDataException
+                    or NotSupportedException)
+                {
+                    // Archiving is support evidence only. A completed playback session must
+                    // remain successfully persisted even if archive storage is unavailable.
+                    ClientDiagnostics.Log($"Completed Legacy A/B experiment could not be archived: {exception.Message}");
+                }
             }
         }
         catch (Exception exception) when (
