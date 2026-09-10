@@ -21,8 +21,13 @@ internal static class Program
         Run("structured diagnostic preserves client and Roblox session context", TestStructuredDiagnosticContext, failures);
         Run("structured diagnostic JSONL round-trips multiple sessions", TestStructuredDiagnosticJsonLines, failures);
         Run("structured diagnostic rejects impossible session time", TestStructuredDiagnosticRejectsImpossibleTime, failures);
+        Run("quality verdict is healthy for clean timing evidence", TestQualityHealthy, failures);
+        Run("quality verdict prioritizes unexpected dispatch loss", TestQualityDispatchLoss, failures);
+        Run("quality verdict explains focus interruption", TestQualityFocusInterrupted, failures);
+        Run("quality verdict separates input latency from scheduler timing", TestQualityInputLatency, failures);
+        Run("quality verdict flags scheduler timing degradation", TestQualityTimingDegraded, failures);
 
-        Console.WriteLine($"App recovery regressions: {14 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"App recovery regressions: {19 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -261,6 +266,67 @@ internal static class Program
         }
 
         True(threw, "diagnostics must reject end timestamps before session start");
+    }
+
+    private static PlaybackSessionQualityDiagnostic Quality(
+        int missing = 0,
+        int failures = 0,
+        int focusPauses = 0,
+        double focusMs = 0,
+        double p95 = 2,
+        double maxTiming = 4,
+        double meanInput = 0.2,
+        double maxInput = 0.5)
+        => new(
+            1,
+            1,
+            0,
+            20,
+            missing,
+            0,
+            failures,
+            focusPauses,
+            focusMs,
+            1,
+            1,
+            p95,
+            maxTiming,
+            meanInput,
+            maxInput);
+
+    private static void TestQualityHealthy()
+    {
+        var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(Quality());
+        Equal(PlaybackSessionQualityVerdict.Healthy, assessment.Verdict, "healthy quality verdict");
+        True(!assessment.NeedsAttention, "healthy evidence should not require attention");
+    }
+
+    private static void TestQualityDispatchLoss()
+    {
+        var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(Quality(missing: 1, focusPauses: 1, p95: 100, maxInput: 100));
+        Equal(PlaybackSessionQualityVerdict.DispatchLoss, assessment.Verdict, "dispatch loss must have highest diagnostic priority");
+        Contains(assessment.Guidance, "Test Roblox Input", "dispatch loss guidance");
+    }
+
+    private static void TestQualityFocusInterrupted()
+    {
+        var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(Quality(focusPauses: 2, focusMs: 450));
+        Equal(PlaybackSessionQualityVerdict.FocusInterrupted, assessment.Verdict, "focus interruption verdict");
+        Contains(assessment.Guidance, "foreground", "focus guidance");
+    }
+
+    private static void TestQualityInputLatency()
+    {
+        var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(Quality(meanInput: 5, p95: 50));
+        Equal(PlaybackSessionQualityVerdict.InputLatencyHigh, assessment.Verdict, "input latency must be separated from scheduler timing");
+        Contains(assessment.Summary, "Windows input", "input latency summary");
+    }
+
+    private static void TestQualityTimingDegraded()
+    {
+        var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(Quality(p95: 13));
+        Equal(PlaybackSessionQualityVerdict.TimingDegraded, assessment.Verdict, "timing degradation verdict");
+        Contains(assessment.Guidance, "Legacy", "timing guidance should preserve baseline comparison workflow");
     }
 
     private static void Run(string name, Action test, ICollection<string> failures)
