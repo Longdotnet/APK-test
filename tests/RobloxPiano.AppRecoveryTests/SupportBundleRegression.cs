@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using RobloxPiano.App;
+using RobloxPiano.Core;
 
 namespace RobloxPiano.AppRecoveryTests;
 
@@ -65,7 +66,7 @@ internal static class SupportBundleRegression
             new[] { record },
             DateTimeOffset.UnixEpoch.AddMinutes(5));
 
-        Equal("4", document.SchemaVersion, "support schema version");
+        Equal("5", document.SchemaVersion, "support schema version");
         Equal(1, document.SessionCount, "support session count");
         Equal(1, document.OutcomeSummary.RuntimeFailed, "runtime failure summary");
         Equal(1, document.OutcomeSummary.TotalFailures, "total failure summary");
@@ -88,13 +89,19 @@ internal static class SupportBundleRegression
 
     private static void TestTransportQualitySurvivesSupportProjection()
     {
+        var ledger = new[]
+        {
+            new PlaybackTransportControlEvent(0, PlaybackTransportControlKind.SessionStarted, 0d, 1d),
+            new PlaybackTransportControlEvent(1, PlaybackTransportControlKind.SpeedChanged, 1.25d, 1.2d),
+            new PlaybackTransportControlEvent(2, PlaybackTransportControlKind.SeekRequested, 2.5d, null)
+        };
         var record = CreateRecord(
             "quality",
             DateTimeOffset.UnixEpoch.AddMinutes(5),
             Path.Combine("private", "quality.mid")) with
         {
             Quality = new PlaybackSessionQualityDiagnostic(
-                1,
+                2,
                 3,
                 2,
                 42,
@@ -108,7 +115,8 @@ internal static class SupportBundleRegression
                 2.5d,
                 4.75d,
                 0.3d,
-                0.9d)
+                0.9d,
+                ledger)
         };
 
         var document = PlaybackSessionDiagnostics.CreateSupportDocument(
@@ -123,6 +131,10 @@ internal static class SupportBundleRegression
         Equal(7, quality.InterruptedEdgeCount, "interrupted edge count");
         Equal(2.5d, quality.P95AbsoluteTimingErrorMilliseconds, "quality p95 timing");
         Equal(0.9d, quality.MaxInputCallMilliseconds, "quality max input call");
+        Equal(3, quality.TransportControlEvents.Count, "transport ledger count");
+        Equal(PlaybackTransportControlKind.SpeedChanged, quality.TransportControlEvents[1].Kind, "speed transition survives support projection");
+        Equal(PlaybackTransportControlKind.SeekRequested, quality.TransportControlEvents[2].Kind, "seek transition survives support projection");
+        Equal(2.5d, quality.TransportControlEvents[2].PositionSeconds, "canonical seek position survives support projection");
     }
 
     private static void TestSupportBundleIsSendablePrivacySafeAndSelfVerifying()
@@ -142,7 +154,10 @@ internal static class SupportBundleRegression
                 {
                     CanonicalSourceFingerprint = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     PlaybackEngine = PlaybackRuntimeIdentity.Engine,
-                    InputProfile = PlaybackRuntimeIdentity.InputProfile
+                    InputProfile = PlaybackRuntimeIdentity.InputProfile,
+                    Quality = new PlaybackSessionQualityDiagnostic(
+                        2, 1, 0, 10, 0, 0, 0, 0, 0, 1, 1, 2, 3, 0.2, 0.5,
+                        [new PlaybackTransportControlEvent(0, PlaybackTransportControlKind.SessionStarted, 0, 1)])
                 });
 
             var destination = Path.Combine(directory, "RobloxPiano-support-latest.zip");
@@ -187,6 +202,7 @@ internal static class SupportBundleRegression
             True(json.Contains("bundle-song.musicxml", StringComparison.Ordinal), "bundle should retain source filename for support correlation");
             True(json.Contains(PlaybackRuntimeIdentity.Engine, StringComparison.Ordinal), "bundle should contain explicit engine identity");
             True(json.Contains(PlaybackRuntimeIdentity.InputProfile, StringComparison.Ordinal), "bundle should contain explicit input-profile identity");
+            True(json.Contains("sessionStarted", StringComparison.OrdinalIgnoreCase), "bundle should contain privacy-safe transport control evidence");
             False(json.Contains(sourcePath, StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain the full local source path");
             False(json.Contains("private-client-path", StringComparison.OrdinalIgnoreCase), "bundle JSON must not contain source parent folders");
             False(json.Contains("sessions-20260910.jsonl", StringComparison.OrdinalIgnoreCase), "bundle must not embed raw diagnostic filenames");
@@ -267,7 +283,7 @@ internal static class SupportBundleRegression
             638930000000000000L,
             typeof(InvalidOperationException).FullName,
             exceptionMessage,
-            "0.26.0");
+            "0.30.0");
 
     private static string CreateTemporaryDirectory()
     {
