@@ -46,8 +46,8 @@ internal static class PlaybackSessionComparisonPolicy
         {
             return new PlaybackSessionComparisonAssessment(
                 PlaybackSessionComparisonVerdict.NotComparable,
-                "No prior controlled run with the same song/type/speed/input-latency settings.",
-                "Reproduce the same song without changing speed or input-latency compensation. Keep Roblox focused so the next run can become a deterministic comparison baseline.",
+                "No prior controlled run with the same canonical performance/runtime identity and playback settings.",
+                "Reproduce the same canonical song without changing playback engine, input profile, speed or input-latency compensation. Older sessions without a canonical fingerprint intentionally cannot become A/B baselines.",
                 null,
                 null,
                 null);
@@ -119,7 +119,7 @@ internal static class PlaybackSessionComparisonPolicy
                 : $"Both controlled runs remain degraded without a material delta. p95 delta {timingDelta:+0.###;-0.###;0} ms; max input-call delta {inputDelta:+0.###;-0.###;0} ms.",
             materiallyWorse
                 ? BuildRegressionGuidance(timingDelta, inputDelta)
-                : "The issue reproduced under equivalent settings. Save a verified Support Bundle; repeated stable degradation is stronger evidence than a one-off slow run.",
+                : "The issue reproduced under equivalent canonical/runtime identity and settings. Save a verified Support Bundle; repeated stable degradation is stronger evidence than a one-off slow run.",
             baseline.SessionId,
             timingDelta,
             inputDelta);
@@ -135,14 +135,20 @@ internal static class PlaybackSessionComparisonPolicy
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(current.SourceFileName)
-            || string.IsNullOrWhiteSpace(candidate.SourceFileName))
+        if (string.IsNullOrWhiteSpace(current.CanonicalSourceFingerprint)
+            || string.IsNullOrWhiteSpace(candidate.CanonicalSourceFingerprint)
+            || string.IsNullOrWhiteSpace(current.PlaybackEngine)
+            || string.IsNullOrWhiteSpace(candidate.PlaybackEngine)
+            || string.IsNullOrWhiteSpace(current.InputProfile)
+            || string.IsNullOrWhiteSpace(candidate.InputProfile))
         {
             return false;
         }
 
-        return string.Equals(current.SourceFileName, candidate.SourceFileName, StringComparison.OrdinalIgnoreCase)
+        return string.Equals(current.CanonicalSourceFingerprint, candidate.CanonicalSourceFingerprint, StringComparison.OrdinalIgnoreCase)
                && string.Equals(current.SourceType, candidate.SourceType, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(current.PlaybackEngine, candidate.PlaybackEngine, StringComparison.Ordinal)
+               && string.Equals(current.InputProfile, candidate.InputProfile, StringComparison.Ordinal)
                && Math.Abs(current.PreferredSpeed - candidate.PreferredSpeed) <= SpeedTolerance
                && current.InputLatencyMs == candidate.InputLatencyMs;
     }
