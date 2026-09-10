@@ -44,7 +44,18 @@ internal static class PlaybackBaselineExperimentArchiveRegression
                 () => PlaybackBaselineExperimentArchive.PersistVerified(directory, conflict),
                 "same campaign/archive identity must never overwrite different verified evidence");
 
-            Console.WriteLine("PASS  durable Legacy A/B experiment archive (5 cases)");
+            var exportPath = Path.Combine(directory, "selected-export.legacy-ab.json");
+            PlaybackBaselineExperimentArchive.ExportVerified(second, exportPath);
+            var exported = PlaybackBaselineExperimentManifestStore.ReadAndVerify(exportPath);
+            True(exported.CampaignId == second.CampaignId, "selected archive export must preserve exact campaign identity");
+            True(exported.EvidenceSha256 == second.EvidenceSha256, "selected archive export must preserve exact immutable evidence hash");
+
+            var tampered = second with { RuntimeVerdict = "tampered" };
+            Throws<InvalidDataException>(
+                () => PlaybackBaselineExperimentArchive.ExportVerified(tampered, Path.Combine(directory, "tampered-export.legacy-ab.json")),
+                "archive export must reject a manifest whose immutable evidence no longer verifies");
+
+            Console.WriteLine("PASS  durable Legacy A/B experiment archive (7 cases)");
         }
         finally
         {
