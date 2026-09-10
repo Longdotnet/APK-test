@@ -41,6 +41,7 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
     internal const double SpeedTolerance = PlaybackSessionComparisonPolicy.SpeedTolerance;
     internal const double PositionToleranceSeconds = PlaybackSessionComparisonPolicy.PositionToleranceSeconds;
     internal const double MaterialDeltaMilliseconds = 3d;
+    internal static readonly TimeSpan MaxCounterpartAge = TimeSpan.FromMinutes(30);
 
     public static PlaybackLegacyBaselineVariant Classify(PlaybackSupportSession session)
     {
@@ -96,22 +97,42 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
             ? PlaybackLegacyBaselineVariant.LegacyX2
             : PlaybackLegacyBaselineVariant.Legacy;
 
-        var counterpart = sessions
+        // Fail closed instead of searching arbitrarily far back through history. The newest prior
+        // protected baseline with the same immutable campaign identity is the only eligible pair.
+        // If that run is stale, the same variant, or has a different transport history, support must
+        // ask for a fresh reproduction rather than cherry-picking an older run that happens to fit.
+        var priorBaseline = sessions
             .Where(candidate => !ReferenceEquals(candidate, current))
             .Where(candidate => candidate.EndedAtUtc < current.EndedAtUtc)
-            .Where(candidate => Classify(candidate) == counterpartVariant)
-            .Where(candidate => AreControlledCounterparts(current, candidate))
+            .Where(candidate => current.EndedAtUtc - candidate.EndedAtUtc <= MaxCounterpartAge)
+            .Where(candidate => Classify(candidate) != PlaybackLegacyBaselineVariant.None)
+            .Where(candidate => HasSameCampaignIdentity(current, candidate))
             .OrderByDescending(candidate => candidate.EndedAtUtc)
             .ThenByDescending(candidate => candidate.SessionId, StringComparer.Ordinal)
             .FirstOrDefault();
 
-        if (counterpart is null)
+        if (priorBaseline is null)
         {
             return NotComparable(currentVariant,
-                $"No prior controlled {counterpartVariant} run exists for the same canonical performance/runtime conditions.",
-                "Re-run the same TXT/VPS canonical song using the counterpart start speed. Keep input-latency compensation, playback engine, input profile, seek targets and proportional speed transitions equivalent. Do not use this workflow as a perceptual promotion verdict.");
+                $"No recent protected baseline run exists within {MaxCounterpartAge.TotalMinutes:0} minutes for the same canonical performance/runtime identity.",
+                "Run the Legacy 1x and Legacy x2 2x reproduction back-to-back. Keep input-latency compensation, playback engine and input profile unchanged; old historical sessions are intentionally not reused as experimental evidence.");
         }
 
+        if (Classify(priorBaseline) != counterpartVariant)
+        {
+            return NotComparable(currentVariant,
+                $"The most recent protected baseline for this canonical/runtime identity is another {currentVariant} run, not {counterpartVariant}.",
+                $"Run {counterpartVariant} next so the two adjacent baseline sessions form one bounded reproduction pair. The comparator will not skip over the newer run to reuse older evidence.");
+        }
+
+        if (!AreControlledCounterparts(current, priorBaseline))
+        {
+            return NotComparable(currentVariant,
+                $"The most recent {counterpartVariant} run changed controlled transport conditions and cannot be paired.",
+                "Repeat the pair back-to-back with identical seek targets and exactly proportional 2x speed transitions. The comparator fails closed instead of falling back to an older historical match.");
+        }
+
+        var counterpart = priorBaseline;
         var legacy = currentVariant == PlaybackLegacyBaselineVariant.Legacy ? current : counterpart;
         var legacyX2 = currentVariant == PlaybackLegacyBaselineVariant.LegacyX2 ? current : counterpart;
         var legacyQuality = legacy.Quality!;
@@ -213,7 +234,20 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
             || leftVariant == rightVariant
             || left.Quality is null
             || right.Quality is null
-            || string.IsNullOrWhiteSpace(left.CanonicalSourceFingerprint)
+            || !HasSameCampaignIdentity(left, right))
+        {
+            return false;
+        }
+
+        return HaveEquivalentScaledTransportHistory(left, right);
+    }
+
+    internal static bool HasSameCampaignIdentity(PlaybackSupportSession left, PlaybackSupportSession right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+
+        if (string.IsNullOrWhiteSpace(left.CanonicalSourceFingerprint)
             || string.IsNullOrWhiteSpace(right.CanonicalSourceFingerprint)
             || string.IsNullOrWhiteSpace(left.PlaybackEngine)
             || string.IsNullOrWhiteSpace(right.PlaybackEngine)
@@ -227,8 +261,7 @@ internal static class PlaybackLegacyBaselineComparisonPolicy
                && string.Equals(left.SourceType, right.SourceType, StringComparison.OrdinalIgnoreCase)
                && string.Equals(left.PlaybackEngine, right.PlaybackEngine, StringComparison.Ordinal)
                && string.Equals(left.InputProfile, right.InputProfile, StringComparison.Ordinal)
-               && left.InputLatencyMs == right.InputLatencyMs
-               && HaveEquivalentScaledTransportHistory(left, right);
+               && left.InputLatencyMs == right.InputLatencyMs;
     }
 
     internal static bool HaveEquivalentScaledTransportHistory(PlaybackSupportSession left, PlaybackSupportSession right)
