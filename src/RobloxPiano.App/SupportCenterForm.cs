@@ -54,7 +54,7 @@ internal sealed class SupportCenterForm : Form
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent playback outcomes, deterministic quality verdicts and controlled same-settings A/B evidence. Full sheet paths, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent playback outcomes, deterministic quality verdicts and canonical-identity-controlled A/B evidence. Full sheet paths, source bytes, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
             MaximumSize = new Size(1130, 0),
             Padding = new Padding(0, 0, 0, 4)
@@ -90,7 +90,7 @@ internal sealed class SupportCenterForm : Form
             _sessions.DataSource = _records.Select(record => new SessionRow(record, _records)).ToList();
             _status.Text = _records.Count == 0
                 ? "No playback sessions have been recorded yet. Play a song, then return here."
-                : $"Showing {_records.Count} recent session(s). A/B uses the most recent prior run with the same song/type/speed/input-latency settings. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
+                : $"Showing {_records.Count} recent session(s). A/B requires the same canonical performance, source type, playback engine, input profile, speed and input-latency settings. Latest support bundle: {PlaybackSessionDiagnostics.SupportBundlePath}";
             ShowSelectedDetails();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException)
@@ -133,6 +133,9 @@ internal sealed class SupportCenterForm : Form
             $"Ended (UTC): {record.EndedAtUtc:O}",
             $"Song: {record.SourceFileName ?? "(unknown)"}",
             $"Source type: {record.SourceType}",
+            $"Canonical performance fingerprint: {DisplayFingerprint(record.CanonicalSourceFingerprint)}",
+            $"Playback engine: {record.PlaybackEngine}",
+            $"Input profile: {record.InputProfile}",
             $"Final position: {TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)):mm\\:ss\\.fff}",
             $"Preferred speed at session end: {record.PreferredSpeed:0.###}x",
             $"Input latency compensation: {record.InputLatencyMs} ms",
@@ -188,6 +191,11 @@ internal sealed class SupportCenterForm : Form
             MessageBox.Show(this, exception.Message, "Support bundle could not be saved", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
+
+    private static string DisplayFingerprint(string? fingerprint)
+        => string.IsNullOrWhiteSpace(fingerprint)
+            ? "(not captured; older/unavailable session is not A/B comparable)"
+            : fingerprint.Length <= 16 ? fingerprint : fingerprint[..16] + "…";
 
     private sealed record SessionRow(
         PlaybackSupportSession Record,
