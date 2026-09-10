@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.37.0
+version: 0.38.0
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -25,20 +25,23 @@ SHA256: `{{SHA256}}`
 - Runtime focus/input authorization, emergency release-all, held-key/pedal ownership, deterministic transport evidence and verified experiment history remain unchanged.
 - AI remains optional and is not required for playback/import/validation truth.
 
-## Phase 51 deterministic reference-audio foundation
+## Phase 52 deterministic reference-to-timeline alignment
 
-- Adds dependency-free `ReferenceAudioAnalyzer` to the deterministic Core layer as evidence-only infrastructure.
-- Accepts explicitly supported uncompressed 16-bit PCM RIFF/WAVE input and fails closed on malformed chunks, unsupported encodings/bit depths, impossible sample rates, invalid block alignment or incomplete sample frames.
-- Binds analysis to the exact reference bytes with SHA-256 and emits a separate SHA-256 over the normalized feature record.
-- Deterministically measures duration, RMS/peak level, a fixed 10 ms energy envelope, onset positions with a fixed refractory rule, and bounded 60-200 BPM autocorrelation tempo evidence.
-- Reference analysis performs no network calls, AI calls, codec downloads, playback mutation, Roblox authorization, keyboard dispatch, engine promotion or Legacy/Legacy x2 default change.
-- Quality regression coverage includes deterministic repeated analysis, expected 120 BPM pulse-train evidence, exact-byte identity changes, malformed WAV rejection and unsupported-format rejection.
-- ADR 0056 fixes the evidence boundary and requires a schema bump for any future semantic change to reference-audio features.
+- Adds dependency-free `ReferenceAudioTimelineAligner` to the deterministic Core evidence layer.
+- Aligns analyzed reference-audio onsets with canonical performance event starts at an explicit playback speed without mutating the track.
+- Uses a bounded ±2000 ms global-offset search, fixed 10 ms grid and monotonic one-to-one onset matching with a 120 ms tolerance.
+- Reports match coverage, recovered recording offset, mean/P95 residual timing error and candidate/reference tempo ratio.
+- Binds evidence to exact reference content hash, reference feature hash, canonical performance fingerprint and playback speed, then emits a separate SHA-256 over the normalized alignment evidence.
+- Verification fails closed on malformed identity/count/range fields, inconsistent coverage or tampered metrics/evidence hash.
+- Regression coverage proves deterministic evidence, known-offset recovery without timeline mutation, speed-sensitive comparison and tamper rejection.
+- ADR 0057 fixes the evidence/matching boundary and requires a schema boundary for future semantic changes.
 
 ## Current boundaries
 
-- Reference-audio analysis is not yet attached to a Legacy A/B experiment manifest and does not claim perceptual equivalence.
-- Initial format support is intentionally narrow: MP3/AAC/float WAV/transcoding remain unsupported rather than silently guessed.
+- Reference alignment is deterministic diagnostics evidence, not a perceptual-quality verdict and not yet an automatic Legacy-vs-Legacy-x2 promotion signal.
+- Reference evidence is not yet embedded into the durable Legacy A/B experiment manifest; that remains the next integration boundary.
+- Initial audio-format support remains intentionally narrow: MP3/AAC/float WAV/transcoding are unsupported rather than silently guessed.
+- Reference analysis/alignment performs no network calls, AI calls, playback mutation, Roblox authorization or keyboard dispatch.
 - CI cannot observe a live Roblox client consuming synthetic input; explicit GUI input verification remains the client-side acceptance check for a real Roblox process.
 - MIDI and MusicXML remain notation importers; image/PDF OMR is not silently attempted.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.
