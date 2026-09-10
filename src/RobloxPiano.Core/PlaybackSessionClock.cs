@@ -29,6 +29,12 @@ public sealed class PlaybackSessionClock : IMonotonicClock
         _playbackAnchor = TimeSpan.Zero;
     }
 
+    /// <summary>
+    /// Raised after a validated speed transition has been committed. Subscribers
+    /// are observational only; playback timing never depends on a subscriber.
+    /// </summary>
+    public event Action<double>? SpeedChanged;
+
     public double Speed
     {
         get
@@ -66,15 +72,30 @@ public sealed class PlaybackSessionClock : IMonotonicClock
     {
         ValidateSpeed(speed);
         var clamped = Math.Clamp(speed, MinimumSpeed, MaximumSpeed);
+        bool changed;
 
         lock (_gate)
         {
             var wallNow = _wallClock.Elapsed;
             _playbackAnchor = GetPlaybackNowLocked(wallNow);
             _wallAnchor = wallNow;
+            changed = Math.Abs(_speed - clamped) > 0.0000001d;
             _speed = clamped;
-            return _speed;
         }
+
+        if (changed)
+        {
+            try
+            {
+                SpeedChanged?.Invoke(clamped);
+            }
+            catch
+            {
+                // Observability must never become part of playback truth.
+            }
+        }
+
+        return clamped;
     }
 
     public double AdjustSpeed(double delta)

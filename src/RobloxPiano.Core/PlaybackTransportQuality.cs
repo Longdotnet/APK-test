@@ -8,6 +8,24 @@ public enum PlaybackTransportSegmentEndReason
     Failed = 3
 }
 
+public enum PlaybackTransportControlKind
+{
+    SessionStarted = 0,
+    SpeedChanged = 1,
+    SeekRequested = 2
+}
+
+/// <summary>
+/// Immutable, append-only control evidence for one live transport session. It is
+/// intentionally limited to canonical position and playback-control settings so it
+/// can be persisted safely without exposing source paths or UI state.
+/// </summary>
+public sealed record PlaybackTransportControlEvent(
+    int Sequence,
+    PlaybackTransportControlKind Kind,
+    double PositionSeconds,
+    double? Speed);
+
 public sealed record PlaybackTransportSegmentQuality(
     int SegmentIndex,
     double StartPositionSeconds,
@@ -45,11 +63,14 @@ public sealed record PlaybackTransportQualityReport(
     double MeanInputCallMilliseconds,
     double MaxInputCallMilliseconds,
     IReadOnlyList<PlaybackTransportSegmentQuality> Segments,
-    string? CanonicalTrackFingerprint = null)
+    string? CanonicalTrackFingerprint = null,
+    IReadOnlyList<PlaybackTransportControlEvent>? ControlEvents = null)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public bool HasUnexpectedPlaybackLoss => UnexpectedMissingEdgeCount > 0 || FailureCount > 0;
+    public IReadOnlyList<PlaybackTransportControlEvent> TransportControlEvents =>
+        ControlEvents ?? Array.Empty<PlaybackTransportControlEvent>();
 }
 
 internal sealed class PlaybackTransportQualityAccumulator
@@ -57,11 +78,32 @@ internal sealed class PlaybackTransportQualityAccumulator
     private readonly object _gate = new();
     private readonly PlaybackQualityCollector _aggregateCollector = new();
     private readonly List<PlaybackTransportSegmentQuality> _segments = new();
+    private readonly List<PlaybackTransportControlEvent> _controlEvents = new();
 
     public IPlaybackObserver CreateSegmentObserver(PlaybackQualityCollector segmentCollector)
     {
         ArgumentNullException.ThrowIfNull(segmentCollector);
         return new CompositePlaybackObserver(segmentCollector, _aggregateCollector);
+    }
+
+    public void RecordSessionStarted(TimeSpan position, double? speed)
+    {
+        RecordControl(PlaybackTransportControlKind.SessionStarted, position, speed);
+    }
+
+    public void RecordSpeedChanged(TimeSpan position, double speed)
+    {
+        if (!double.IsFinite(speed) || speed <= 0d)
+        {
+            throw new ArgumentOutOfRangeException(nameof(speed), "Playback speed must be finite and greater than zero.");
+        }
+
+        RecordControl(PlaybackTransportControlKind.SpeedChanged, position, speed);
+    }
+
+    public void RecordSeekRequested(TimeSpan position)
+    {
+        RecordControl(PlaybackTransportControlKind.SeekRequested, position, speed: null);
     }
 
     public void CompleteSegment(
@@ -101,9 +143,11 @@ internal sealed class PlaybackTransportQualityAccumulator
     public PlaybackTransportQualityReport BuildReport()
     {
         PlaybackTransportSegmentQuality[] segments;
+        PlaybackTransportControlEvent[] controlEvents;
         lock (_gate)
         {
             segments = _segments.ToArray();
+            controlEvents = _controlEvents.ToArray();
         }
 
         var aggregate = _aggregateCollector.BuildSnapshot();
@@ -127,7 +171,21 @@ internal sealed class PlaybackTransportQualityAccumulator
             aggregate.MaxAbsoluteTimingErrorMilliseconds,
             aggregate.MeanInputCallMilliseconds,
             aggregate.MaxInputCallMilliseconds,
-            segments);
+            segments,
+            ControlEvents: controlEvents);
+    }
+
+    private void RecordControl(PlaybackTransportControlKind kind, TimeSpan position, double? speed)
+    {
+        var clampedPositionSeconds = Math.Max(0d, position.TotalSeconds);
+        lock (_gate)
+        {
+            _controlEvents.Add(new PlaybackTransportControlEvent(
+                _controlEvents.Count,
+                kind,
+                clampedPositionSeconds,
+                speed));
+        }
     }
 
     private sealed class CompositePlaybackObserver(
