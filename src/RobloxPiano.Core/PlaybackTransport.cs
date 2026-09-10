@@ -77,6 +77,11 @@ public static class PlaybackTransport
 /// implemented by safely cancelling the current kernel slice (which releases all
 /// held keys), rebuilding a canonical slice, and restarting from the requested
 /// position. No second scheduler or UI-owned note state is introduced.
+///
+/// Quality instrumentation is slice-aware: each seek starts a fresh canonical
+/// observation segment, while aggregate timing remains in the monotonic logical
+/// playback clock domain. Therefore dynamic speed changes do not invalidate timing
+/// evidence and intentionally skipped edges are not reported as playback loss.
 /// </summary>
 public sealed class PlaybackTransportSession : IDisposable
 {
@@ -88,6 +93,7 @@ public sealed class PlaybackTransportSession : IDisposable
     private readonly IInputSink _input;
     private readonly ObservedTransportFocusGate _focus;
     private readonly PlaybackTimingProfile _timingProfile;
+    private readonly PlaybackTransportQualityAccumulator _quality = new();
 
     private CancellationTokenSource? _activeSliceCancellation;
     private TimeSpan? _pendingSeek;
@@ -118,6 +124,7 @@ public sealed class PlaybackTransportSession : IDisposable
 
     public TimeSpan Duration => _track.TimelineDuration;
     public PlaybackTimingProfile TimingProfile => _timingProfile;
+    public PlaybackTransportQualityReport QualityReport => _quality.BuildReport();
 
     public TimeSpan Position
     {
@@ -204,7 +211,16 @@ public sealed class PlaybackTransportSession : IDisposable
                 _sliceRunning = true;
             }
 
-            var kernel = new PlaybackKernel(_clock, _input, _focus);
+            var segmentCollector = new PlaybackQualityCollector();
+            var instrumented = PlaybackInstrumentation.Create(
+                slice,
+                1d,
+                _clock,
+                _input,
+                _focus,
+                _quality.CreateSegmentObserver(segmentCollector));
+            var kernel = new PlaybackKernel(_clock, instrumented.Input, instrumented.Focus);
+
             try
             {
                 await kernel.PlayAsync(
@@ -215,6 +231,12 @@ public sealed class PlaybackTransportSession : IDisposable
                         FocusPollInterval: DefaultFocusPollInterval,
                         DispatchLead: _timingProfile.DispatchLead),
                     sliceCancellation.Token).ConfigureAwait(false);
+
+                _quality.CompleteSegment(
+                    nextPosition,
+                    slice,
+                    segmentCollector,
+                    PlaybackTransportSegmentEndReason.Completed);
 
                 lock (_gate)
                 {
@@ -236,12 +258,38 @@ public sealed class PlaybackTransportSession : IDisposable
                     _sliceRunning = false;
                 }
 
+                _quality.CompleteSegment(
+                    nextPosition,
+                    slice,
+                    segmentCollector,
+                    seek.HasValue
+                        ? PlaybackTransportSegmentEndReason.Seeked
+                        : PlaybackTransportSegmentEndReason.Cancelled);
+
                 if (!seek.HasValue)
                 {
                     throw;
                 }
 
                 nextPosition = seek.Value;
+            }
+            catch (OperationCanceledException)
+            {
+                _quality.CompleteSegment(
+                    nextPosition,
+                    slice,
+                    segmentCollector,
+                    PlaybackTransportSegmentEndReason.Cancelled);
+                throw;
+            }
+            catch
+            {
+                _quality.CompleteSegment(
+                    nextPosition,
+                    slice,
+                    segmentCollector,
+                    PlaybackTransportSegmentEndReason.Failed);
+                throw;
             }
             finally
             {
