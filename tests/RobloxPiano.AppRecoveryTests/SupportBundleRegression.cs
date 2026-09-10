@@ -14,9 +14,10 @@ internal static class SupportBundleRegression
     {
         TestRecentRecordsIgnoreMalformedTailAndStayBounded();
         TestSupportDocumentRedactsLocalSourcePathAndSummarizesOutcomes();
+        TestTransportQualitySurvivesSupportProjection();
         TestSupportBundleIsSendablePrivacySafeAndSelfVerifying();
         TestSupportBundleVerificationRejectsTamperedPayload();
-        Console.WriteLine("PASS  support bundle regressions (4)");
+        Console.WriteLine("PASS  support bundle regressions (5)");
     }
 
     private static void TestRecentRecordsIgnoreMalformedTailAndStayBounded()
@@ -59,7 +60,7 @@ internal static class SupportBundleRegression
             new[] { record },
             DateTimeOffset.UnixEpoch.AddMinutes(5));
 
-        Equal("2", document.SchemaVersion, "support schema version");
+        Equal("3", document.SchemaVersion, "support schema version");
         Equal(1, document.SessionCount, "support session count");
         Equal(1, document.OutcomeSummary.RuntimeFailed, "runtime failure summary");
         Equal(1, document.OutcomeSummary.TotalFailures, "total failure summary");
@@ -75,6 +76,45 @@ internal static class SupportBundleRegression
         False(
             (session.ExceptionMessage ?? string.Empty).Contains("private-folder", StringComparison.OrdinalIgnoreCase),
             "support exception must not expose source parent folders");
+    }
+
+    private static void TestTransportQualitySurvivesSupportProjection()
+    {
+        var record = CreateRecord(
+            "quality",
+            DateTimeOffset.UnixEpoch.AddMinutes(5),
+            Path.Combine("private", "quality.mid")) with
+        {
+            Quality = new PlaybackSessionQualityDiagnostic(
+                1,
+                3,
+                2,
+                42,
+                0,
+                7,
+                0,
+                1,
+                125.5d,
+                4,
+                1.25d,
+                2.5d,
+                4.75d,
+                0.3d,
+                0.9d)
+        };
+
+        var document = PlaybackSessionDiagnostics.CreateSupportDocument(
+            new[] { record },
+            DateTimeOffset.UnixEpoch.AddMinutes(6));
+        var quality = document.Sessions.Single().Quality
+            ?? throw new InvalidOperationException("transport quality was dropped from support projection");
+
+        Equal(3, quality.SegmentCount, "quality segment count");
+        Equal(2, quality.SeekCount, "quality seek count");
+        Equal(0, quality.UnexpectedMissingEdgeCount, "intentional seek omissions remain distinct from playback loss");
+        Equal(7, quality.InterruptedEdgeCount, "interrupted edge count");
+        Equal(2.5d, quality.P95AbsoluteTimingErrorMilliseconds, "quality p95 timing");
+        Equal(0.9d, quality.MaxInputCallMilliseconds, "quality max input call");
     }
 
     private static void TestSupportBundleIsSendablePrivacySafeAndSelfVerifying()
@@ -212,7 +252,7 @@ internal static class SupportBundleRegression
             638930000000000000L,
             typeof(InvalidOperationException).FullName,
             exceptionMessage,
-            "0.21.0");
+            "0.23.0");
 
     private static string CreateTemporaryDirectory()
     {
