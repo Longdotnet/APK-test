@@ -30,7 +30,7 @@ internal sealed class SupportCenterForm : Form
         Text = "Roblox Piano Support Center";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(900, 580);
-        Size = new Size(1080, 720);
+        Size = new Size(1120, 720);
 
         BuildLayout();
         _refreshButton.Click += (_, _) => RefreshSessions();
@@ -42,7 +42,8 @@ internal sealed class SupportCenterForm : Form
     private void BuildLayout()
     {
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "When", DataPropertyName = nameof(SessionRow.When), Width = 145 });
-        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 125 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Outcome", DataPropertyName = nameof(SessionRow.Outcome), Width = 120 });
+        _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Quality", DataPropertyName = nameof(SessionRow.QualityVerdict), Width = 120 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Song", DataPropertyName = nameof(SessionRow.Song), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Type", DataPropertyName = nameof(SessionRow.SourceType), Width = 80 });
         _sessions.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Position", DataPropertyName = nameof(SessionRow.Position), Width = 80 });
@@ -52,9 +53,9 @@ internal sealed class SupportCenterForm : Form
         var title = new Label { Text = "Session Diagnostics", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Recent local playback outcomes and transport-aware timing evidence. Full sheet paths, raw logs and raw key-by-key samples are excluded from the support bundle.",
+            Text = "Recent local playback outcomes, deterministic quality verdicts and transport-aware timing evidence. Full sheet paths, raw logs and raw key-by-key samples are excluded from the support bundle.",
             AutoSize = true,
-            MaximumSize = new Size(1020, 0),
+            MaximumSize = new Size(1050, 0),
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
@@ -111,9 +112,13 @@ internal sealed class SupportCenterForm : Form
 
         var record = row.Record;
         var quality = record.Quality;
+        var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(quality);
         var lines = new[]
         {
             $"Outcome: {record.ResultKind}",
+            $"Quality verdict: {assessment.Verdict}",
+            $"Quality summary: {assessment.Summary}",
+            $"Client guidance: {assessment.Guidance}",
             $"Started (UTC): {record.StartedAtUtc:O}",
             $"Ended (UTC): {record.EndedAtUtc:O}",
             $"Song: {record.SourceFileName ?? "(unknown)"}",
@@ -178,6 +183,7 @@ internal sealed class SupportCenterForm : Form
         PlaybackSupportSession Record,
         string When,
         string Outcome,
+        string QualityVerdict,
         string Song,
         string SourceType,
         string Position,
@@ -189,6 +195,7 @@ internal sealed class SupportCenterForm : Form
                 record,
                 record.EndedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
                 record.ResultKind,
+                PlaybackSessionQualityAssessmentPolicy.Assess(record.Quality).Verdict.ToString(),
                 record.SourceFileName ?? "(unknown)",
                 record.SourceType,
                 TimeSpan.FromSeconds(Math.Max(0d, record.PositionSeconds)).ToString(@"mm\:ss"),
