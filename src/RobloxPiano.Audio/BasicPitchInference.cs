@@ -11,6 +11,24 @@ public sealed record BasicPitchInferenceOptions(int MaxChunksPerBatch = 8)
     }
 }
 
+public sealed record BasicPitchInferenceProgress
+{
+    public BasicPitchInferenceProgress(int completedChunks, int totalChunks)
+    {
+        if (totalChunks <= 0)
+            throw new ArgumentOutOfRangeException(nameof(totalChunks));
+        if (completedChunks < 0 || completedChunks > totalChunks)
+            throw new ArgumentOutOfRangeException(nameof(completedChunks));
+
+        CompletedChunks = completedChunks;
+        TotalChunks = totalChunks;
+    }
+
+    public int CompletedChunks { get; }
+    public int TotalChunks { get; }
+    public double Fraction => CompletedChunks / (double)TotalChunks;
+}
+
 public sealed record BasicPitchTensor(float[] Values, int Frames, int Bins)
 {
     public float this[int frame, int bin]
@@ -103,7 +121,13 @@ public sealed class BasicPitchInferenceService : IDisposable
         ValidateModelContract();
     }
 
-    public BasicPitchRawOutput Infer(NormalizedAudio audio, CancellationToken cancellationToken = default)
+    public BasicPitchRawOutput Infer(NormalizedAudio audio, CancellationToken cancellationToken = default) =>
+        Infer(audio, progress: null, cancellationToken);
+
+    public BasicPitchRawOutput Infer(
+        NormalizedAudio audio,
+        IProgress<BasicPitchInferenceProgress>? progress,
+        CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         ArgumentNullException.ThrowIfNull(audio);
@@ -114,10 +138,12 @@ public sealed class BasicPitchInferenceService : IDisposable
         if (audio.Samples.Any(sample => !float.IsFinite(sample)))
             throw new ArgumentException("Basic Pitch input must contain only finite samples.", nameof(audio));
 
+        cancellationToken.ThrowIfCancellationRequested();
         var plan = BasicPitchChunkPlan.Create(audio.Samples.Length);
         var notes = new List<float>();
         var onsets = new List<float>();
         var contours = new List<float>();
+        progress?.Report(new BasicPitchInferenceProgress(0, plan.ChunkCount));
 
         for (var firstChunk = 0; firstChunk < plan.ChunkCount; firstChunk += options.MaxChunksPerBatch)
         {
@@ -127,6 +153,7 @@ public sealed class BasicPitchInferenceService : IDisposable
             using var inputValue = OrtValue.CreateTensorValueFromMemory(input, [batchSize, AudioWindowSamples, 1]);
             using var runOptions = new RunOptions();
             using var results = session.Run(runOptions, InputNames, [inputValue], OutputNames);
+            cancellationToken.ThrowIfCancellationRequested();
             var outputs = results.ToArray();
             if (outputs.Length != 3)
                 throw new InvalidDataException($"Basic Pitch returned {outputs.Length} outputs; expected 3.");
@@ -134,6 +161,9 @@ public sealed class BasicPitchInferenceService : IDisposable
             AppendUnwrapped(outputs[0], batchSize, NoteBins, notes);
             AppendUnwrapped(outputs[1], batchSize, NoteBins, onsets);
             AppendUnwrapped(outputs[2], batchSize, ContourBins, contours);
+
+            var completedChunks = checked(firstChunk + batchSize);
+            progress?.Report(new BasicPitchInferenceProgress(completedChunks, plan.ChunkCount));
         }
 
         var expectedFrames = Math.Min(
