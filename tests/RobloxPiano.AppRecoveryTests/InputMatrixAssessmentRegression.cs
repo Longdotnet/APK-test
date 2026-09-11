@@ -5,6 +5,10 @@ namespace RobloxPiano.AppRecoveryTests;
 
 internal static class InputMatrixAssessmentRegression
 {
+    private static readonly RobloxInputMatrixSessionIdentity SessionA = new(
+        new RobloxProcessIdentity(100, 1_000),
+        0x1111);
+
     [ModuleInitializer]
     internal static void Verify()
     {
@@ -60,13 +64,48 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("A complete real-works/all-synthetic-fails matrix must be conclusive.");
         }
 
+        var processRestart = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false),
+            Cell("KEYBD_EVENT_SCAN", "ROBLOX_NO_REACTION", false),
+            Cell("SENDINPUT_VK", "ROBLOX_NO_REACTION", false),
+            Cell("SENDINPUT_SCAN", "ROBLOX_NO_REACTION", false, session: new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 2_000), 0x1111))
+        ]);
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, processRestart.Verdict, "process restart must invalidate matrix");
+        Equal("ROBLOX_SESSION_CHANGED", processRestart.FailureBoundary, "process restart boundary");
+        if (processRestart.IsConclusive)
+        {
+            throw new InvalidOperationException("Evidence spanning two Roblox process lifetimes must never be conclusive.");
+        }
+
+        var windowReplacement = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false, session: new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 1_000), 0x2222))
+        ]);
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, windowReplacement.Verdict, "selected HWND change must invalidate matrix");
+        Equal("ROBLOX_SESSION_CHANGED", windowReplacement.FailureBoundary, "window replacement boundary");
+
+        var missingIdentity = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            new RobloxInputMatrixCellEvidence("KEYBD_EVENT_SCAN", "missing", "ROBLOX_REACTED", true, null)
+        ]);
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, missingIdentity.Verdict, "missing session identity must fail closed");
+        Equal("MATRIX_SESSION_IDENTITY_UNAVAILABLE", missingIdentity.FailureBoundary, "missing session boundary");
+        if (missingIdentity.IsConclusive)
+        {
+            throw new InvalidOperationException("A synthetic winner without stable session identity must not be conclusive.");
+        }
+
         var latestCellWins = RobloxInputMatrixAssessmentPolicy.Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
-            Cell("SENDINPUT_VK", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, "old"),
-            Cell("SENDINPUT_VK", "ROBLOX_REACTED", true, "retry")
+            Cell("SENDINPUT_VK", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, "old", new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 9_999), 0x9999)),
+            Cell("SENDINPUT_VK", "ROBLOX_REACTED", true, "retry", SessionA)
         ]);
-        Equal(RobloxInputMatrixVerdict.SyntheticVariantWorks, latestCellWins.Verdict, "latest retry must replace stale cell evidence");
+        Equal(RobloxInputMatrixVerdict.SyntheticVariantWorks, latestCellWins.Verdict, "latest retry must replace stale cross-session cell evidence");
         Contains(latestCellWins.WinningCells, "SENDINPUT_VK", "retry winner must be preserved");
     }
 
@@ -74,8 +113,9 @@ internal static class InputMatrixAssessmentRegression
         string cell,
         string verdict,
         bool? reacted,
-        string probe = "probe")
-        => new(cell, probe, verdict, reacted);
+        string probe = "probe",
+        RobloxInputMatrixSessionIdentity? session = null)
+        => new(cell, probe, verdict, reacted, session ?? SessionA);
 
     private static void Equal<T>(T expected, T actual, string name)
     {
