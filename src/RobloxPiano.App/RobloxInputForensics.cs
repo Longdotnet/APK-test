@@ -20,6 +20,7 @@ internal static class RobloxInputForensics
         var desktop = WindowsInputDesktop.Capture();
         var session = WindowsInteractiveSession.Capture(target.ProcessId);
         var window = WindowsRobloxWindowIdentity.Capture(target);
+        var gui = WindowsGuiThreadInputContext.Capture(target);
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
@@ -40,6 +41,11 @@ internal static class RobloxInputForensics
             $"targetMainHwnd=0x{window.CurrentMainWindowHandle.ToInt64():X} targetMainReplaced={window.TargetMainWindowReplaced} " +
             $"foregroundRootHwnd=0x{window.ForegroundRootHandle.ToInt64():X} foregroundRootPid={window.ForegroundRootProcessId} " +
             $"foregroundRootOwnerHwnd=0x{window.ForegroundRootOwnerHandle.ToInt64():X} foregroundRootOwnerPid={window.ForegroundRootOwnerProcessId} " +
+            $"guiInfoOk={gui.CaptureSucceeded} guiInfoError={gui.Win32Error} guiTid={gui.ForegroundThreadId} " +
+            $"guiActiveHwnd=0x{gui.ActiveWindowHandle.ToInt64():X} guiActiveRelation={gui.ActiveRelation} " +
+            $"guiFocusHwnd=0x{gui.FocusWindowHandle.ToInt64():X} guiFocusRelation={gui.FocusRelation} guiFocusAssessment={gui.FocusAssessment} " +
+            $"guiCaptureHwnd=0x{gui.CaptureWindowHandle.ToInt64():X} guiCaptureRelation={gui.CaptureRelation} " +
+            $"guiMenuOwnerHwnd=0x{gui.MenuOwnerWindowHandle.ToInt64():X} guiMoveSizeHwnd=0x{gui.MoveSizeWindowHandle.ToInt64():X} guiCaretHwnd=0x{gui.CaretWindowHandle.ToInt64():X} " +
             $"managedThread={Environment.CurrentManagedThreadId} nativeThread={GetCurrentThreadId()} " +
             $"appPid={Environment.ProcessId} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
@@ -94,6 +100,7 @@ internal static class RobloxInputForensics
                 "guidance='Foreground belongs to the Roblox PID but is not the originally selected root window. Preserve this evidence when comparing game, overlay, splash, or replacement-window behavior.'.");
         }
 
+        LogGuiThreadContext(probeId, "GUI_CONTEXT", gui);
         return window;
     }
 
@@ -137,10 +144,13 @@ internal static class RobloxInputForensics
         var foregroundKeyboardLayout = NativeMethods.GetKeyboardLayout(foregroundThreadId);
         var down = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
         var window = WindowsRobloxWindowIdentity.Capture(target);
+        var gui = WindowsGuiThreadInputContext.Capture(target);
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage={stage} backend={WindowsKeyboardInputSink.BackendName} " +
             $"probeMapping={KeyboardMappingStrategy.PowerShellOracle} vk=0x{virtualKey:X2} keyState={(down ? "DOWN" : "UP")} targetForeground={target.IsForeground} " +
             $"windowRelation={window.Relation} targetMainReplaced={window.TargetMainWindowReplaced} " +
+            $"guiInfoOk={gui.CaptureSucceeded} guiInfoError={gui.Win32Error} guiFocusHwnd=0x{gui.FocusWindowHandle.ToInt64():X} " +
+            $"guiFocusRelation={gui.FocusRelation} guiFocusAssessment={gui.FocusAssessment} guiCaptureHwnd=0x{gui.CaptureWindowHandle.ToInt64():X} guiCaptureRelation={gui.CaptureRelation} " +
             $"targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
             $"foregroundRootHwnd=0x{window.ForegroundRootHandle.ToInt64():X} foregroundRootOwnerHwnd=0x{window.ForegroundRootOwnerHandle.ToInt64():X} " +
@@ -154,6 +164,46 @@ internal static class RobloxInputForensics
             $"INPUT_FORENSIC probe={probeId} stage=VERDICT verdict={assessment.Verdict} " +
             $"windowsPath={(assessment.Verdict is RobloxInputCheckVerdict.NativeDeliveryAwaitingObservation or RobloxInputCheckVerdict.Confirmed or RobloxInputCheckVerdict.RobloxDidNotReact or RobloxInputCheckVerdict.PowerShellOracleConfirmedProductionMappingDiffers ? "OBSERVED" : "NOT_CONFIRMED")} " +
             $"robloxReaction={(robloxReacted is null ? "UNKNOWN" : robloxReacted.Value ? "YES" : "NO")} success={assessment.IsSuccess}.");
+    }
+
+    private static void LogGuiThreadContext(
+        string probeId,
+        string stage,
+        WindowsGuiThreadInputContextSnapshot gui)
+    {
+        ClientDiagnostics.Log(
+            $"INPUT_FORENSIC probe={probeId} stage={stage} guiInfoOk={gui.CaptureSucceeded} guiInfoError={gui.Win32Error} guiTid={gui.ForegroundThreadId} " +
+            $"activeHwnd=0x{gui.ActiveWindowHandle.ToInt64():X} activeRelation={gui.ActiveRelation} " +
+            $"focusHwnd=0x{gui.FocusWindowHandle.ToInt64():X} focusRelation={gui.FocusRelation} focusAssessment={gui.FocusAssessment} " +
+            $"captureHwnd=0x{gui.CaptureWindowHandle.ToInt64():X} captureRelation={gui.CaptureRelation} " +
+            $"menuOwnerHwnd=0x{gui.MenuOwnerWindowHandle.ToInt64():X} moveSizeHwnd=0x{gui.MoveSizeWindowHandle.ToInt64():X} caretHwnd=0x{gui.CaretWindowHandle.ToInt64():X}.");
+
+        if (!gui.CaptureSucceeded)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=GUI_CONTEXT_UNAVAILABLE verdict=GUI_THREAD_INFO_UNAVAILABLE win32Error={gui.Win32Error} " +
+                "guidance='The foreground GUI thread changed or GetGUIThreadInfo was unavailable. Preserve this evidence and do not infer Roblox focus/capture state from foreground HWND alone.'.");
+        }
+        else if (gui.FocusAssessment == WindowsGuiThreadFocusAssessment.SameProcessAlternateRoot)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=GUI_FOCUS_CONTEXT verdict=GUI_FOCUS_SAME_PROCESS_ALTERNATE_ROOT " +
+                $"focusHwnd=0x{gui.FocusWindowHandle.ToInt64():X} focusRelation={gui.FocusRelation} " +
+                "guidance='Foreground is Roblox, but the foreground GUI thread focus is on another root in the same Roblox process. Preserve this as input-consumption context.'.");
+        }
+        else if (gui.FocusAssessment == WindowsGuiThreadFocusAssessment.DifferentProcess)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=GUI_FOCUS_CONTEXT verdict=GUI_FOCUS_OUTSIDE_ROBLOX " +
+                $"focusHwnd=0x{gui.FocusWindowHandle.ToInt64():X} focusRelation={gui.FocusRelation} " +
+                "guidance='Foreground/root identity alone is insufficient here because the foreground GUI thread reports focus outside the selected Roblox surface.'.");
+        }
+        else if (gui.FocusAssessment == WindowsGuiThreadFocusAssessment.NoFocusedWindow)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=GUI_FOCUS_CONTEXT verdict=GUI_FOCUS_NONE " +
+                "guidance='The foreground GUI thread reports no focus HWND. Preserve this evidence when comparing Roblox experiences and overlays; do not treat it as field PASS or FAIL by itself.'.");
+        }
     }
 
     [DllImport("kernel32.dll")]
