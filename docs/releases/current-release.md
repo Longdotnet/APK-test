@@ -11,13 +11,15 @@ SHA256: `{{SHA256}}`
 
 ## Client flow
 
-1. Download `RobloxPiano.exe`, open Roblox, then run `Test Roblox Input` before trusting playback for that Roblox process.
-2. Run `Run Input Check` first. It preserves the exact PowerShell-oracle W mapping: `VkKeyScanW` + `keybd_event`, scan code `0`.
-3. If Roblox does not visibly move or play the W-bound note, run `Physical-Key Diagnostic`: same `keybd_event`, now with a non-zero physical scan code.
-4. Next run `SendInput VK Diagnostic`: the same oracle virtual-key meaning through `SendInput` (`wVk != 0`, `wScan = 0`, no `KEYEVENTF_SCANCODE`).
-5. Finally run `SendInput Scan Diagnostic`: `SendInput` with physical scan-code semantics.
-6. Every probe requires stable Roblox foreground, same input desktop, Windows-observed key-down evidence, and continuous 25 ms sampled focus. Focus loss releases W immediately and invalidates the attempt.
-7. The three diagnostic variants can never authorize or silently change production playback. Preserve all correlated probe IDs in Diagnostics.
+1. Download `RobloxPiano.exe` and double-click it; the **Sheet Library** remains the normal client starting point.
+2. Open Roblox, then run `Test Roblox Input` before trusting playback for that Roblox process.
+3. Run `Run Input Check` first. It preserves the exact PowerShell-oracle W mapping: `VkKeyScanW` + `keybd_event`, scan code `0`.
+4. If Roblox does not visibly move or play the W-bound note, run `Physical-Key Diagnostic`: same `keybd_event`, now with a non-zero physical scan code.
+5. Next run `SendInput VK Diagnostic`: the same oracle virtual-key meaning through `SendInput` (`wVk != 0`, `wScan = 0`, no `KEYEVENTF_SCANCODE`).
+6. Finally run `SendInput Scan Diagnostic`: `SendInput` with physical scan-code semantics.
+7. Every probe requires stable Roblox foreground, same input desktop, Windows-observed key-down evidence, and continuous 25 ms sampled focus. Focus loss releases W immediately and invalidates the attempt.
+8. The three diagnostic variants can never authorize or silently change production playback. Preserve all correlated probe IDs in Diagnostics.
+9. **Support Bundle** export remains available for privacy-safe evidence collection when a field case needs deeper investigation.
 
 ## Phase 64 P0 SendInput virtual-key matrix completion
 
@@ -39,7 +41,7 @@ SHA256: `{{SHA256}}`
 ## Production capability and reliability
 
 - Self-contained Windows x64 single EXE; no manual Python, Node, .NET SDK, Visual Studio or PowerShell-module dependency.
-- Legacy and Legacy x2 remain protected baselines.
+- **Legacy** and **Legacy x2** remain protected regression/perceptual baselines and are not silently replaced or auto-promoted.
 - Runtime focus/input authorization, emergency release-all and held-key/pedal ownership remain fail-closed.
 - AI/network are not required for input truth.
 
