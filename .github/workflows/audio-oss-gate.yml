@@ -43,5 +43,8 @@ jobs:
       - name: Build audio boundary
         run: dotnet build src/RobloxPiano.Audio/RobloxPiano.Audio.csproj -c Release
 
-      - name: Run audio ingest and ONNX regression harness
+      - name: Run audio ingest, ONNX, decoder and arranger regression harness
         run: dotnet run --project tests/RobloxPiano.AudioTests/RobloxPiano.AudioTests.csproj -c Release
+
+      - name: Run real-model Audio-to-Piano end-to-end harness
+        run: dotnet run --project tests/RobloxPiano.AudioPipelineTests/RobloxPiano.AudioPipelineTests.csproj -c Release
