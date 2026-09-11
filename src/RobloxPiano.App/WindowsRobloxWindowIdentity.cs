@@ -43,10 +43,12 @@ internal static class WindowsRobloxWindowIdentity
         ArgumentNullException.ThrowIfNull(target);
 
         var foreground = GetForegroundWindow();
-        var foregroundTid = foreground == IntPtr.Zero
-            ? 0
-            : GetWindowThreadProcessId(foreground, out var foregroundPidLocal);
-        var foregroundPid = foreground == IntPtr.Zero ? 0 : foregroundPidLocal;
+        uint foregroundTid = 0;
+        uint foregroundPid = 0;
+        if (foreground != IntPtr.Zero)
+        {
+            foregroundTid = GetWindowThreadProcessId(foreground, out foregroundPid);
+        }
 
         var foregroundRoot = foreground == IntPtr.Zero ? IntPtr.Zero : GetAncestor(foreground, GaRoot);
         var foregroundRootOwner = foreground == IntPtr.Zero ? IntPtr.Zero : GetAncestor(foreground, GaRootOwner);
@@ -115,11 +117,6 @@ internal static class WindowsRobloxWindowIdentity
         var targetPid = (uint)targetProcessId;
         if (foregroundProcessId == targetPid)
         {
-            if (foregroundRootProcessId == targetPid || foregroundRootOwnerProcessId == targetPid)
-            {
-                return WindowsRobloxWindowRelation.SameProcessAlternateRoot;
-            }
-
             return WindowsRobloxWindowRelation.SameProcessAlternateRoot;
         }
 
