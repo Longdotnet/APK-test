@@ -22,7 +22,9 @@ The fixtures are generated mathematically and written to ordinary mono PCM16 WAV
 
 The first exact-model run showed that making note matching depend on both onset and generated note termination hides otherwise-correct pitch/onset recognition for synthetic envelopes. Basic Pitch termination is materially sensitive to timbre and release shape. The regression gate therefore treats this first corpus as a **recognition baseline**: exact MIDI pitch plus onset within 150 ms establishes a match. Offset error is still measured and printed for every case and the aggregate, but does not turn a recognized note into a false negative. A later corpus with representative piano envelopes can add an independently calibrated duration gate.
 
-The gate records per-case precision, recall, F1, onset error and offset error, requires every fixture to retain at least one ground-truth pitch/onset match, and enforces conservative aggregate floors. These floors are regression tripwires, not a claim that the current generated piano is perceptually production-ready. Phase 07's stricter evaluator defaults remain unchanged.
+On the pinned Spotify `nmp.onnx` at commit `fa5997a`, the measured corpus baseline is: 9/9 reference notes matched, micro precision 0.321, micro recall 1.000, micro F1 0.486, macro F1 0.523, mean absolute onset error 17.7 ms and mean absolute offset error 128.6 ms. Pure sine fixtures produce extra detections, so precision is intentionally lower than recall. CI floors are set below these measured values (precision 0.28, recall 0.90, micro F1 0.44, macro F1 0.47, mean onset <= 50 ms) to detect material regression without treating the synthetic timbre as a production piano benchmark.
+
+The gate records per-case precision, recall, F1, onset error and offset error and requires every fixture to retain at least one ground-truth pitch/onset match. These floors are regression tripwires, not a claim that the current generated piano is perceptually production-ready. Phase 07's stricter evaluator defaults remain unchanged.
 
 ## OSS and licensing
 
