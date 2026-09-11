@@ -10,7 +10,6 @@ public sealed record AudioTranscriptionReferenceNote
             throw new ArgumentOutOfRangeException(nameof(end));
         if (midiNote is < 0 or > 127)
             throw new ArgumentOutOfRangeException(nameof(midiNote));
-
         Start = start;
         End = end;
         MidiNote = midiNote;
@@ -66,9 +65,9 @@ public sealed record AudioTranscriptionEvaluationResult(
 
 /// <summary>
 /// Deterministic ground-truth evaluator for Audio-to-Piano corpus calibration.
-/// Defaults follow the mature mir_eval transcription convention where it maps to integer MIDI notes:
-/// same pitch, inclusive 50 ms onset tolerance, and offset tolerance of max(50 ms, 20% reference duration).
-/// Evaluation is measurement only and never mutates transcription or playback truth.
+/// Defaults mirror mature mir_eval note-transcription semantics where they map to integer MIDI output:
+/// same pitch, inclusive 50 ms onset tolerance, offset tolerance max(50 ms, 20% reference duration),
+/// and maximum-cardinality one-to-one bipartite matching. Measurement never mutates playback truth.
 /// </summary>
 public sealed class AudioTranscriptionEvaluator
 {
@@ -84,72 +83,76 @@ public sealed class AudioTranscriptionEvaluator
         options.Validate();
         cancellationToken.ThrowIfCancellationRequested();
 
-        var orderedReferences = reference
-            .Select((note, index) => (Note: note, OriginalIndex: index))
-            .OrderBy(item => item.Note.Start)
-            .ThenBy(item => item.Note.MidiNote)
-            .ThenBy(item => item.Note.End)
-            .ToArray();
-        var orderedEstimates = estimated
-            .Select((note, index) => (Note: note, OriginalIndex: index))
-            .OrderBy(item => item.Note.Start)
-            .ThenBy(item => item.Note.MidiNote)
-            .ThenBy(item => item.Note.End)
-            .ToArray();
-        var usedEstimates = new bool[orderedEstimates.Length];
-        var matches = new List<AudioTranscriptionNoteMatch>(Math.Min(reference.Count, estimated.Count));
+        var references = reference.Select((note, index) => new ReferenceItem(note, index)).ToArray();
+        var estimates = estimated.Select((note, index) => new EstimateItem(note, index)).ToArray();
+        var adjacency = new int[references.Length][];
 
-        foreach (var referenceItem in orderedReferences)
+        for (var r = 0; r < references.Length; r++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var referenceNote = referenceItem.Note;
+            var referenceNote = references[r].Note;
             var durationToleranceTicks = (long)Math.Ceiling(referenceNote.Duration.Ticks * options.OffsetToleranceRatio);
-            var offsetTolerance = TimeSpan.FromTicks(Math.Max(
-                options.EffectiveMinimumOffsetTolerance.Ticks,
-                durationToleranceTicks));
+            var offsetTolerance = TimeSpan.FromTicks(Math.Max(options.EffectiveMinimumOffsetTolerance.Ticks, durationToleranceTicks));
+            var candidates = new List<(int Index, TimeSpan OnsetError, TimeSpan OffsetError)>();
 
-            var bestIndex = -1;
-            var bestOnsetError = TimeSpan.MaxValue;
-            var bestOffsetError = TimeSpan.MaxValue;
-            for (var estimatedIndex = 0; estimatedIndex < orderedEstimates.Length; estimatedIndex++)
+            for (var e = 0; e < estimates.Length; e++)
             {
-                if (usedEstimates[estimatedIndex])
-                    continue;
-
-                var estimate = orderedEstimates[estimatedIndex].Note;
+                var estimate = estimates[e].Note;
                 if (estimate.MidiNote != referenceNote.MidiNote)
                     continue;
-
                 var onsetError = Abs(estimate.Start - referenceNote.Start);
                 if (onsetError > options.EffectiveOnsetTolerance)
                     continue;
-
                 var offsetError = Abs(estimate.End - referenceNote.End);
                 if (options.RequireOffsetMatch && offsetError > offsetTolerance)
                     continue;
-
-                if (onsetError < bestOnsetError ||
-                    (onsetError == bestOnsetError && offsetError < bestOffsetError) ||
-                    (onsetError == bestOnsetError && offsetError == bestOffsetError && (bestIndex < 0 || estimatedIndex < bestIndex)))
-                {
-                    bestIndex = estimatedIndex;
-                    bestOnsetError = onsetError;
-                    bestOffsetError = offsetError;
-                }
+                candidates.Add((e, onsetError, offsetError));
             }
 
-            if (bestIndex < 0)
-                continue;
+            adjacency[r] = candidates
+                .OrderBy(candidate => candidate.OnsetError)
+                .ThenBy(candidate => candidate.OffsetError)
+                .ThenBy(candidate => estimates[candidate.Index].OriginalIndex)
+                .Select(candidate => candidate.Index)
+                .ToArray();
+        }
 
-            usedEstimates[bestIndex] = true;
-            var estimateItem = orderedEstimates[bestIndex];
+        // Kuhn augmenting-path matching: deterministic candidate ordering above, maximum cardinality overall.
+        var referenceForEstimate = Enumerable.Repeat(-1, estimates.Length).ToArray();
+        var referenceOrder = Enumerable.Range(0, references.Length)
+            .OrderBy(index => adjacency[index].Length)
+            .ThenBy(index => references[index].Note.Start)
+            .ThenBy(index => references[index].Note.MidiNote)
+            .ThenBy(index => references[index].OriginalIndex)
+            .ToArray();
+
+        foreach (var referenceIndex in referenceOrder)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var seen = new bool[estimates.Length];
+            TryAugment(referenceIndex, adjacency, referenceForEstimate, seen, cancellationToken);
+        }
+
+        var matches = new List<AudioTranscriptionNoteMatch>();
+        for (var estimatedIndex = 0; estimatedIndex < referenceForEstimate.Length; estimatedIndex++)
+        {
+            var referenceIndex = referenceForEstimate[estimatedIndex];
+            if (referenceIndex < 0)
+                continue;
+            var referenceItem = references[referenceIndex];
+            var estimateItem = estimates[estimatedIndex];
             matches.Add(new AudioTranscriptionNoteMatch(
                 referenceItem.OriginalIndex,
                 estimateItem.OriginalIndex,
-                referenceNote.MidiNote,
-                bestOnsetError,
-                bestOffsetError));
+                referenceItem.Note.MidiNote,
+                Abs(estimateItem.Note.Start - referenceItem.Note.Start),
+                Abs(estimateItem.Note.End - referenceItem.Note.End)));
         }
+        matches.Sort((left, right) =>
+        {
+            var byReference = left.ReferenceIndex.CompareTo(right.ReferenceIndex);
+            return byReference != 0 ? byReference : left.EstimatedIndex.CompareTo(right.EstimatedIndex);
+        });
 
         var matched = matches.Count;
         var precision = estimated.Count == 0 ? 0d : matched / (double)estimated.Count;
@@ -170,7 +173,33 @@ public sealed class AudioTranscriptionEvaluator
             matches.AsReadOnly());
     }
 
+    private static bool TryAugment(
+        int referenceIndex,
+        IReadOnlyList<int[]> adjacency,
+        int[] referenceForEstimate,
+        bool[] seen,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var estimatedIndex in adjacency[referenceIndex])
+        {
+            if (seen[estimatedIndex])
+                continue;
+            seen[estimatedIndex] = true;
+            var currentlyMatchedReference = referenceForEstimate[estimatedIndex];
+            if (currentlyMatchedReference < 0 ||
+                TryAugment(currentlyMatchedReference, adjacency, referenceForEstimate, seen, cancellationToken))
+            {
+                referenceForEstimate[estimatedIndex] = referenceIndex;
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static TimeSpan Abs(TimeSpan value) => value < TimeSpan.Zero ? value.Negate() : value;
+    private sealed record ReferenceItem(AudioTranscriptionReferenceNote Note, int OriginalIndex);
+    private sealed record EstimateItem(BasicPitchTranscribedNote Note, int OriginalIndex);
 }
 
 public sealed record AudioTranscriptionEvaluationCase(
@@ -191,9 +220,6 @@ public sealed record AudioTranscriptionCorpusEvaluation(
     double MeanAbsoluteOffsetErrorMilliseconds,
     IReadOnlyDictionary<string, AudioTranscriptionEvaluationResult> Results);
 
-/// <summary>
-/// Aggregates named synthetic/licensed corpus cases while retaining every per-case score.
-/// </summary>
 public sealed class AudioTranscriptionCorpusEvaluator
 {
     private readonly AudioTranscriptionEvaluator evaluator = new();
@@ -223,18 +249,12 @@ public sealed class AudioTranscriptionCorpusEvaluator
         var matchedNotes = results.Values.Sum(result => result.MatchedNotes);
         var microPrecision = estimatedNotes == 0 ? 0d : matchedNotes / (double)estimatedNotes;
         var microRecall = referenceNotes == 0 ? 0d : matchedNotes / (double)referenceNotes;
-        var microF1 = microPrecision + microRecall == 0d
-            ? 0d
-            : 2d * microPrecision * microRecall / (microPrecision + microRecall);
+        var microF1 = microPrecision + microRecall == 0d ? 0d : 2d * microPrecision * microRecall / (microPrecision + microRecall);
         var macroF1 = results.Values.Average(result => result.F1);
         var matchedResults = results.Values.Where(result => result.MatchedNotes > 0).ToArray();
         var totalMatched = matchedResults.Sum(result => result.MatchedNotes);
-        var meanOnset = totalMatched == 0
-            ? 0d
-            : matchedResults.Sum(result => result.MeanAbsoluteOnsetErrorMilliseconds * result.MatchedNotes) / totalMatched;
-        var meanOffset = totalMatched == 0
-            ? 0d
-            : matchedResults.Sum(result => result.MeanAbsoluteOffsetErrorMilliseconds * result.MatchedNotes) / totalMatched;
+        var meanOnset = totalMatched == 0 ? 0d : matchedResults.Sum(result => result.MeanAbsoluteOnsetErrorMilliseconds * result.MatchedNotes) / totalMatched;
+        var meanOffset = totalMatched == 0 ? 0d : matchedResults.Sum(result => result.MeanAbsoluteOffsetErrorMilliseconds * result.MatchedNotes) / totalMatched;
 
         return new AudioTranscriptionCorpusEvaluation(
             cases.Count,
