@@ -28,9 +28,10 @@ SHA256: `{{SHA256}}`
 
 ## OSS and attribution
 
-- Spotify Basic Pitch remains the pinned Automatic Music Transcription model/semantic reference.
-- Microsoft ONNX Runtime remains the native .NET inference engine; NAudio remains the Windows audio decode/normalization boundary.
-- Existing third-party attribution files remain authoritative. No Python/PyTorch/Demucs/ffmpeg dependency is introduced.
+- Spotify Basic Pitch remains the pinned Automatic Music Transcription model/semantic reference under Apache-2.0, including its upstream NOTICE attribution.
+- Microsoft ONNX Runtime remains the native .NET inference engine; NAudio remains the Windows audio decode/normalization boundary, both under their upstream redistribution terms.
+- `RobloxPiano.exe --third-party-notices` displays the embedded Basic Pitch license/NOTICE plus ONNX Runtime and NAudio license attribution without requiring a sidecar file. The published Audio smoke validates that this resource survived the single-file bundle.
+- No Python/PyTorch/Demucs/ffmpeg dependency is introduced.
 
 ## Production capability and reliability
 
@@ -42,6 +43,6 @@ SHA256: `{{SHA256}}`
 ## Current boundaries
 
 - The Audio pipeline is now packaged and runtime-smoke-tested in the production executable, but client-facing local-audio selection/progress/review/add-to-library UX is still the next phase.
-- The packaged model adds distribution size and first-use model materialization to the client; CI validates the exact release candidate rather than assuming source-level tests imply packaging correctness.
+- The packaged model and native runtime increase distribution size and first-use model materialization work; CI validates the exact release candidate rather than assuming source-level tests imply packaging correctness.
 - CI cannot observe a live Roblox client consuming synthetic input. Visible Roblox reaction remains the Runtime Input P0 acceptance gate, and this release does not claim end-to-end Play-in-Roblox success from Audio-to-Piano.
 - The executable remains unsigned, so Windows SmartScreen may show a reputation warning.
