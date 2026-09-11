@@ -10,7 +10,7 @@ internal static class AudioToPianoProgressRegression
 
         var samples = PianoLikeTone(
             BasicPitchInferenceService.RequiredSampleRate,
-            TimeSpan.FromSeconds(1.2),
+            TimeSpan.FromSeconds(5.2),
             midiPitch: 69);
         var audio = new NormalizedAudio(samples, BasicPitchInferenceService.RequiredSampleRate);
         var observed = new List<AudioToPianoTranscriptionProgress>();
@@ -18,7 +18,7 @@ internal static class AudioToPianoProgressRegression
 
         using var service = new AudioToPianoTranscriptionService(
             modelPath,
-            new BasicPitchInferenceOptions(MaxChunksPerBatch: 2));
+            new BasicPitchInferenceOptions(MaxChunksPerBatch: 1));
         var result = service.TranscribeNormalized(
             audio,
             "Progress fixture",
@@ -27,33 +27,58 @@ internal static class AudioToPianoProgressRegression
             CancellationToken.None);
 
         True(result.Arrangement.Track.Events.Count > 0, "The real-model progress fixture must create at least one canonical event.");
-        True(observed.Count >= 6, $"Expected all post-ingest progress stages, observed {observed.Count}.");
+        True(observed.Count >= 9, $"Expected chunk-level inference plus all post-inference stages, observed {observed.Count} events.");
         Equal(AudioToPianoTranscriptionStage.Inference, observed[0].Stage);
         Equal(AudioToPianoTranscriptionStage.Completed, observed[^1].Stage);
         Equal(1d, observed[^1].Fraction);
         True(observed.Count(item => item.Stage == AudioToPianoTranscriptionStage.Completed) == 1, "Completed must be emitted exactly once.");
         True(observed.All(item => item.Fraction is >= 0d and <= 1d), "Every progress fraction must be bounded.");
         True(observed.Zip(observed.Skip(1), (left, right) => right.Fraction >= left.Fraction).All(value => value), "Progress fractions must never move backwards.");
-        True(observed.Select(item => item.Stage).SequenceEqual(new[]
+
+        var inferenceEvents = observed.Where(item => item.Stage == AudioToPianoTranscriptionStage.Inference).ToArray();
+        True(inferenceEvents.Length >= 5, $"Long-song fixture must expose multiple inference updates; observed {inferenceEvents.Length}.");
+        Equal(0.15d, inferenceEvents[0].Fraction);
+        Equal(0.70d, inferenceEvents[^1].Fraction);
+        True(inferenceEvents.Any(item => item.Fraction is > 0.15d and < 0.70d), "Inference progress must expose at least one intermediate fraction.");
+        True(inferenceEvents.Any(item => item.Message.Contains("audio window", StringComparison.Ordinal)), "Inference progress must expose deterministic window counts.");
+        True(observed.Take(inferenceEvents.Length).All(item => item.Stage == AudioToPianoTranscriptionStage.Inference), "No later stage may interleave before inference completes.");
+        True(observed.Skip(inferenceEvents.Length).Select(item => item.Stage).SequenceEqual(new[]
         {
-            AudioToPianoTranscriptionStage.Inference,
             AudioToPianoTranscriptionStage.Decode,
             AudioToPianoTranscriptionStage.HarmonicSuppression,
             AudioToPianoTranscriptionStage.Arrange,
             AudioToPianoTranscriptionStage.Quality,
             AudioToPianoTranscriptionStage.Completed
-        }), "Normalized transcription must emit the deterministic production stage order.");
+        }), "Post-inference transcription must retain the deterministic production stage order.");
 
         var cancelledProgress = new List<AudioToPianoTranscriptionProgress>();
         using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        var cancellingProgress = new InlineProgress<AudioToPianoTranscriptionProgress>(value =>
+        {
+            cancelledProgress.Add(value);
+            if (value.Stage == AudioToPianoTranscriptionStage.Inference && value.Fraction > 0.15d)
+                cts.Cancel();
+        });
         Throws<OperationCanceledException>(() => service.TranscribeNormalized(
             audio,
-            "Cancelled fixture",
+            "Cancelled during inference",
             options: null,
-            new InlineProgress<AudioToPianoTranscriptionProgress>(cancelledProgress.Add),
+            cancellingProgress,
             cts.Token));
-        True(cancelledProgress.Count == 0, "Pre-cancelled work must not emit misleading progress or Completed.");
+        True(cancelledProgress.Any(item => item.Stage == AudioToPianoTranscriptionStage.Inference && item.Fraction > 0.15d), "Cancellation fixture must prove at least one completed inference batch was surfaced.");
+        True(cancelledProgress.All(item => item.Stage == AudioToPianoTranscriptionStage.Inference), "Cancellation during inference must not leak into decode or later stages.");
+        True(cancelledProgress.All(item => item.Stage != AudioToPianoTranscriptionStage.Completed), "Cancelled work must never emit Completed.");
+
+        var preCancelledProgress = new List<AudioToPianoTranscriptionProgress>();
+        using var preCancelled = new CancellationTokenSource();
+        preCancelled.Cancel();
+        Throws<OperationCanceledException>(() => service.TranscribeNormalized(
+            audio,
+            "Pre-cancelled fixture",
+            options: null,
+            new InlineProgress<AudioToPianoTranscriptionProgress>(preCancelledProgress.Add),
+            preCancelled.Token));
+        True(preCancelledProgress.Count == 0, "Pre-cancelled work must not emit misleading progress or Completed.");
     }
 
     public static void ProgressContractFailsClosedOnInvalidValues()
@@ -70,6 +95,12 @@ internal static class AudioToPianoProgressRegression
             AudioToPianoTranscriptionStage.Inference,
             0.5,
             "   "));
+
+        Throws<ArgumentOutOfRangeException>(() => new BasicPitchInferenceProgress(0, 0));
+        Throws<ArgumentOutOfRangeException>(() => new BasicPitchInferenceProgress(-1, 4));
+        Throws<ArgumentOutOfRangeException>(() => new BasicPitchInferenceProgress(5, 4));
+        var midpoint = new BasicPitchInferenceProgress(2, 4);
+        Equal(0.5d, midpoint.Fraction);
     }
 
     private static float[] PianoLikeTone(int sampleRate, TimeSpan duration, int midiPitch)
