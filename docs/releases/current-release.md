@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.6
+version: 0.40.7
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -13,21 +13,23 @@ SHA256: `{{SHA256}}`
 
 1. Download `RobloxPiano.exe` and double-click it; the Sheet Library remains the normal starting point.
 2. Open Roblox and run `Test Roblox Input` before trusting song playback for the current Roblox process.
-3. Watch Roblox during the W probe. The probe now replays the exact known-good PowerShell character-mapping contract (`VkKeyScanW` + `keybd_event`, scan code `0`) rather than silently substituting the normal playback mapper.
+3. Watch Roblox during the W probe. The normal check still replays the exact known-good PowerShell character-mapping contract (`VkKeyScanW` + `keybd_event`, scan code `0`).
 4. A visible movement or W-bound piano note is still the field acceptance oracle; focus or Windows API success alone is not proof.
-5. If Roblox does not react, open Diagnostics and share every `INPUT_FORENSIC` line with the same `probe=...` value. The log correlates production-vs-oracle mapping, keyboard layouts, process elevation, Windows input desktop, foreground identity and native key-state evidence.
-6. Support Bundle export remains available for deeper investigation.
+5. If the PowerShell-oracle W reaches Windows but Roblox still does not react, open the same Input Check dialog and run `Physical-Key Diagnostic`. It emits the same W through `keybd_event` with the real non-zero keyboard scan code as a controlled A/B experiment.
+6. The physical-key diagnostic can never authorize normal playback or silently change the production backend. If it reacts, preserve both probe IDs and open Diagnostics; that result isolates a physical-key/scan-code acceptance difference for the next production decision.
+7. If neither probe reacts, open Diagnostics and share every `INPUT_FORENSIC` line with the matching `probe=...` values. Support Bundle export remains available for deeper investigation.
 
-## Phase 59 P0 exact PowerShell-oracle mapping parity probe
+## Phase 60 P0 controlled physical-key A/B probe
 
-- Normal song playback remains unchanged on the foreground-Roblox keyboard mapping introduced earlier; this release does not silently promote a new playback backend.
-- The explicit field probe now resolves W with the original field-proven `VkKeyScanW` semantics and still dispatches through `keybd_event` with scan code `0`.
-- The same probe independently resolves W through normal production `VkKeyScanExW`/foreground-layout mapping and logs both VK/modifier results under `stage=MAPPING_PARITY`.
-- Mapping parity compares the actual emitted virtual key and modifiers, not merely keyboard-layout handles or thread IDs.
-- If the PowerShell-oracle probe visibly works but production mapping differs, the result is `PowerShellOracleConfirmedProductionMappingDiffers`; normal playback remains gated instead of falsely treating a different input path as proven.
-- If the oracle probe and production mapping are equivalent and Roblox visibly reacts, the existing process-scoped input confirmation may succeed.
-- If the exact oracle probe is delivered, Roblox remains foreground, and Roblox still does not react, character mapping is no longer the leading suspect; investigation moves deeper into Windows/Roblox keyboard-capture semantics.
-- ADR 0066 records this fail-closed A/B evidence contract. Regression coverage protects semantic mapping comparison and prevents oracle-only success from authorizing a different production mapping.
+- Normal song playback remains unchanged on the field-proven `keybd_event` virtual-key backend and foreground-layout production mapping.
+- `Run Input Check` remains the only field probe that may establish process-scoped playback readiness; it continues to replay the exact Phase 59 PowerShell oracle.
+- A new opt-in `Run Physical-Key Diagnostic` holds character mapping constant on the PowerShell-oracle W, derives its physical scan code through `MapVirtualKeyExW(..., MAPVK_VK_TO_VSC_EX, oracle HKL)`, and emits that same W using `keybd_event` with a non-zero scan code.
+- Known Windows input-desktop mismatch still fails closed before injection. The diagnostic also requires stable Roblox foreground and records Windows key-state evidence while W is held.
+- Scan code `0` is rejected by construction so the physical diagnostic cannot accidentally collapse back into the existing oracle path.
+- Every diagnostic attempt has an independent correlated probe ID and logs `PHYSICAL_MAPPING`, `PHYSICAL_*` key-state stages and a final `PHYSICAL_SCAN_*` verdict.
+- A human-confirmed physical-key reaction deliberately records `productionChanged=false success=false`; it is evidence for the next engineering phase, not permission to switch normal playback.
+- Cancellation and failure paths issue a best-effort matching key-up, preserving the product's stuck-key safety invariant.
+- ADR 0068 records the A/B evidence contract. Regression coverage protects VK/scan-code preservation, key-up symmetry, scan-zero rejection and keybd_event ABI bounds.
 
 ## Production capability and reliability
 
@@ -44,7 +46,7 @@ SHA256: `{{SHA256}}`
 - A log showing `keybd_event` invocation or Windows key state does not by itself prove Roblox consumed the key.
 - If `elevationParity=TargetHigher`, first remove that privilege mismatch and rerun the probe before treating Roblox consumption as the remaining failure boundary.
 - If `desktopParity=Different`, first return Roblox and RobloxPiano to the same normal interactive Windows desktop and rerun the probe; no test key is emitted while the known mismatch exists.
-- If `desktopParity=Unknown`, the desktop API evidence is inconclusive rather than failed; use the remaining correlated mapping/elevation/key-state/foreground evidence.
-- `semanticParity=DIFFERENT` plus a visible oracle reaction identifies a production mapping boundary and deliberately does not certify normal playback.
-- `semanticParity=SAME`, healthy elevation/desktop evidence, Windows-observed W DOWN, stable Roblox foreground and a final `RobloxDidNotReact` verdict moves the remaining suspect boundary below character mapping toward Roblox/game keyboard capture or deeper native input semantics.
+- If `semanticParity=DIFFERENT` plus the exact PowerShell oracle visibly reacts, normal playback remains unconfirmed because production mapping differs.
+- If the PowerShell-oracle path does not visibly react but the non-zero scan-code diagnostic does, the remaining evidence points strongly at physical-key/scan-code acceptance. Normal playback still remains gated until a production change is separately justified and tested.
+- If both paths show Windows-observed W DOWN, stable Roblox foreground and final NO reaction, character mapping and simple scan-code presence are no longer leading suspects; investigate Roblox/game capture, Raw Input semantics, overlays or another native-consumption boundary.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.
