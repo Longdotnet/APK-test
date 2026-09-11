@@ -18,17 +18,25 @@ public enum AudioToPianoTranscriptionStage
     Completed
 }
 
-public sealed record AudioToPianoTranscriptionProgress(
-    AudioToPianoTranscriptionStage Stage,
-    double Fraction,
-    string Message)
+public sealed record AudioToPianoTranscriptionProgress
 {
-    public AudioToPianoTranscriptionProgress
+    public AudioToPianoTranscriptionProgress(
+        AudioToPianoTranscriptionStage stage,
+        double fraction,
+        string message)
     {
-        if (!double.IsFinite(Fraction) || Fraction is < 0d or > 1d)
-            throw new ArgumentOutOfRangeException(nameof(Fraction));
-        ArgumentException.ThrowIfNullOrWhiteSpace(Message);
+        if (!double.IsFinite(fraction) || fraction is < 0d or > 1d)
+            throw new ArgumentOutOfRangeException(nameof(fraction));
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+
+        Stage = stage;
+        Fraction = fraction;
+        Message = message;
     }
+
+    public AudioToPianoTranscriptionStage Stage { get; }
+    public double Fraction { get; }
+    public string Message { get; }
 }
 
 public sealed record AudioToPianoTranscriptionDiagnostics(
