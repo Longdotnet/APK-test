@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
-    <StartupObject>RobloxPiano.App.ClientEntryPoint</StartupObject>
+    <StartupObject>RobloxPiano.App.AudioAwareClientEntryPoint</StartupObject>
     <AssemblyName>RobloxPiano</AssemblyName>
     <RootNamespace>RobloxPiano.App</RootNamespace>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -16,6 +16,7 @@
     <ProjectReference Include="../RobloxPiano.Core/RobloxPiano.Core.csproj" />
     <ProjectReference Include="../RobloxPiano.Library/RobloxPiano.Library.csproj" />
     <ProjectReference Include="../RobloxPiano.Audio/RobloxPiano.Audio.csproj" />
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES.txt" LogicalName="RobloxPiano.App.THIRD-PARTY-NOTICES.txt" />
   </ItemGroup>
 
   <!--
