@@ -9,6 +9,7 @@ internal static class AudioTranscriptionEvaluationRegression
         Run("evaluation exact notes score perfect precision recall", ExactNotesScorePerfectly);
         Run("evaluation accepts mir_eval 50 ms onset boundary", FiftyMillisecondOnsetBoundaryMatches);
         Run("evaluation enforces one-to-one note matching", DuplicateEstimateCannotMatchTwice);
+        Run("evaluation uses maximum matching instead of greedy pairing", MaximumMatchingAvoidsGreedyUndercount);
         Run("evaluation applies duration-relative offset tolerance", RelativeOffsetToleranceMatchesLongNotes);
         Run("evaluation rejects wrong pitch and late onset", WrongPitchAndLateOnsetRemainErrors);
         Run("evaluation corpus exposes clean versus degraded cases", CorpusAggregatePreservesPerCaseQuality);
@@ -29,9 +30,7 @@ internal static class AudioTranscriptionEvaluationRegression
             Est(0.50, 1.00, 64),
             Est(1.00, 1.50, 67)
         };
-
         var result = new AudioTranscriptionEvaluator().Evaluate(reference, estimated);
-
         Equal(3, result.MatchedNotes);
         Nearly(1d, result.Precision);
         Nearly(1d, result.Recall);
@@ -45,7 +44,6 @@ internal static class AudioTranscriptionEvaluationRegression
         var result = new AudioTranscriptionEvaluator().Evaluate(
             new[] { Ref(1.000, 1.500, 69) },
             new[] { Est(1.050, 1.550, 69) });
-
         Equal(1, result.MatchedNotes);
         Nearly(50d, result.MeanAbsoluteOnsetErrorMilliseconds, 0.001);
     }
@@ -53,17 +51,25 @@ internal static class AudioTranscriptionEvaluationRegression
     private static void DuplicateEstimateCannotMatchTwice()
     {
         var result = new AudioTranscriptionEvaluator().Evaluate(
-            new[]
-            {
-                Ref(0.000, 0.500, 60),
-                Ref(0.020, 0.520, 60)
-            },
+            new[] { Ref(0.000, 0.500, 60), Ref(0.020, 0.520, 60) },
             new[] { Est(0.010, 0.510, 60) });
-
         Equal(1, result.MatchedNotes);
         Nearly(1d, result.Precision);
         Nearly(0.5d, result.Recall);
         Equal(1, result.FalseNegatives);
+    }
+
+    private static void MaximumMatchingAvoidsGreedyUndercount()
+    {
+        // Shared estimate at 20 ms can match both references. Estimate at 0 ms can only match the first.
+        // A closest-first greedy pass can consume the shared edge first and score 1/2; maximum matching scores 2/2.
+        var result = new AudioTranscriptionEvaluator().Evaluate(
+            new[] { Ref(0.000, 0.500, 60), Ref(0.070, 0.570, 60) },
+            new[] { Est(0.020, 0.520, 60), Est(0.000, 0.500, 60) });
+        Equal(2, result.MatchedNotes);
+        Nearly(1d, result.Precision);
+        Nearly(1d, result.Recall);
+        Nearly(1d, result.F1);
     }
 
     private static void RelativeOffsetToleranceMatchesLongNotes()
@@ -75,7 +81,6 @@ internal static class AudioTranscriptionEvaluationRegression
         var outsideTwentyPercent = evaluator.Evaluate(
             new[] { Ref(0.0, 2.0, 72) },
             new[] { Est(0.0, 2.401, 72) });
-
         Equal(1, withinTwentyPercent.MatchedNotes);
         Equal(0, outsideTwentyPercent.MatchedNotes);
     }
@@ -83,17 +88,8 @@ internal static class AudioTranscriptionEvaluationRegression
     private static void WrongPitchAndLateOnsetRemainErrors()
     {
         var result = new AudioTranscriptionEvaluator().Evaluate(
-            new[]
-            {
-                Ref(0.0, 0.5, 60),
-                Ref(1.0, 1.5, 64)
-            },
-            new[]
-            {
-                Est(0.0, 0.5, 61),
-                Est(1.051, 1.5, 64)
-            });
-
+            new[] { Ref(0.0, 0.5, 60), Ref(1.0, 1.5, 64) },
+            new[] { Est(0.0, 0.5, 61), Est(1.051, 1.5, 64) });
         Equal(0, result.MatchedNotes);
         Nearly(0d, result.Precision);
         Nearly(0d, result.Recall);
@@ -114,9 +110,7 @@ internal static class AudioTranscriptionEvaluationRegression
                 new[] { Ref(0.0, 0.4, 72), Ref(0.5, 0.9, 74), Ref(1.0, 1.4, 76) },
                 new[] { Est(0.0, 0.4, 72), Est(0.7, 1.1, 74), Est(1.0, 1.4, 77) })
         };
-
         var corpus = new AudioTranscriptionCorpusEvaluator().Evaluate(cases);
-
         Equal(2, corpus.Cases);
         Equal(6, corpus.ReferenceNotes);
         Equal(6, corpus.EstimatedNotes);
@@ -186,7 +180,6 @@ internal static class AudioTranscriptionEvaluationRegression
         {
             return;
         }
-
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 }
