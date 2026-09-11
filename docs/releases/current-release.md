@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.3
+version: 0.40.4
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -14,17 +14,17 @@ SHA256: `{{SHA256}}`
 1. Download `RobloxPiano.exe` and double-click it; the Sheet Library remains the normal starting point.
 2. Open Roblox and run `Test Roblox Input` before trusting song playback for the current Roblox process.
 3. Watch Roblox during the W probe. A visible movement or W-bound piano note is still the field acceptance oracle; focus or Windows API success alone is not proof.
-4. If Roblox does not react, open Diagnostics and share every `INPUT_FORENSIC` line with the same `probe=...` value. The log now shows app/foreground/mapping keyboard layouts in addition to native key-state evidence.
+4. If Roblox does not react, open Diagnostics and share every `INPUT_FORENSIC` line with the same `probe=...` value. The log now shows keyboard-layout and process-elevation parity together with native key-state evidence.
 5. Support Bundle export remains available for deeper investigation.
 
-## Phase 56 P0 foreground keyboard-layout parity
+## Phase 57 P0 privilege-parity forensics
 
-- Production character mapping now follows the current foreground Roblox window thread with `GetKeyboardLayout(foregroundThreadId)` + `VkKeyScanExW` instead of assuming the RobloxPiano UI thread layout.
-- The field-proven `keybd_event` backend, scan-code-zero shape, key-up flags and minimum physical key hold remain unchanged.
-- Mapping falls back to the calling-thread layout only when a usable foreground layout cannot be obtained; unmappable characters still fail closed.
-- `INPUT_FORENSIC stage=ENV` now records `appKeyboardLayout`, `foregroundKeyboardLayout`, `mappingLayout`, mapping/foreground thread IDs and an explicit `layoutParity=SAME|DIFFERENT` marker.
-- Normal sampled playback dispatch diagnostics include the keyboard layout and thread used to resolve each logged stroke.
-- ADR 0061 locks the target-layout mapping contract while preserving the live Roblox reaction acceptance gate from ADR 0060.
+- The explicit Roblox input probe now inspects Windows `TokenElevation` for both `RobloxPiano.exe` and the exact target Roblox process.
+- `INPUT_FORENSIC stage=ENV` records `appElevation`, `targetElevation` and `elevationParity` next to the existing mapping-layout, foreground and virtual-key evidence.
+- If Roblox is elevated while RobloxPiano is not, the same probe emits `stage=PRIVILEGE_BLOCKER verdict=TARGET_HIGHER_INTEGRITY` with deterministic guidance to run both at the same privilege level before judging native input acceptance.
+- Token inspection is diagnostic-only and fails safely to `Unknown`. The app does not auto-elevate and does not bypass Windows privilege boundaries.
+- The field-proven `keybd_event` backend, scan-code-zero shape, key-up behavior, minimum physical hold, focus guard and emergency release-all remain unchanged.
+- ADR 0062 records the privilege-parity evidence contract. Deterministic regression coverage protects all same/higher/unknown classification cases.
 
 ## Production capability and reliability
 
@@ -39,6 +39,6 @@ SHA256: `{{SHA256}}`
 
 - CI cannot observe a live Roblox client consuming synthetic input. Explicit GUI verification plus visible Roblox reaction remains the real-machine acceptance gate.
 - A log showing `keybd_event` invocation or Windows key state does not by itself prove Roblox consumed the key.
-- If `layoutParity=DIFFERENT`, v0.40.3 maps using `mappingLayout=foregroundKeyboardLayout`; this removes app-thread keyboard-layout divergence as a cause before investigating Roblox/native acceptance.
-- If Windows observes W DOWN while the selected Roblox process remains foreground and the correlated final verdict is `RobloxDidNotReact`, investigation stays on Roblox/native acceptance rather than scheduler, MIDI or unrelated feature work.
+- If `elevationParity=TargetHigher`, first remove that privilege mismatch and rerun the probe before treating Roblox consumption as the remaining failure boundary.
+- If `elevationParity=Same`, the foreground keyboard mapping is correct, Windows observes W DOWN, the selected Roblox process stays foreground, and the correlated final verdict is `RobloxDidNotReact`, investigation stays on the deeper Windows/Roblox native acceptance boundary rather than scheduler, MIDI or unrelated product work.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.

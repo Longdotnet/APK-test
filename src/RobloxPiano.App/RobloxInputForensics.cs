@@ -14,16 +14,25 @@ internal static class RobloxInputForensics
         var foregroundKeyboardLayout = NativeMethods.GetKeyboardLayout(foregroundThreadId);
         var mapping = WindowsKeyboardInputSink.ResolveStrokeForDiagnostics(character);
         var layoutParity = appKeyboardLayout == foregroundKeyboardLayout ? "SAME" : "DIFFERENT";
+        var privilege = WindowsProcessPrivilege.Capture(target.ProcessId);
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
             $"char='{character}' unicode=U+{(int)character:X4} resolvedVk=0x{mapping.VirtualKey:X2} modifiers=0x{mapping.Modifiers:X2} " +
             $"mappingLayout=0x{mapping.KeyboardLayout.ToInt64():X} mappingThread={mapping.KeyboardThreadId} " +
             $"appKeyboardLayout=0x{appKeyboardLayout.ToInt64():X} foregroundKeyboardLayout=0x{foregroundKeyboardLayout.ToInt64():X} layoutParity={layoutParity} " +
+            $"appElevation={privilege.AppElevation} targetElevation={privilege.TargetElevation} elevationParity={privilege.Parity} " +
             $"managedThread={Environment.CurrentManagedThreadId} nativeThread={GetCurrentThreadId()} " +
             $"appPid={Environment.ProcessId} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
             $"os='{Environment.OSVersion}' x64={Environment.Is64BitProcess}.");
+
+        if (privilege.IsTargetHigher)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=PRIVILEGE_BLOCKER verdict=TARGET_HIGHER_INTEGRITY " +
+                "guidance='Roblox is elevated while RobloxPiano is not. Run both at the same privilege level before judging native input acceptance.'.");
+        }
     }
 
     internal static void LogKeyState(
