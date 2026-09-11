@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.22
+version: 0.40.23
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -13,45 +13,48 @@ SHA256: `{{SHA256}}`
 
 1. Download `RobloxPiano.exe` and double-click it; the **Sheet Library** remains the normal client starting point.
 2. Existing MIDI/MusicXML/VPS/TXT library and playback behavior remains unchanged.
-3. Open Roblox and run `Test Roblox Input`. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without changing the Roblox experience/session.
-4. Every matrix cell now freezes Roblox PID/process-start identity and selected HWND from the exact selected target **before that probe starts**. A result is never relabelled with whichever Roblox target happens to be preferred after the probe.
-5. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**. Matrix evidence remains diagnostic-only and never authorizes playback by itself.
+3. Open Roblox and run `Test Roblox Input`. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without changing Roblox experience/session.
+4. Keep the same Roblox process/window active through each probe and through the Yes/No reaction assessment that follows it.
+5. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**. Matrix evidence remains diagnostic-only and never authorizes playback by itself.
 
-## Runtime Input P0 Phase 74
+## Runtime Input P0 Phase 75
 
-- Phase 73 validated continuity when each result was retained, but its first implementation captured the session identity after probe completion. Roblox could restart, replace its window, or another Roblox target could become preferred between probe execution and result retention, allowing old evidence to be labelled with a newer target identity.
-- Each real-key / PowerShell-oracle / keybd_event-scan / SendInput-VK / SendInput-scan cell now captures PID + process-start ticks + selected HWND from the exact `RobloxWindowTarget` before the probe begins and carries that immutable identity across async execution and the client reaction prompt.
-- `INPUT_MATRIX_SESSION stage=PROBE_START` records the exact selected-target identity before input/observation. `stage=RESULT_RETAINED` records the same immutable identity beside the resulting probe ID.
-- Matrix evidence no longer performs a post-hoc `FindPreferred()` capture. Evidence without an explicitly supplied probe-start identity fails closed with `MATRIX_SESSION_IDENTITY_UNAVAILABLE` and can never become a conclusive synthetic winner.
-- Existing Phase 73 continuity still rejects PID/start-time or selected-HWND differences with `ROBLOX_SESSION_CHANGED`. Retrying a cell still replaces stale evidence for that cell.
-- No input backend is added or promoted. `keybd_event`, `SendInput`, PowerShell-oracle semantics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release, Legacy playback and Audio-to-Piano behavior are unchanged.
-- CI success is not a Roblox field PASS. Visible movement or the expected W-bound piano note in the real Roblox client remains required.
+- Phase 74 bound each probe to the exact selected Roblox PID + process-start identity + HWND before input execution, preventing post-hoc relabelling after a restart/window replacement.
+- Phase 75 closes the remaining reaction-time TOCTOU gap: Roblox identity is captured again when the human reaction answer is assessed.
+- If the current Roblox identity cannot be established, the matrix fails closed with `REACTION_CONTEXT_IDENTITY_UNAVAILABLE`.
+- If PID/process-start/HWND differs from the probe-bound identity, the matrix fails closed with `REACTION_CONTEXT_CHANGED`.
+- A stale Yes/No answer from a prior Roblox lifetime/window can no longer produce `SYNTHETIC_VARIANT_WORKS` or `REAL_KEY_WORKS_SYNTHETIC_FAILS`.
+- `INPUT_MATRIX_REACTION_CONTEXT stage=ASSESS_CURRENT` records the assessment-time identity used by policy.
+- No input backend is added or promoted. `keybd_event`, `SendInput`, PowerShell-oracle semantics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release and Legacy playback remain unchanged.
+- CI success is not a Roblox field PASS. Visible movement or the expected W-bound piano note in the real Roblox client is still required.
 
 ## Real-vs-synthetic matrix
 
-- `REAL_KEY_BASELINE_INVALID` continues to identify a missing/untrusted real-key baseline or a real W that Windows observed but Roblox did not visibly consume.
-- `SYNTHETIC_VARIANT_WORKS` continues to identify exact synthetic semantics that visibly reached Roblox, but only inside one trusted probe-bound matrix session.
-- `REAL_KEY_WORKS_SYNTHETIC_FAILS` still requires a trusted real W with visible Roblox reaction plus confirmed Windows-boundary delivery and explicit no-reaction for all four synthetic cells in the same probe-bound Roblox process/window identity.
-- That complete same-session matrix uses failure boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION` without pretending to observe Roblox internals.
+- `REAL_KEY_BASELINE_INVALID` identifies a missing/untrusted real-key baseline or a real W Windows observed but Roblox did not visibly consume.
+- `SYNTHETIC_VARIANT_WORKS` identifies exact synthetic semantics that visibly reached Roblox only when probe-bound and reaction-time identities remain trusted and continuous.
+- `REAL_KEY_WORKS_SYNTHETIC_FAILS` requires a trusted real W with visible Roblox reaction plus confirmed Windows-boundary delivery and explicit no-reaction for all synthetic cells in one trusted Roblox session.
+- A complete same-session failure still uses boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`; the application does not pretend to observe Roblox internals.
 
 ## Trusted real-key baseline
 
-- Stable arming and each real W down/up event continue to require `WindowsRobloxWindowIdentity` relation `ExactTarget` or `TargetWindowTree` with no known `MainWindowHandle` replacement.
+- Stable arming and each real W down/up event require `WindowsRobloxWindowIdentity` relation `ExactTarget` or `TargetWindowTree` with no known `MainWindowHandle` replacement.
 - Same-PID alternate roots fail closed and cannot establish the real-key baseline.
 - `LLKHF_INJECTED` events are rejected. An unmarked event remains a physical-baseline candidate, not cryptographic hardware attestation.
 
 ## Audio-to-Piano production bundle
 
-- The executable continues to carry the pinned Spotify Basic Pitch model plus Microsoft ONNX Runtime/NAudio production dependencies introduced in v0.40.18.
-- The Audio Phase 16 client-job boundary present on `main` remains isolated from Runtime Input and does not modify Roblox keyboard dispatch.
-- The same model provenance, `--audio-model-smoke`, single-file packaging and clean-machine runtime checks remain release-gated.
-- This Runtime Input phase does not claim end-to-end Play-in-Roblox success.
+- Audio Phase 17 adds the client-facing **Create Piano Version** flow for owned/local audio using bundled Spotify Basic Pitch + ONNX Runtime + NAudio with deterministic progress/cancellation and Ready/NeedsReview/Rejected quality policy.
+- Audio Phase 18 adds explicit generated-track persistence to the Library only after deterministic DryWetMIDI serialization and production `MidiFileImporter` round-trip/parity validation.
+- `Rejected` generated tracks are not persisted; `NeedsReview` requires explicit client confirmation.
+- Canonical `PerformanceTrack` remains authoritative; Audio import/transcription does not replace Runtime Input, focus guards, scheduler truth, held-key ownership or Legacy playback.
+- Audio-to-Piano does not claim end-to-end Play-in-Roblox success while Runtime Input P0 remains unproven in the field.
 
 ## OSS and attribution
 
-- Spotify Basic Pitch remains the pinned Automatic Music Transcription model/semantic reference under Apache-2.0, including its upstream NOTICE attribution.
-- Microsoft ONNX Runtime remains the native .NET inference engine; NAudio remains the Windows audio decode/normalization boundary under their upstream redistribution terms.
-- `RobloxPiano.exe --third-party-notices` continues to expose bundled third-party notices.
+- Spotify Basic Pitch remains the pinned Automatic Music Transcription model/semantic reference under Apache-2.0, including upstream NOTICE attribution.
+- Microsoft ONNX Runtime remains the native .NET inference engine and NAudio remains the Windows audio decode/normalization boundary.
+- Melanchall DryWetMIDI Nativeless is used for deterministic generated-MIDI serialization; its MIT attribution is bundled with third-party notices.
+- `RobloxPiano.exe --third-party-notices` exposes bundled third-party notices.
 - No Python/PyTorch/Demucs/ffmpeg dependency is introduced.
 
 ## Production capability and reliability
@@ -63,8 +66,8 @@ SHA256: `{{SHA256}}`
 
 ## Current boundaries
 
-- No client field evidence in this release proves that synthetic W is consumed by Roblox. P0 remains `NOT YET PROVEN` until visible Roblox reaction is explicitly confirmed.
-- PID/start-time/HWND continuity cannot prove an internal Roblox place/experience transition when Roblox reuses the same process and window. Client field runs must still avoid intentionally changing experience/session between cells.
+- No client field evidence in this release proves synthetic W is consumed by Roblox. P0 remains `NOT YET PROVEN` until visible Roblox reaction is explicitly confirmed.
+- PID/start-time/HWND continuity cannot prove an internal Roblox place/experience transition if Roblox reuses the same process/window; field runs must avoid intentionally changing experience/session between cells.
 - `SYNTHETIC_VARIANT_WORKS` is evidence about one tested semantic path, not permission to silently switch production playback.
-- Raw/device-origin consumption inside another process remains unobservable from Roblox Piano without unsafe assumptions; the matrix describes the evidence boundary rather than inventing a PASS.
+- Raw/device-origin consumption inside another process remains unobservable from Roblox Piano without unsafe assumptions; diagnostics report the evidence boundary rather than inventing a PASS.
 - The executable remains unsigned, so Windows SmartScreen may show a reputation warning.
