@@ -18,7 +18,8 @@ internal enum RobloxInputCheckVerdict
     FocusUnstable = 3,
     WindowsKeyStateNotObserved = 4,
     FocusLostDuringProbe = 5,
-    NativeDeliveryAwaitingObservation = 6
+    NativeDeliveryAwaitingObservation = 6,
+    InputDesktopMismatch = 7
 }
 
 internal sealed record RobloxInputCheckAssessment(
@@ -31,6 +32,7 @@ internal sealed record RobloxFieldInputProbeResult(
     string ProbeId,
     bool ActivationConfirmed,
     bool StableForegroundConfirmed,
+    WindowsInputDesktopParity DesktopParity,
     bool WindowsReportedKeyDown,
     bool ForegroundHeldDuringProbe,
     ushort VirtualKey,
@@ -47,6 +49,7 @@ internal sealed record RobloxFieldInputProbeResult(
             "synthetic",
             activationConfirmed,
             stableForegroundConfirmed,
+            WindowsInputDesktopParity.Same,
             windowsReportedKeyDown,
             foregroundHeldDuringProbe,
             virtualKey,
@@ -56,6 +59,7 @@ internal sealed record RobloxFieldInputProbeResult(
 
     public bool NativeDeliveryObserved => ActivationConfirmed
         && StableForegroundConfirmed
+        && DesktopParity != WindowsInputDesktopParity.Different
         && WindowsReportedKeyDown
         && ForegroundHeldDuringProbe;
 
@@ -76,6 +80,15 @@ internal sealed record RobloxFieldInputProbeResult(
                 RobloxInputCheckVerdict.FocusUnstable,
                 "Roblox did not stay foreground long enough to safely send the test key.",
                 "Stop switching windows or overlays for a moment, keep the selected Roblox Player visible, then retry.",
+                false);
+        }
+
+        if (DesktopParity == WindowsInputDesktopParity.Different)
+        {
+            return new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.InputDesktopMismatch,
+                "Roblox Piano is attached to a different Windows desktop than the active input desktop.",
+                "Return to the normal interactive desktop (for example, leave a secure/alternate desktop), keep Roblox and Roblox Piano on the same Windows session desktop, then rerun Test Roblox Input.",
                 false);
         }
 
@@ -118,7 +131,7 @@ internal sealed record RobloxFieldInputProbeResult(
         return new RobloxInputCheckAssessment(
             RobloxInputCheckVerdict.RobloxDidNotReact,
             "Windows delivered the W test, but Roblox did not visibly react.",
-            "The scheduler is not the current suspect. Check Roblox/game keyboard capture, privilege/integrity mismatch, overlays or anti-input behavior; Diagnostics contains the exact native evidence.",
+            "The scheduler is not the current suspect. Check Roblox/game keyboard capture, privilege/integrity mismatch, input-desktop parity, overlays or anti-input behavior; Diagnostics contains the exact native evidence.",
             false);
     }
 }
@@ -138,7 +151,7 @@ internal static class RobloxFieldInputProbe
         var activated = target.TryActivate();
         if (!activated)
         {
-            var result = new RobloxFieldInputProbeResult(probeId, false, false, false, false, 0, TimeSpan.Zero);
+            var result = new RobloxFieldInputProbeResult(probeId, false, false, WindowsInputDesktopParity.Unknown, false, false, 0, TimeSpan.Zero);
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
             return result;
         }
@@ -146,7 +159,24 @@ internal static class RobloxFieldInputProbe
         var stable = await WaitForStableForegroundAsync(target, cancellationToken).ConfigureAwait(false);
         if (!stable)
         {
-            var result = new RobloxFieldInputProbeResult(probeId, true, false, false, false, 0, TimeSpan.Zero);
+            var result = new RobloxFieldInputProbeResult(probeId, true, false, WindowsInputDesktopParity.Unknown, false, false, 0, TimeSpan.Zero);
+            RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
+            return result;
+        }
+
+        var desktop = WindowsInputDesktop.Capture();
+        RobloxInputForensics.LogDesktopSnapshot(probeId, "PRE_INJECTION", desktop, target);
+        if (desktop.IsKnownMismatch)
+        {
+            var result = new RobloxFieldInputProbeResult(
+                probeId,
+                true,
+                true,
+                desktop.Parity,
+                false,
+                target.IsForeground,
+                0,
+                TimeSpan.Zero);
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
             return result;
         }
@@ -190,6 +220,7 @@ internal static class RobloxFieldInputProbe
                 probeId,
                 true,
                 true,
+                desktop.Parity,
                 keyDownObserved,
                 foregroundHeld,
                 virtualKey,
