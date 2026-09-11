@@ -19,7 +19,8 @@ internal enum RobloxInputCheckVerdict
     WindowsKeyStateNotObserved = 4,
     FocusLostDuringProbe = 5,
     NativeDeliveryAwaitingObservation = 6,
-    InputDesktopMismatch = 7
+    InputDesktopMismatch = 7,
+    PowerShellOracleConfirmedProductionMappingDiffers = 8
 }
 
 internal sealed record RobloxInputCheckAssessment(
@@ -38,6 +39,8 @@ internal sealed record RobloxFieldInputProbeResult(
     ushort VirtualKey,
     TimeSpan HoldDuration)
 {
+    public bool ProductionMappingEquivalentToOracle { get; init; } = true;
+
     internal RobloxFieldInputProbeResult(
         bool activationConfirmed,
         bool stableForegroundConfirmed,
@@ -114,8 +117,17 @@ internal sealed record RobloxFieldInputProbeResult(
         {
             return new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.NativeDeliveryAwaitingObservation,
-                "Windows delivered the W test while Roblox remained foreground.",
+                "Windows delivered the exact PowerShell-oracle W test while Roblox remained foreground.",
                 "Confirm whether Roblox visibly moved or played the W-bound piano note; that observation separates Windows delivery from Roblox consumption.",
+                false);
+        }
+
+        if (robloxReacted.Value && !ProductionMappingEquivalentToOracle)
+        {
+            return new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.PowerShellOracleConfirmedProductionMappingDiffers,
+                "Roblox reacted to the exact PowerShell-oracle input, but normal playback currently resolves that key differently.",
+                "Keep playback gated for now. Diagnostics proves the mapping boundary differs; the production mapping must be reconciled with the field-proven oracle before normal song playback is trusted.",
                 false);
         }
 
@@ -123,15 +135,15 @@ internal sealed record RobloxFieldInputProbeResult(
         {
             return new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.Confirmed,
-                "Roblox reacted to the production input path.",
+                "Roblox reacted to the exact PowerShell-oracle input path, and normal playback resolves the test key equivalently.",
                 "Input acceptance is confirmed for this session. Select a Library song and press Play.",
                 true);
         }
 
         return new RobloxInputCheckAssessment(
             RobloxInputCheckVerdict.RobloxDidNotReact,
-            "Windows delivered the W test, but Roblox did not visibly react.",
-            "The scheduler is not the current suspect. Check Roblox/game keyboard capture, privilege/integrity mismatch, input-desktop parity, overlays or anti-input behavior; Diagnostics contains the exact native evidence.",
+            "Windows delivered the exact PowerShell-oracle W test, but Roblox did not visibly react.",
+            "The scheduler and keyboard mapping are not the current suspects. Check Roblox/game keyboard capture, privilege/integrity mismatch, input-desktop parity, overlays or anti-input behavior; Diagnostics contains the exact native evidence.",
             false);
     }
 }
@@ -181,9 +193,16 @@ internal static class RobloxFieldInputProbe
             return result;
         }
 
-        var input = new WindowsKeyboardInputSink();
+        var productionMapping = WindowsKeyboardInputSink.ResolveStrokeForDiagnostics(RobloxFieldInputPolicy.ProbeKey);
+        var oracleMapping = WindowsKeyboardInputSink.ResolvePowerShellOracleStrokeForDiagnostics(RobloxFieldInputPolicy.ProbeKey);
+        var mappingEquivalent = WindowsKeyboardInputSink.HasSameKeySemantics(productionMapping, oracleMapping);
+        RobloxInputForensics.LogMappingComparison(probeId, productionMapping, oracleMapping, mappingEquivalent);
+
+        // The explicit field probe intentionally replays the exact known-good PowerShell mapping contract.
+        // Normal playback remains on ForegroundLayout until field evidence proves a promotion is safe.
+        var input = new WindowsKeyboardInputSink(KeyboardMappingStrategy.PowerShellOracle);
         var keys = new[] { RobloxFieldInputPolicy.ProbeKey };
-        var virtualKey = WindowsKeyboardInputSink.ResolveVirtualKeyForDiagnostics(RobloxFieldInputPolicy.ProbeKey);
+        var virtualKey = oracleMapping.VirtualKey;
         var keyDownObserved = false;
         var foregroundHeld = false;
         var started = Stopwatch.GetTimestamp();
@@ -224,7 +243,10 @@ internal static class RobloxFieldInputProbe
                 keyDownObserved,
                 foregroundHeld,
                 virtualKey,
-                held);
+                held)
+            {
+                ProductionMappingEquivalentToOracle = mappingEquivalent
+            };
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
             return result;
         }
