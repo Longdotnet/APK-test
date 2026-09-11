@@ -17,4 +17,17 @@
     <ProjectReference Include="../RobloxPiano.Library/RobloxPiano.Library.csproj" />
     <ProjectReference Include="../RobloxPiano.Audio/RobloxPiano.Audio.csproj" />
   </ItemGroup>
+
+  <!--
+    Microsoft.ML.OnnxRuntime carries native import/static .lib files for build/link consumers.
+    They are not runtime assets for the managed Windows client and must not escape beside the
+    self-contained executable. Keep the removal exact so an unrelated future native asset cannot
+    be silently discarded by extension alone.
+  -->
+  <Target Name="ExcludeOnnxRuntimeImportLibrariesFromPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime.lib' Or '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime_providers_shared.lib'" />
+    </ItemGroup>
+  </Target>
 </Project>
