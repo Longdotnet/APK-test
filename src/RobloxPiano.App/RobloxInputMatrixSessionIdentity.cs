@@ -8,11 +8,14 @@ internal readonly record struct RobloxInputMatrixSessionIdentity(
     public long StartTimeUtcTicks => ProcessIdentity.StartTimeUtcTicks;
     public IntPtr SelectedWindowHandle => new(SelectedWindowHandleValue);
 
-    public static bool TryCapture(out RobloxInputMatrixSessionIdentity identity)
+    public static bool TryCapture(
+        RobloxWindowTarget target,
+        out RobloxInputMatrixSessionIdentity identity)
     {
+        ArgumentNullException.ThrowIfNull(target);
         identity = default;
-        var target = RobloxProcessLocator.FindPreferred();
-        if (target is null || target.WindowHandle == IntPtr.Zero)
+
+        if (target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
