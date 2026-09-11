@@ -86,6 +86,7 @@ internal static class PlaybackReferenceAudioExperimentArchive
             }
             catch (Exception exception) when (
                 exception is IOException
+                or InvalidDataException
                 or UnauthorizedAccessException
                 or ArgumentException
                 or System.Text.Json.JsonException
@@ -135,6 +136,7 @@ internal static class PlaybackReferenceAudioExperimentArchive
             }
             catch (Exception exception) when (
                 exception is IOException
+                or InvalidDataException
                 or UnauthorizedAccessException
                 or ArgumentException
                 or System.Text.Json.JsonException
