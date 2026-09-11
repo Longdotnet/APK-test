@@ -18,6 +18,7 @@ internal static class RobloxInputForensics
         var layoutParity = appKeyboardLayout == foregroundKeyboardLayout ? "SAME" : "DIFFERENT";
         var privilege = WindowsProcessPrivilege.Capture(target.ProcessId);
         var desktop = WindowsInputDesktop.Capture();
+        var session = WindowsInteractiveSession.Capture(target.ProcessId);
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
@@ -29,6 +30,11 @@ internal static class RobloxInputForensics
             $"appElevation={privilege.AppElevation} targetElevation={privilege.TargetElevation} elevationParity={privilege.Parity} " +
             $"appDesktop='{desktop.AppDesktopName ?? "UNKNOWN"}' inputDesktop='{desktop.InputDesktopName ?? "UNKNOWN"}' desktopParity={desktop.Parity} " +
             $"desktopAppError={desktop.AppDesktopError} desktopInputError={desktop.InputDesktopError} " +
+            $"appSession={(session.AppSessionId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "UNKNOWN")} " +
+            $"targetSession={(session.TargetSessionId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "UNKNOWN")} " +
+            $"sessionParity={session.Parity} activeConsoleSession={WindowsInteractiveSession.FormatConsoleSession(session.ActiveConsoleSessionId)} " +
+            $"appIsActiveConsole={session.AppIsActiveConsole} targetIsActiveConsole={session.TargetIsActiveConsole} " +
+            $"sessionAppError={session.AppSessionError} sessionTargetError={session.TargetSessionError} " +
             $"managedThread={Environment.CurrentManagedThreadId} nativeThread={GetCurrentThreadId()} " +
             $"appPid={Environment.ProcessId} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
@@ -47,6 +53,24 @@ internal static class RobloxInputForensics
                 $"INPUT_FORENSIC probe={probeId} stage=DESKTOP_BLOCKER verdict=INPUT_DESKTOP_MISMATCH " +
                 $"appDesktop='{desktop.AppDesktopName}' inputDesktop='{desktop.InputDesktopName}' " +
                 "guidance='Return Roblox and RobloxPiano to the same normal interactive Windows desktop before judging native input acceptance.'.");
+        }
+
+        if (session.IsKnownMismatch)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=SESSION_BLOCKER verdict=WINDOWS_SESSION_MISMATCH " +
+                $"appSession={session.AppSessionId} targetSession={session.TargetSessionId} " +
+                $"activeConsoleSession={WindowsInteractiveSession.FormatConsoleSession(session.ActiveConsoleSessionId)} " +
+                "guidance='Roblox and RobloxPiano are running in different Windows logon/RDP sessions. Run both in the same interactive session before judging Roblox input consumption.'.");
+        }
+        else if (session.Parity == WindowsSessionParity.Same
+                 && (!session.AppIsActiveConsole || !session.TargetIsActiveConsole))
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=SESSION_CONTEXT verdict=NON_CONSOLE_INTERACTIVE_SESSION " +
+                $"appSession={session.AppSessionId} targetSession={session.TargetSessionId} " +
+                $"activeConsoleSession={WindowsInteractiveSession.FormatConsoleSession(session.ActiveConsoleSessionId)} " +
+                "guidance='Both processes share one Windows session, but it is not the active console session. Preserve this evidence when comparing local-console versus RDP/remote field behavior.'.");
         }
     }
 
