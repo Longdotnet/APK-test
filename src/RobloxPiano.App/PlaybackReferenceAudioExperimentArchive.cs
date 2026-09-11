@@ -67,7 +67,7 @@ internal static class PlaybackReferenceAudioExperimentArchive
             return Array.Empty<PlaybackReferenceAudioExperimentEvidence>();
         }
 
-        var verified = new List<PlaybackReferenceAudioExperimentEvidence>();
+        var verified = new List<(PlaybackReferenceAudioExperimentEvidence Evidence, DateTime LastWriteUtc)>();
         foreach (var path in Directory.EnumerateFiles(
                      archiveDirectory,
                      "*.legacy-ab-reference.json",
@@ -81,7 +81,7 @@ internal static class PlaybackReferenceAudioExperimentArchive
                         experimentEvidenceSha256,
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    verified.Add(evidence);
+                    verified.Add((evidence, File.GetLastWriteTimeUtc(path)));
                 }
             }
             catch (Exception exception) when (
@@ -97,9 +97,10 @@ internal static class PlaybackReferenceAudioExperimentArchive
         }
 
         return verified
-            .OrderBy(item => item.ReferenceContentSha256, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.EvidenceSha256, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(item => item.LastWriteUtc)
+            .ThenBy(item => item.Evidence.ReferenceContentSha256, StringComparer.OrdinalIgnoreCase)
             .Take(maxResults)
+            .Select(item => item.Evidence)
             .ToArray();
     }
 
