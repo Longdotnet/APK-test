@@ -43,6 +43,9 @@ jobs:
       - name: Build audio boundary
         run: dotnet build src/RobloxPiano.Audio/RobloxPiano.Audio.csproj -c Release
 
+      - name: Verify pinned model embeds, extracts and infers without external tooling
+        run: dotnet run --project tests/RobloxPiano.AudioBundleTests/RobloxPiano.AudioBundleTests.csproj -c Release
+
       - name: Run audio ingest, ONNX, decoder and arranger regression harness
         run: dotnet run --project tests/RobloxPiano.AudioTests/RobloxPiano.AudioTests.csproj -c Release
 

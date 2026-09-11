@@ -11,4 +11,7 @@
     <PackageReference Include="NAudio" Version="3.1.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
   </ItemGroup>
+  <ItemGroup Condition="'$(BASIC_PITCH_MODEL_PATH)' != '' and Exists('$(BASIC_PITCH_MODEL_PATH)')">
+    <EmbeddedResource Include="$(BASIC_PITCH_MODEL_PATH)" LogicalName="RobloxPiano.Audio.Models.nmp.onnx" />
+  </ItemGroup>
 </Project>
