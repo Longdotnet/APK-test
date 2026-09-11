@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using RobloxPiano.Audio;
 using RobloxPiano.Core;
 
 namespace RobloxPiano.App;
@@ -15,12 +16,52 @@ internal static class Program
     [STAThread]
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length == 1 && args[0].Equals("--audio-model-smoke", StringComparison.OrdinalIgnoreCase))
+        {
+            return RunAudioModelSmoke();
+        }
+
         if (args.Length == 0 || args[0].Equals("--ui", StringComparison.OrdinalIgnoreCase))
         {
             return RunInteractiveClient();
         }
 
         return await RunCommandLineAsync(args).ConfigureAwait(false);
+    }
+
+    private static int RunAudioModelSmoke()
+    {
+        try
+        {
+            if (!BasicPitchBundledModel.IsAvailable)
+            {
+                throw new InvalidOperationException(
+                    "The pinned Spotify Basic Pitch model is not embedded in this client build.");
+            }
+
+            var modelPath = BasicPitchBundledModel.MaterializeToDefaultCache();
+            if (!BasicPitchBundledModel.HasExpectedIdentity(modelPath))
+            {
+                throw new InvalidDataException(
+                    "The materialized Spotify Basic Pitch model failed its pinned provenance check.");
+            }
+
+            using var service = new AudioToPianoTranscriptionService(modelPath);
+            Console.WriteLine(
+                $"Audio model smoke passed. modelBytes={BasicPitchBundledModel.ExpectedLength}; " +
+                $"gitBlob={BasicPitchBundledModel.ExpectedGitBlobSha1}; onnxRuntimeSession=ready.");
+            return 0;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or InvalidOperationException
+            or ArgumentException)
+        {
+            Console.Error.WriteLine($"Audio model smoke failed: {exception.Message}");
+            return 11;
+        }
     }
 
     private static int RunInteractiveClient()
@@ -391,6 +432,7 @@ internal static class Program
         Console.WriteLine("Developer/CI mode:");
         Console.WriteLine("  RobloxPiano.exe <sheet.txt> [--speed N] [--start-delay S] [--dry-run] [--validate-only]");
         Console.WriteLine("      [--quality-report report.json] [--baseline-report baseline.json] [--quality-gate]");
+        Console.WriteLine("  RobloxPiano.exe --audio-model-smoke");
         Console.WriteLine();
         Console.WriteLine("Legacy x2 is intentionally preserved as a regression baseline via --speed 2.");
         Console.WriteLine("Quality A/B compares scheduler execution only; it does not claim perceptual or musical similarity.");
