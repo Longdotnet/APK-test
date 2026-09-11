@@ -12,6 +12,8 @@ internal sealed record RobloxHardwareKeyBaselineResult(
     bool NonInjectedKeyUpObserved,
     bool ForegroundHeldAtDown,
     bool ForegroundHeldAtUp,
+    bool TrustedWindowSurfaceAtDown,
+    bool TrustedWindowSurfaceAtUp,
     ushort VirtualKey,
     TimeSpan ObservationDuration)
 {
@@ -20,14 +22,17 @@ internal sealed record RobloxHardwareKeyBaselineResult(
         && NonInjectedKeyDownObserved
         && NonInjectedKeyUpObserved
         && ForegroundHeldAtDown
-        && ForegroundHeldAtUp;
+        && ForegroundHeldAtUp
+        && TrustedWindowSurfaceAtDown
+        && TrustedWindowSurfaceAtUp;
 }
 
 /// <summary>
 /// Diagnostic-only baseline that waits for the user to physically press and release W while
-/// Roblox owns the foreground. It never injects input and never authorizes production playback.
-/// Windows LLKHF_INJECTED is used only to reject OS-marked injected events; an unmarked event is
-/// treated as a physical-baseline candidate, not as cryptographic proof of hardware provenance.
+/// the exact selected Roblox window/tree owns the foreground. It never injects input and never
+/// authorizes production playback. Windows LLKHF_INJECTED is used only to reject OS-marked
+/// injected events; an unmarked event is treated as a physical-baseline candidate, not as
+/// cryptographic proof of hardware provenance.
 /// </summary>
 internal static class RobloxHardwareKeyBaselineProbe
 {
@@ -72,7 +77,7 @@ internal static class RobloxHardwareKeyBaselineProbe
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_ARMED backend=NONE " +
             $"vk=0x{oracle.VirtualKey:X2} timeoutMs={ObservationTimeout.TotalMilliseconds:0} " +
-            "injection=false provenance=LLKHF_INJECTED_FILTER privacy=TARGET_KEY_ONLY productionChanged=false.");
+            "injection=false provenance=LLKHF_INJECTED_FILTER windowPolicy=TRUSTED_SELECTED_TREE privacy=TARGET_KEY_ONLY productionChanged=false.");
 
         var started = Stopwatch.GetTimestamp();
         using var listener = new LowLevelKeyboardListener(target, probeId, oracle.VirtualKey);
@@ -98,14 +103,19 @@ internal static class RobloxHardwareKeyBaselineProbe
             listener.NonInjectedUpObserved,
             listener.ForegroundAtDown,
             listener.ForegroundAtUp,
+            listener.TrustedWindowSurfaceAtDown,
+            listener.TrustedWindowSurfaceAtUp,
             oracle.VirtualKey,
             Stopwatch.GetElapsedTime(started));
         LogVerdict(result, null, result.PhysicalBaselineObserved ? "AWAITING_ROBLOX_OBSERVATION" : "REAL_KEY_NOT_CONFIRMED");
         return result;
     }
 
-    internal static bool IsPhysicalBaselineCandidate(uint flags, bool isTargetVirtualKey, bool targetForeground)
-        => isTargetVirtualKey && targetForeground && (flags & LlkhfInjected) == 0;
+    internal static bool IsPhysicalBaselineCandidate(uint flags, bool isTargetVirtualKey, bool trustedTargetSurface)
+        => isTargetVirtualKey && trustedTargetSurface && (flags & LlkhfInjected) == 0;
+
+    internal static bool IsTrustedBaselineSurface(WindowsRobloxWindowIdentitySnapshot snapshot)
+        => snapshot.IsTrustedProbeSurface;
 
     internal static void LogHumanVerdict(RobloxHardwareKeyBaselineResult result, bool reacted)
         => LogVerdict(result, reacted, reacted ? "REAL_KEY_ROBLOX_REACTED" : "REAL_KEY_ROBLOX_NO_REACTION");
@@ -119,6 +129,8 @@ internal static class RobloxHardwareKeyBaselineProbe
             false,
             false,
             false,
+            false,
+            false,
             0,
             TimeSpan.Zero);
 
@@ -128,7 +140,8 @@ internal static class RobloxHardwareKeyBaselineProbe
             $"INPUT_FORENSIC probe={result.ProbeId} stage=REAL_KEY_VERDICT verdict={verdict} " +
             $"vk=0x{result.VirtualKey:X2} nonInjectedDown={result.NonInjectedKeyDownObserved} " +
             $"nonInjectedUp={result.NonInjectedKeyUpObserved} foregroundAtDown={result.ForegroundHeldAtDown} " +
-            $"foregroundAtUp={result.ForegroundHeldAtUp} baselineObserved={result.PhysicalBaselineObserved} " +
+            $"foregroundAtUp={result.ForegroundHeldAtUp} trustedSurfaceAtDown={result.TrustedWindowSurfaceAtDown} " +
+            $"trustedSurfaceAtUp={result.TrustedWindowSurfaceAtUp} baselineObserved={result.PhysicalBaselineObserved} " +
             $"robloxReaction={(reacted is null ? "UNKNOWN" : reacted.Value ? "YES" : "NO")} " +
             "injection=false authorizesPlayback=false success=false.");
     }
@@ -140,7 +153,8 @@ internal static class RobloxHardwareKeyBaselineProbe
         while (Stopwatch.GetElapsedTime(timeoutStarted) < RobloxFieldInputPolicy.ProbeFocusTimeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (target.IsForeground)
+            var identity = WindowsRobloxWindowIdentity.Capture(target);
+            if (IsTrustedBaselineSurface(identity))
             {
                 stableSince ??= Stopwatch.GetTimestamp();
                 if (Stopwatch.GetElapsedTime(stableSince.Value) >= RobloxFieldInputPolicy.StableFocusDuration)
@@ -180,6 +194,8 @@ internal static class RobloxHardwareKeyBaselineProbe
         public bool NonInjectedUpObserved { get; private set; }
         public bool ForegroundAtDown { get; private set; }
         public bool ForegroundAtUp { get; private set; }
+        public bool TrustedWindowSurfaceAtDown { get; private set; }
+        public bool TrustedWindowSurfaceAtUp { get; private set; }
 
         public void Start()
         {
@@ -206,27 +222,33 @@ internal static class RobloxHardwareKeyBaselineProbe
             {
                 var data = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
                 var isTarget = data.VirtualKey == virtualKey;
-                var targetForeground = target.IsForeground;
-                var candidate = IsPhysicalBaselineCandidate(data.Flags, isTarget, targetForeground);
                 if (isTarget)
                 {
+                    var identity = WindowsRobloxWindowIdentity.Capture(target);
+                    var trustedSurface = IsTrustedBaselineSurface(identity);
+                    var targetForeground = target.IsForeground;
+                    var candidate = IsPhysicalBaselineCandidate(data.Flags, true, trustedSurface);
                     var injected = (data.Flags & LlkhfInjected) != 0;
                     var isDown = wParam == (IntPtr)WmKeyDown || wParam == (IntPtr)WmSysKeyDown;
                     var isUp = wParam == (IntPtr)WmKeyUp || wParam == (IntPtr)WmSysKeyUp;
                     ClientDiagnostics.Log(
                         $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_EVENT vk=0x{data.VirtualKey:X2} scanCode=0x{data.ScanCode:X2} " +
                         $"event={(isDown ? "DOWN" : isUp ? "UP" : "OTHER")} osMarkedInjected={injected} " +
-                        $"targetForeground={targetForeground} acceptedPhysicalCandidate={candidate} productionChanged=false.");
+                        $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
+                        $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
+                        $"acceptedPhysicalCandidate={candidate} productionChanged=false.");
 
                     if (candidate && isDown)
                     {
                         NonInjectedDownObserved = true;
-                        ForegroundAtDown = true;
+                        ForegroundAtDown = targetForeground;
+                        TrustedWindowSurfaceAtDown = true;
                     }
                     else if (candidate && isUp && NonInjectedDownObserved)
                     {
                         NonInjectedUpObserved = true;
-                        ForegroundAtUp = true;
+                        ForegroundAtUp = targetForeground;
+                        TrustedWindowSurfaceAtUp = true;
                         Completion.TrySetResult(true);
                     }
                 }
