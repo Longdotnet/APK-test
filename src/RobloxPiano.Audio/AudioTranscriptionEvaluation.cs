@@ -22,11 +22,6 @@ public sealed record AudioTranscriptionReferenceNote
     public int MidiNote { get; }
 }
 
-/// <summary>
-/// Ground-truth matching policy aligned with the mature mir_eval transcription convention:
-/// same note pitch, onset within 50 ms by default, and offset within the greater of
-/// 50 ms or 20% of the reference-note duration. Matching is one-to-one and deterministic.
-/// </summary>
 public sealed record AudioTranscriptionEvaluationOptions(
     TimeSpan? OnsetTolerance = null,
     double OffsetToleranceRatio = 0.20,
@@ -70,8 +65,10 @@ public sealed record AudioTranscriptionEvaluationResult(
 }
 
 /// <summary>
-/// Deterministic note-level evaluator for Audio-to-Piano corpus calibration.
-/// This is measurement only: it never changes decoded notes, arrangements or playback truth.
+/// Deterministic ground-truth evaluator for Audio-to-Piano corpus calibration.
+/// Defaults follow the mature mir_eval transcription convention where it maps to integer MIDI notes:
+/// same pitch, inclusive 50 ms onset tolerance, and offset tolerance of max(50 ms, 20% reference duration).
+/// Evaluation is measurement only and never mutates transcription or playback truth.
 /// </summary>
 public sealed class AudioTranscriptionEvaluator
 {
@@ -106,9 +103,10 @@ public sealed class AudioTranscriptionEvaluator
         {
             cancellationToken.ThrowIfCancellationRequested();
             var referenceNote = referenceItem.Note;
+            var durationToleranceTicks = (long)Math.Ceiling(referenceNote.Duration.Ticks * options.OffsetToleranceRatio);
             var offsetTolerance = TimeSpan.FromTicks(Math.Max(
                 options.EffectiveMinimumOffsetTolerance.Ticks,
-                referenceNote.Duration.Ticks * options.OffsetToleranceRatio));
+                durationToleranceTicks));
 
             var bestIndex = -1;
             var bestOnsetError = TimeSpan.MaxValue;
@@ -132,7 +130,7 @@ public sealed class AudioTranscriptionEvaluator
 
                 if (onsetError < bestOnsetError ||
                     (onsetError == bestOnsetError && offsetError < bestOffsetError) ||
-                    (onsetError == bestOnsetError && offsetError == bestOffsetError && estimatedIndex < bestIndex))
+                    (onsetError == bestOnsetError && offsetError == bestOffsetError && (bestIndex < 0 || estimatedIndex < bestIndex)))
                 {
                     bestIndex = estimatedIndex;
                     bestOnsetError = onsetError;
@@ -194,7 +192,7 @@ public sealed record AudioTranscriptionCorpusEvaluation(
     IReadOnlyDictionary<string, AudioTranscriptionEvaluationResult> Results);
 
 /// <summary>
-/// Aggregates individually named synthetic/licensed corpus cases without hiding weak examples behind a single score.
+/// Aggregates named synthetic/licensed corpus cases while retaining every per-case score.
 /// </summary>
 public sealed class AudioTranscriptionCorpusEvaluator
 {
