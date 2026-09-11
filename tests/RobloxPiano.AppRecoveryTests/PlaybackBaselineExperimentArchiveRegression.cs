@@ -38,6 +38,13 @@ internal static class PlaybackBaselineExperimentArchiveRegression
             archived = PlaybackBaselineExperimentArchive.ReadVerified(directory);
             True(archived.Count == 2, "corrupt archive entries must fail closed without hiding valid experiments");
 
+            var originalFirstJson = File.ReadAllText(firstPath);
+            File.WriteAllText(firstPath, originalFirstJson.Replace(first.EvidenceSha256, new string('f', 64), StringComparison.Ordinal));
+            archived = PlaybackBaselineExperimentArchive.ReadVerified(directory);
+            True(archived.Count == 1 && archived[0].CampaignId == second.CampaignId,
+                "syntactically valid but hash-tampered archive entry must be isolated without poisoning valid experiments");
+            PlaybackBaselineExperimentManifestStore.WriteVerifiedAtomic(firstPath, first);
+
             var conflict = first with { RuntimeVerdict = PlaybackLegacyBaselineComparisonVerdict.LegacyX2Improved.ToString() };
             conflict = conflict with { EvidenceSha256 = EvidenceHash(conflict with { EvidenceSha256 = string.Empty }) };
             Throws<InvalidDataException>(
@@ -55,7 +62,7 @@ internal static class PlaybackBaselineExperimentArchiveRegression
                 () => PlaybackBaselineExperimentArchive.ExportVerified(tampered, Path.Combine(directory, "tampered-export.legacy-ab.json")),
                 "archive export must reject a manifest whose immutable evidence no longer verifies");
 
-            Console.WriteLine("PASS  durable Legacy A/B experiment archive (7 cases)");
+            Console.WriteLine("PASS  durable Legacy A/B experiment archive (8 cases)");
         }
         finally
         {
