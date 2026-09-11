@@ -31,13 +31,13 @@ internal static class PowerShellOracleMappingRegression
 
         var oracleDeliveredButProductionDiffers = new RobloxFieldInputProbeResult(
             "oracle-regression",
-            activationConfirmed: true,
-            stableForegroundConfirmed: true,
+            true,
+            true,
             WindowsInputDesktopParity.Same,
-            windowsReportedKeyDown: true,
-            foregroundHeldDuringProbe: true,
-            virtualKey: 0x57,
-            holdDuration: TimeSpan.FromMilliseconds(650))
+            true,
+            true,
+            0x57,
+            TimeSpan.FromMilliseconds(650))
         {
             ProductionMappingEquivalentToOracle = false
         };
