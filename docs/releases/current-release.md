@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.20
+version: 0.40.21
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -14,20 +14,27 @@ SHA256: `{{SHA256}}`
 1. Download `RobloxPiano.exe` and double-click it; the **Sheet Library** remains the normal client starting point.
 2. Existing MIDI/MusicXML/VPS/TXT library and playback behavior remains unchanged.
 3. Open Roblox and run `Test Roblox Input`. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without changing the Roblox experience/session.
-4. The dialog now continuously derives one deterministic cross-cell matrix verdict from the latest result for each cell. Preserve `INPUT_MATRIX_SUMMARY` together with the underlying `INPUT_MATRIX` / `INPUT_FORENSIC` lines or export a **Support Bundle**.
-5. A matrix summary is diagnostic-only. It never authorizes playback and never upgrades the P0 field gate by itself.
+4. Every retained matrix cell now carries the Roblox PID/process-start identity and selected HWND. If Roblox restarts or the selected window changes, the matrix fails closed instead of combining old and new evidence.
+5. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**. Matrix evidence remains diagnostic-only and never authorizes playback by itself.
 
-## Runtime Input P0 Phase 72
+## Runtime Input P0 Phase 73
 
-- The real-vs-synthetic field matrix now owns deterministic cross-cell assessment instead of requiring support/devs to compare five probe results by eye.
-- `REAL_KEY_BASELINE_INVALID` identifies a missing/untrusted real-key baseline or a real W that Windows observed but Roblox did not visibly consume.
-- `SYNTHETIC_VARIANT_WORKS` identifies exact synthetic cell semantics that visibly reached Roblox so the winning path can be preserved and regression-protected before any production-backend decision.
-- `REAL_KEY_WORKS_SYNTHETIC_FAILS` requires a trusted real W with visible Roblox reaction plus confirmed Windows-boundary delivery and explicit no-reaction for every synthetic cell: PowerShell oracle, keybd_event scan, SendInput VK and SendInput scan.
-- That complete matrix is logged with failure boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`; it narrows investigation beyond basic focus/target selection without pretending to observe Roblox internals.
-- Missing/unrun cells and Windows-boundary failures remain `INSUFFICIENT_EVIDENCE`. Retrying a cell replaces its stale result within the same matrix.
-- Every summary logs winning/failing/pending cells, `fieldPass=false`, and `authorizesPlayback=false`.
-- This phase does not change `keybd_event`, `SendInput`, the production scheduler, focus guard, input authorization, held-key/pedal ownership, or emergency release behavior.
+- Phase 72 could retain the latest result for each probe cell even if Roblox restarted between cells. That allowed evidence from different Roblox lifetimes to look like one complete matrix.
+- Each retained cell now captures the existing `RobloxProcessIdentity` PID + process-start ticks plus the selected Roblox HWND and emits an `INPUT_MATRIX_SESSION` forensic line correlated by probe ID.
+- Before any cross-cell winner/failure verdict, all latest cells must have one identical session identity.
+- Missing identity produces `SessionContinuityInvalid` with boundary `MATRIX_SESSION_IDENTITY_UNAVAILABLE`.
+- A process restart, PID/start-time change, or selected-HWND change produces `SessionContinuityInvalid` with boundary `ROBLOX_SESSION_CHANGED`.
+- A continuity-invalid matrix is never conclusive, never field PASS, and never playback authorization. Close/reopen **Roblox Input Check** after Roblox stabilizes and rerun from Real-Key Baseline.
+- Retrying a cell still replaces stale evidence for that cell, so a fully refreshed same-session matrix can become comparable again.
+- This phase does not add or promote an injection backend and does not modify `keybd_event`, `SendInput`, scheduler truth, focus authorization, held-key/pedal ownership, emergency release behavior, Legacy playback, or Audio-to-Piano behavior.
 - CI success is not a Roblox field PASS. Visible movement or the expected piano note in the real Roblox client remains required.
+
+## Real-vs-synthetic matrix
+
+- `REAL_KEY_BASELINE_INVALID` continues to identify a missing/untrusted real-key baseline or a real W that Windows observed but Roblox did not visibly consume.
+- `SYNTHETIC_VARIANT_WORKS` continues to identify exact synthetic semantics that visibly reached Roblox, but only inside one trusted matrix session.
+- `REAL_KEY_WORKS_SYNTHETIC_FAILS` still requires a trusted real W with visible Roblox reaction plus confirmed Windows-boundary delivery and explicit no-reaction for all four synthetic cells in the same Roblox process/window identity.
+- That complete same-session matrix uses failure boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION` without pretending to observe Roblox internals.
 
 ## Trusted real-key baseline
 
@@ -38,8 +45,9 @@ SHA256: `{{SHA256}}`
 ## Audio-to-Piano production bundle
 
 - The executable continues to carry the pinned Spotify Basic Pitch model plus Microsoft ONNX Runtime/NAudio production dependencies introduced in v0.40.18.
+- The Audio Phase 16 client-job boundary now present on `main` remains isolated from Runtime Input and does not modify Roblox keyboard dispatch.
 - The same model provenance, `--audio-model-smoke`, single-file packaging and clean-machine runtime checks remain release-gated.
-- This Runtime Input phase does not modify Audio-to-Piano architecture or claim end-to-end Play-in-Roblox success.
+- This Runtime Input phase does not claim end-to-end Play-in-Roblox success.
 
 ## OSS and attribution
 
@@ -58,7 +66,7 @@ SHA256: `{{SHA256}}`
 ## Current boundaries
 
 - No client field evidence in this release proves that synthetic W is consumed by Roblox. P0 remains `NOT YET PROVEN` until visible Roblox reaction is explicitly confirmed.
+- PID/start-time/HWND continuity cannot prove an internal Roblox place/experience transition when Roblox reuses the same process and window. Client field runs must still avoid intentionally changing experience/session between cells.
 - `SYNTHETIC_VARIANT_WORKS` is evidence about one tested semantic path, not permission to silently switch production playback.
-- `REAL_KEY_WORKS_SYNTHETIC_FAILS` is only emitted when all four synthetic cells established their Windows boundary and the client explicitly observed no Roblox reaction while the trusted real-key baseline did react.
 - Raw/device-origin consumption inside another process remains unobservable from Roblox Piano without unsafe assumptions; the matrix describes the evidence boundary rather than inventing a PASS.
 - The executable remains unsigned, so Windows SmartScreen may show a reputation warning.
