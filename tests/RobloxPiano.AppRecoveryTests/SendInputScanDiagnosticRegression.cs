@@ -8,6 +8,12 @@ internal static class SendInputScanDiagnosticRegression
     [ModuleInitializer]
     internal static void Verify()
     {
+        if (RobloxSendInputScanDiagnosticProbe.NativeInputSize != RobloxSendInputScanDiagnosticProbe.ExpectedNativeInputSize)
+        {
+            throw new InvalidOperationException(
+                $"Managed SendInput INPUT ABI is wrong: actual={RobloxSendInputScanDiagnosticProbe.NativeInputSize}, expected={RobloxSendInputScanDiagnosticProbe.ExpectedNativeInputSize}.");
+        }
+
         var normalized = RobloxSendInputScanDiagnosticProbe.NormalizeScanCode(0x11, out var extended);
         if (normalized != 0x11 || extended)
         {
