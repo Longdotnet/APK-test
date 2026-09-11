@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.0
+version: 0.40.1
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -12,40 +12,35 @@ SHA256: `{{SHA256}}`
 ## Client flow
 
 1. Download `RobloxPiano.exe` and double-click it; the Sheet Library remains the normal starting point.
-2. Open Roblox, select/import a playable song, verify input for the current Roblox process, and keep the target focused while playback is active.
-3. Play/Pause/Stop/Seek and speed controls continue to use deterministic transport state; focus loss and cancellation release held keys/pedal state safely.
-4. Use Support Center for verified Support Bundle export, Legacy x2 A/B campaign/history diagnostics, and local reference-audio evidence attachment.
+2. Open Roblox and run `Test Roblox Input` before trusting song playback for the current Roblox process.
+3. Watch Roblox during the W probe. A visible movement or W-bound piano note is the field acceptance oracle; focus or Windows API success alone is not treated as proof.
+4. If Roblox does not react, open Diagnostics and share the correlated `INPUT_FORENSIC probe=...` lines. They now identify mapping, foreground, Windows key-state and final-verdict boundaries directly.
+5. Support Bundle export remains available for a bounded support package when deeper investigation is needed.
+
+## Phase 55 P0 Roblox input forensics
+
+- The explicit Roblox field probe now has a unique correlation id and emits an unsampled forensic sequence.
+- Diagnostics record the requested character, Unicode code point, raw `VkKeyScanW` result, resolved virtual key/modifier mask and active keyboard layout.
+- Target Roblox PID/HWND and foreground PID/HWND are captured at each important stage.
+- The exact production `keybd_event` backend is used; no diagnostic-only injection backend was introduced.
+- Windows key state is sampled before DOWN, immediately after DOWN, after 25 ms, after 50 ms, before UP and after UP.
+- Elapsed physical hold and foreground continuity are recorded so a log can distinguish a mapping/focus/native-boundary failure from Roblox rejecting an otherwise observed synthetic key.
+- Machine-readable verdict logging explicitly separates Windows-path evidence from human-confirmed Roblox reaction.
+- General playback dispatch remains bounded/sampled; only the short field probe is unsampled.
+- ADR 0060 makes real Roblox acceptance a P0 field gate and forbids treating CI/API invocation as end-to-end proof.
 
 ## Production capability and reliability
 
-- The production client remains a self-contained single EXE with no manual Python, Node, .NET SDK, Visual Studio or PowerShell-module dependency.
+- The production client remains a self-contained Windows x64 single EXE with no manual Python, Node, .NET SDK, Visual Studio or PowerShell-module dependency.
 - Sheet Library remains list-first; Browse/drag-drop are import helpers.
 - Legacy and Legacy x2 remain protected regression/perceptual baselines and are not silently replaced or auto-promoted.
 - Canonical performance state remains independent from TXT/MIDI/MusicXML/UI/AI/Windows input backends.
-- Runtime focus/input authorization, emergency release-all, held-key/pedal ownership, deterministic transport evidence and verified experiment history remain unchanged.
+- Runtime focus/input authorization, emergency release-all and held-key/pedal ownership remain unchanged.
 - AI remains optional and is not required for playback/import/validation truth.
-
-## Phase 54 client-facing reference evidence attachment and export
-
-- Verified Legacy A/B History now lets a normal client attach a local reference recording to a selected completed experiment without developer tooling.
-- The client re-selects the original TXT/VPS source; its source type and canonical performance fingerprint must exactly match the archived experiment before audio analysis can start.
-- Reference input is restricted to deterministic 16-bit PCM WAV and is capped at 64 MiB before in-memory analysis to bound accidental client memory pressure.
-- Exact WAV bytes are analyzed locally; neither the WAV bytes nor the selected source path are copied into diagnostics.
-- Verified reference evidence is atomically persisted in a dedicated diagnostics archive and read back before the attachment is considered successful.
-- Archive identity is idempotent for the same schema/experiment/reference content and fails closed rather than overwriting conflicting evidence.
-- Corrupt/unverifiable reference evidence is excluded without hiding independent valid records; retention is capped at 100 verified records.
-- The archive browser shows reference content/feature identities, separate Legacy 1x and Legacy x2 coverage/P95/tempo measurements, and x2-minus-Legacy deltas.
-- `Export Reference Evidence...` re-exports the exact selected verified record and verifies its evidence SHA-256 after writing.
-- Regression coverage now includes atomic evidence round-trip, idempotent durable archive/re-export, and corrupt-entry isolation in addition to Phase 53 provenance/tamper cases.
-- ADR 0059 defines privacy, bounded-resource, durable archive and no-auto-promotion boundaries.
 
 ## Current boundaries
 
-- Reference-audio experiment evidence remains deterministic diagnostics evidence, not a perceptual-quality verdict and not an automatic engine-selection signal.
-- Initial audio-format support remains intentionally narrow: MP3/AAC/float WAV/transcoding are unsupported rather than silently guessed.
-- The current attachment flow asks for the original TXT/VPS source again because archived diagnostics intentionally do not persist private source paths.
-- When multiple verified references exist for one experiment, the most recently archived evidence is surfaced for direct re-export; all records remain integrity-checked in the archive.
-- Reference analysis/alignment performs no network calls, AI calls, playback mutation, Roblox authorization or keyboard dispatch.
-- CI cannot observe a live Roblox client consuming synthetic input; explicit GUI input verification remains the client-side acceptance check for a real Roblox process.
-- MIDI and MusicXML remain notation importers; image/PDF OMR is not silently attempted.
+- CI cannot observe a live Roblox client consuming synthetic input. The explicit GUI input verification and visible Roblox reaction remain the real-machine acceptance gate.
+- A log showing `keybd_event` invocation or Windows key state does not by itself prove Roblox consumed the key.
+- If Windows observes W DOWN while the selected Roblox process remains foreground and the user reports no visible reaction, investigation must stay on the Roblox/native acceptance boundary rather than drifting into scheduler, MIDI or unrelated feature work.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.
