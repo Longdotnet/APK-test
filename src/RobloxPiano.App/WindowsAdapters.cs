@@ -85,6 +85,12 @@ internal sealed class WindowsInputInjectionException : InvalidOperationException
     }
 }
 
+internal enum KeyboardMappingStrategy
+{
+    ForegroundLayout = 0,
+    PowerShellOracle = 1
+}
+
 internal readonly record struct KeyboardStrokeMapping(
     ushort VirtualKey,
     byte Modifiers,
@@ -107,13 +113,15 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
     private readonly object _gate = new();
     private readonly HashSet<ushort> _heldKeys = new();
     private readonly Dictionary<ushort, long> _pressedAt = new();
+    private readonly KeyboardMappingStrategy _mappingStrategy;
     private long _dispatchSequence;
 
-    public WindowsKeyboardInputSink()
+    public WindowsKeyboardInputSink(KeyboardMappingStrategy mappingStrategy = KeyboardMappingStrategy.ForegroundLayout)
     {
+        _mappingStrategy = mappingStrategy;
         ClientDiagnostics.Log(
             $"Keyboard input backend initialized: {BackendName} (PowerShell field baseline), " +
-            $"processPid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}, " +
+            $"mappingStrategy={_mappingStrategy}, processPid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}, " +
             $"minimumPhysicalHoldMs={MinimumPhysicalKeyHold.TotalMilliseconds:0}.");
     }
 
@@ -122,7 +130,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(keys);
 
-        var strokes = keys.Select(ResolveStroke).ToArray();
+        var strokes = keys.Select(character => ResolveStroke(character, _mappingStrategy)).ToArray();
         lock (_gate)
         {
             LogDispatch("DOWN", keys, strokes);
@@ -150,7 +158,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(keys);
 
-        var strokes = keys.Select(ResolveStroke).Reverse().ToArray();
+        var strokes = keys.Select(character => ResolveStroke(character, _mappingStrategy)).Reverse().ToArray();
         lock (_gate)
         {
             LogDispatch("UP", keys, strokes);
@@ -196,10 +204,16 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
     }
 
     internal static ushort ResolveVirtualKeyForDiagnostics(char character)
-        => ResolveStroke(character).VirtualKey;
+        => ResolveStroke(character, KeyboardMappingStrategy.ForegroundLayout).VirtualKey;
 
     internal static KeyboardStrokeMapping ResolveStrokeForDiagnostics(char character)
-        => ResolveStroke(character);
+        => ResolveStroke(character, KeyboardMappingStrategy.ForegroundLayout);
+
+    internal static KeyboardStrokeMapping ResolvePowerShellOracleStrokeForDiagnostics(char character)
+        => ResolveStroke(character, KeyboardMappingStrategy.PowerShellOracle);
+
+    internal static bool HasSameKeySemantics(KeyboardStrokeMapping first, KeyboardStrokeMapping second)
+        => first.VirtualKey == second.VirtualKey && first.Modifiers == second.Modifiers;
 
     internal static bool IsVirtualKeyDown(ushort virtualKey)
     {
@@ -235,7 +249,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var virtualKeys = string.Join(",", strokes.Select(stroke =>
             $"0x{stroke.VirtualKey:X2}/m{stroke.Modifiers:X2}/hkl0x{stroke.KeyboardLayout.ToInt64():X}/tid{stroke.KeyboardThreadId}"));
         ClientDiagnostics.Log(
-            $"Input dispatch #{sequence} {action}: chars='{new string(keys.ToArray())}', vk=[{virtualKeys}], " +
+            $"Input dispatch #{sequence} {action}: chars='{new string(keys.ToArray())}', vk=[{virtualKeys}], mappingStrategy={_mappingStrategy}, " +
             $"thread={Environment.CurrentManagedThreadId}, fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}, fgTid={foregroundThreadId}.");
     }
 
@@ -244,30 +258,47 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var foreground = NativeMethods.GetForegroundWindow();
         NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
         ClientDiagnostics.Log(
-            $"Input release-all: held={_heldKeys.Count}, thread={Environment.CurrentManagedThreadId}, " +
+            $"Input release-all: held={_heldKeys.Count}, mappingStrategy={_mappingStrategy}, thread={Environment.CurrentManagedThreadId}, " +
             $"fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}.");
     }
 
-    private static KeyboardStrokeMapping ResolveStroke(char character)
+    private static KeyboardStrokeMapping ResolveStroke(char character, KeyboardMappingStrategy mappingStrategy)
     {
-        var foreground = NativeMethods.GetForegroundWindow();
-        var keyboardThreadId = foreground == IntPtr.Zero
-            ? 0u
-            : NativeMethods.GetWindowThreadProcessId(foreground, out _);
-        var keyboardLayout = NativeMethods.GetKeyboardLayout(keyboardThreadId);
-        if (keyboardLayout == IntPtr.Zero)
+        short encoded;
+        IntPtr keyboardLayout;
+        uint keyboardThreadId;
+
+        if (mappingStrategy == KeyboardMappingStrategy.PowerShellOracle)
         {
             keyboardThreadId = 0;
             keyboardLayout = NativeMethods.GetKeyboardLayout(0);
+            encoded = NativeMethods.VkKeyScanW(character);
+        }
+        else
+        {
+            var foreground = NativeMethods.GetForegroundWindow();
+            keyboardThreadId = foreground == IntPtr.Zero
+                ? 0u
+                : NativeMethods.GetWindowThreadProcessId(foreground, out _);
+            keyboardLayout = NativeMethods.GetKeyboardLayout(keyboardThreadId);
+            if (keyboardLayout == IntPtr.Zero)
+            {
+                keyboardThreadId = 0;
+                keyboardLayout = NativeMethods.GetKeyboardLayout(0);
+            }
+
+            encoded = keyboardLayout == IntPtr.Zero
+                ? NativeMethods.VkKeyScanW(character)
+                : NativeMethods.VkKeyScanExW(character, keyboardLayout);
         }
 
-        var encoded = keyboardLayout == IntPtr.Zero
-            ? NativeMethods.VkKeyScanW(character)
-            : NativeMethods.VkKeyScanExW(character, keyboardLayout);
         if (encoded == -1)
         {
+            var source = mappingStrategy == KeyboardMappingStrategy.PowerShellOracle
+                ? "PowerShell-oracle Windows keyboard layout"
+                : "foreground Windows keyboard layout";
             throw new WindowsInputInjectionException(
-                $"Character U+{(int)character:X4} ('{character}') cannot be mapped by the foreground Windows keyboard layout.");
+                $"Character U+{(int)character:X4} ('{character}') cannot be mapped by the {source}.");
         }
 
         var virtualKey = (ushort)(encoded & 0x00ff);

@@ -13,6 +13,8 @@ internal static class RobloxInputForensics
         var appKeyboardLayout = NativeMethods.GetKeyboardLayout(0);
         var foregroundKeyboardLayout = NativeMethods.GetKeyboardLayout(foregroundThreadId);
         var mapping = WindowsKeyboardInputSink.ResolveStrokeForDiagnostics(character);
+        var oracleMapping = WindowsKeyboardInputSink.ResolvePowerShellOracleStrokeForDiagnostics(character);
+        var semanticParity = WindowsKeyboardInputSink.HasSameKeySemantics(mapping, oracleMapping) ? "SAME" : "DIFFERENT";
         var layoutParity = appKeyboardLayout == foregroundKeyboardLayout ? "SAME" : "DIFFERENT";
         var privilege = WindowsProcessPrivilege.Capture(target.ProcessId);
         var desktop = WindowsInputDesktop.Capture();
@@ -21,6 +23,8 @@ internal static class RobloxInputForensics
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
             $"char='{character}' unicode=U+{(int)character:X4} resolvedVk=0x{mapping.VirtualKey:X2} modifiers=0x{mapping.Modifiers:X2} " +
             $"mappingLayout=0x{mapping.KeyboardLayout.ToInt64():X} mappingThread={mapping.KeyboardThreadId} " +
+            $"oracleVk=0x{oracleMapping.VirtualKey:X2} oracleModifiers=0x{oracleMapping.Modifiers:X2} " +
+            $"oracleLayout=0x{oracleMapping.KeyboardLayout.ToInt64():X} mappingSemanticParity={semanticParity} " +
             $"appKeyboardLayout=0x{appKeyboardLayout.ToInt64():X} foregroundKeyboardLayout=0x{foregroundKeyboardLayout.ToInt64():X} layoutParity={layoutParity} " +
             $"appElevation={privilege.AppElevation} targetElevation={privilege.TargetElevation} elevationParity={privilege.Parity} " +
             $"appDesktop='{desktop.AppDesktopName ?? "UNKNOWN"}' inputDesktop='{desktop.InputDesktopName ?? "UNKNOWN"}' desktopParity={desktop.Parity} " +
@@ -44,6 +48,21 @@ internal static class RobloxInputForensics
                 $"appDesktop='{desktop.AppDesktopName}' inputDesktop='{desktop.InputDesktopName}' " +
                 "guidance='Return Roblox and RobloxPiano to the same normal interactive Windows desktop before judging native input acceptance.'.");
         }
+    }
+
+    internal static void LogMappingComparison(
+        string probeId,
+        KeyboardStrokeMapping productionMapping,
+        KeyboardStrokeMapping oracleMapping,
+        bool equivalent)
+    {
+        ClientDiagnostics.Log(
+            $"INPUT_FORENSIC probe={probeId} stage=MAPPING_PARITY " +
+            $"productionStrategy={KeyboardMappingStrategy.ForegroundLayout} productionVk=0x{productionMapping.VirtualKey:X2} " +
+            $"productionModifiers=0x{productionMapping.Modifiers:X2} productionLayout=0x{productionMapping.KeyboardLayout.ToInt64():X} productionTid={productionMapping.KeyboardThreadId} " +
+            $"oracleStrategy={KeyboardMappingStrategy.PowerShellOracle} oracleVk=0x{oracleMapping.VirtualKey:X2} " +
+            $"oracleModifiers=0x{oracleMapping.Modifiers:X2} oracleLayout=0x{oracleMapping.KeyboardLayout.ToInt64():X} " +
+            $"semanticParity={(equivalent ? "SAME" : "DIFFERENT")}.");
     }
 
     internal static void LogDesktopSnapshot(
@@ -72,7 +91,7 @@ internal static class RobloxInputForensics
         var down = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage={stage} backend={WindowsKeyboardInputSink.BackendName} " +
-            $"vk=0x{virtualKey:X2} keyState={(down ? "DOWN" : "UP")} targetForeground={target.IsForeground} " +
+            $"probeMapping={KeyboardMappingStrategy.PowerShellOracle} vk=0x{virtualKey:X2} keyState={(down ? "DOWN" : "UP")} targetForeground={target.IsForeground} " +
             $"targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
             $"foregroundKeyboardLayout=0x{foregroundKeyboardLayout.ToInt64():X} " +
@@ -83,7 +102,7 @@ internal static class RobloxInputForensics
     {
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=VERDICT verdict={assessment.Verdict} " +
-            $"windowsPath={(assessment.Verdict is RobloxInputCheckVerdict.NativeDeliveryAwaitingObservation or RobloxInputCheckVerdict.Confirmed or RobloxInputCheckVerdict.RobloxDidNotReact ? "OBSERVED" : "NOT_CONFIRMED")} " +
+            $"windowsPath={(assessment.Verdict is RobloxInputCheckVerdict.NativeDeliveryAwaitingObservation or RobloxInputCheckVerdict.Confirmed or RobloxInputCheckVerdict.RobloxDidNotReact or RobloxInputCheckVerdict.PowerShellOracleConfirmedProductionMappingDiffers ? "OBSERVED" : "NOT_CONFIRMED")} " +
             $"robloxReaction={(robloxReacted is null ? "UNKNOWN" : robloxReacted.Value ? "YES" : "NO")} success={assessment.IsSuccess}.");
     }
 
