@@ -179,7 +179,7 @@ public sealed class BasicPitchInferenceService : IDisposable
 
     private static void AppendUnwrapped(OrtValue value, int expectedBatch, int expectedBins, List<float> destination)
     {
-        using var typeAndShape = value.GetTensorTypeAndShape();
+        var typeAndShape = value.GetTensorTypeAndShape();
         var shape = typeAndShape.Shape;
         if (shape.Length != 3 || shape[0] != expectedBatch || shape[2] != expectedBins)
             throw new InvalidDataException($"Unexpected Basic Pitch tensor shape [{string.Join(',', shape)}]; expected [{expectedBatch},time,{expectedBins}].");
