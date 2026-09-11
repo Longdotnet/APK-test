@@ -82,7 +82,7 @@ internal static class RobloxHardwareKeyBaselineProbe
         timeout.CancelAfter(ObservationTimeout);
         try
         {
-            await listener.Completion.WaitAsync(timeout.Token).ConfigureAwait(true);
+            await listener.Completion.Task.WaitAsync(timeout.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -175,7 +175,7 @@ internal static class RobloxHardwareKeyBaselineProbe
             callback = OnKeyboard;
         }
 
-        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool NonInjectedDownObserved { get; private set; }
         public bool NonInjectedUpObserved { get; private set; }
         public bool ForegroundAtDown { get; private set; }
@@ -227,7 +227,7 @@ internal static class RobloxHardwareKeyBaselineProbe
                     {
                         NonInjectedUpObserved = true;
                         ForegroundAtUp = true;
-                        Completion.TrySetResult();
+                        Completion.TrySetResult(true);
                     }
                 }
             }
