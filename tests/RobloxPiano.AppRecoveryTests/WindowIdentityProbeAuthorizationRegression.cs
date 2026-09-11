@@ -10,14 +10,14 @@ internal static class WindowIdentityProbeAuthorizationRegression
     {
         var identityLost = new RobloxFieldInputProbeResult(
             "window-identity-lost",
-            activationConfirmed: true,
-            stableForegroundConfirmed: true,
+            true,
+            true,
             WindowsInputDesktopParity.Same,
-            windowsReportedKeyDown: true,
-            foregroundHeldDuringProbe: true,
-            windowIdentityHeldDuringProbe: false,
-            virtualKey: 0x57,
-            holdDuration: TimeSpan.FromMilliseconds(125));
+            true,
+            true,
+            false,
+            0x57,
+            TimeSpan.FromMilliseconds(125));
 
         False(identityLost.NativeDeliveryObserved, "window identity loss must invalidate native-delivery authorization evidence");
         Equal(
