@@ -12,18 +12,18 @@ internal static class InputMatrixAssessmentRegression
     [ModuleInitializer]
     internal static void Verify()
     {
-        var noEvidence = RobloxInputMatrixAssessmentPolicy.Assess(Array.Empty<RobloxInputMatrixCellEvidence>());
+        var noEvidence = Assess(Array.Empty<RobloxInputMatrixCellEvidence>());
         Equal(RobloxInputMatrixVerdict.InsufficientEvidence, noEvidence.Verdict, "empty matrix verdict");
         Contains(noEvidence.PendingCells, "REAL_KEY", "empty matrix must request real baseline");
 
-        var invalidReal = RobloxInputMatrixAssessmentPolicy.Assess(
+        var invalidReal = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_NO_REACTION", false)
         ]);
         Equal(RobloxInputMatrixVerdict.RealKeyBaselineInvalid, invalidReal.Verdict, "real-key no-reaction verdict");
         Equal("REAL_KEY_BASELINE", invalidReal.FailureBoundary, "real-key failure boundary");
 
-        var incompleteSynthetic = RobloxInputMatrixAssessmentPolicy.Assess(
+        var incompleteSynthetic = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false),
@@ -33,7 +33,7 @@ internal static class InputMatrixAssessmentRegression
         Contains(incompleteSynthetic.PendingCells, "KEYBD_EVENT_SCAN", "Windows-boundary failure must remain pending");
         Contains(incompleteSynthetic.PendingCells, "SENDINPUT_VK", "unrun synthetic cell must remain pending");
 
-        var winner = RobloxInputMatrixAssessmentPolicy.Assess(
+        var winner = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false),
@@ -47,7 +47,7 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("A field-reacting synthetic variant must produce a conclusive matrix assessment.");
         }
 
-        var allSyntheticFail = RobloxInputMatrixAssessmentPolicy.Assess(
+        var allSyntheticFail = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false),
@@ -64,7 +64,7 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("A complete real-works/all-synthetic-fails matrix must be conclusive.");
         }
 
-        var processRestart = RobloxInputMatrixAssessmentPolicy.Assess(
+        var processRestart = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false),
@@ -79,7 +79,7 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("Evidence spanning two Roblox process lifetimes must never be conclusive.");
         }
 
-        var windowReplacement = RobloxInputMatrixAssessmentPolicy.Assess(
+        var windowReplacement = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false, session: new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 1_000), 0x2222))
@@ -87,7 +87,7 @@ internal static class InputMatrixAssessmentRegression
         Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, windowReplacement.Verdict, "selected HWND change must invalidate matrix");
         Equal("ROBLOX_SESSION_CHANGED", windowReplacement.FailureBoundary, "window replacement boundary");
 
-        var missingIdentity = RobloxInputMatrixAssessmentPolicy.Assess(
+        var missingIdentity = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             new RobloxInputMatrixCellEvidence("KEYBD_EVENT_SCAN", "missing", "ROBLOX_REACTED", true, null)
@@ -99,7 +99,7 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("A synthetic winner without stable session identity must not be conclusive.");
         }
 
-        var unboundLegacyEvidence = RobloxInputMatrixAssessmentPolicy.Assess(
+        var unboundLegacyEvidence = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             new RobloxInputMatrixCellEvidence("SENDINPUT_VK", "unbound", "ROBLOX_REACTED", true)
@@ -111,7 +111,33 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("Evidence without a probe-start identity must fail closed even when Roblox visibly reacted.");
         }
 
-        var latestCellWins = RobloxInputMatrixAssessmentPolicy.Assess(
+        var currentIdentityUnavailable = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            Cell("KEYBD_EVENT_SCAN", "ROBLOX_REACTED", true)
+        ],
+        currentSessionIdentity: null);
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, currentIdentityUnavailable.Verdict, "missing current reaction context must fail closed");
+        Equal("REACTION_CONTEXT_IDENTITY_UNAVAILABLE", currentIdentityUnavailable.FailureBoundary, "missing current reaction context boundary");
+        if (currentIdentityUnavailable.IsConclusive)
+        {
+            throw new InvalidOperationException("A human reaction cannot become conclusive after the current Roblox identity becomes unavailable.");
+        }
+
+        var changedAfterProbe = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            Cell("KEYBD_EVENT_SCAN", "ROBLOX_REACTED", true)
+        ],
+        new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 2_000), 0x2222));
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, changedAfterProbe.Verdict, "post-probe session change must invalidate reaction attribution");
+        Equal("REACTION_CONTEXT_CHANGED", changedAfterProbe.FailureBoundary, "post-probe session change boundary");
+        if (changedAfterProbe.IsConclusive)
+        {
+            throw new InvalidOperationException("A stale Yes/No answer must never prove a synthetic winner after Roblox changed session.");
+        }
+
+        var latestCellWins = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("SENDINPUT_VK", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, "old", new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 9_999), 0x9999)),
@@ -120,6 +146,9 @@ internal static class InputMatrixAssessmentRegression
         Equal(RobloxInputMatrixVerdict.SyntheticVariantWorks, latestCellWins.Verdict, "latest retry must replace stale cross-session cell evidence");
         Contains(latestCellWins.WinningCells, "SENDINPUT_VK", "retry winner must be preserved");
     }
+
+    private static RobloxInputMatrixAssessment Assess(RobloxInputMatrixCellEvidence[] evidence)
+        => RobloxInputMatrixAssessmentPolicy.Assess(evidence, SessionA);
 
     private static RobloxInputMatrixCellEvidence Cell(
         string cell,
