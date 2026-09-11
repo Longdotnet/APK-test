@@ -10,6 +10,7 @@ internal sealed class RobloxInputCheckDialog : Form
         MaximumSize = new Size(520, 0)
     };
     private readonly Button _run = new() { Text = "Run Input Check", AutoSize = true };
+    private readonly Button _physical = new() { Text = "Run Physical-Key Diagnostic", AutoSize = true };
     private readonly Button _diagnostics = new() { Text = "Open Diagnostics", AutoSize = true };
     private readonly Button _close = new() { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
 
@@ -17,8 +18,8 @@ internal sealed class RobloxInputCheckDialog : Form
     {
         Text = "Roblox Input Check";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(600, 300);
-        Size = new Size(640, 350);
+        MinimumSize = new Size(640, 330);
+        Size = new Size(700, 390);
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
@@ -26,17 +27,17 @@ internal sealed class RobloxInputCheckDialog : Form
         var explanation = new Label
         {
             AutoSize = true,
-            MaximumSize = new Size(540, 0),
-            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates Roblox activation, stable focus, Windows input-desktop readiness, Windows key delivery, and Roblox actually reacting. A confirmed result belongs only to the current Roblox process. No AI or network is used."
+            MaximumSize = new Size(590, 0),
+            Text = "Use this when Play appears to run but Roblox produces no notes. Run Input Check first: it replays the exact PowerShell-oracle virtual-key path. If that reaches Windows but Roblox still does not react, Physical-Key Diagnostic sends the same W through keybd_event with its real non-zero scan code as a controlled A/B experiment. Normal song playback is never changed or authorized by the diagnostic variant."
         };
         var observation = new Label
         {
             AutoSize = true,
-            MaximumSize = new Size(540, 0),
-            Text = "When the check starts, watch Roblox. Outside a piano, W should move your character. Inside a piano, it should trigger the W-bound note."
+            MaximumSize = new Size(590, 0),
+            Text = "For either check, watch Roblox. Outside a piano, W should move your character. Inside a piano, it should trigger the W-bound note."
         };
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-        buttons.Controls.AddRange([_run, _diagnostics, _close]);
+        buttons.Controls.AddRange([_run, _physical, _diagnostics, _close]);
 
         var root = new TableLayoutPanel
         {
@@ -58,6 +59,7 @@ internal sealed class RobloxInputCheckDialog : Form
         Controls.Add(root);
 
         _run.Click += async (_, _) => await RunCheckAsync().ConfigureAwait(true);
+        _physical.Click += async (_, _) => await RunPhysicalDiagnosticAsync().ConfigureAwait(true);
         _diagnostics.Click += (_, _) => OpenDiagnostics();
         AcceptButton = _run;
         CancelButton = _close;
@@ -105,7 +107,7 @@ internal sealed class RobloxInputCheckDialog : Form
 
         var consent = MessageBox.Show(
             this,
-            $"Roblox Piano will focus Roblox and hold '{char.ToUpperInvariant(RobloxFieldInputPolicy.ProbeKey)}' for about {RobloxFieldInputPolicy.ProbeHoldDuration.TotalMilliseconds:0} ms.\n\nWatch Roblox for movement or the W-bound piano note. Continue?",
+            $"Roblox Piano will focus Roblox and hold '{char.ToUpperInvariant(RobloxFieldInputPolicy.ProbeKey)}' for about {RobloxFieldInputPolicy.ProbeHoldDuration.TotalMilliseconds:0} ms using the exact PowerShell-oracle virtual-key path.\n\nWatch Roblox for movement or the W-bound piano note. Continue?",
             "Run Roblox Input Check",
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Information);
@@ -114,8 +116,8 @@ internal sealed class RobloxInputCheckDialog : Form
             return;
         }
 
-        _run.Enabled = false;
-        _status.Text = "Running check… Roblox must remain foreground until the test key is released.";
+        SetBusy(true);
+        _status.Text = "Running PowerShell-oracle check… Roblox must remain foreground until the test key is released.";
 
         try
         {
@@ -137,7 +139,7 @@ internal sealed class RobloxInputCheckDialog : Form
 
             var observed = MessageBox.Show(
                 this,
-                "Did Roblox visibly react to the W test?\n\nChoose Yes only if you saw movement or heard/saw the W-bound piano note.",
+                "Did Roblox visibly react to the PowerShell-oracle W test?\n\nChoose Yes only if you saw movement or heard/saw the W-bound piano note.",
                 "Confirm Roblox Reaction",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question) == DialogResult.Yes;
@@ -148,6 +150,11 @@ internal sealed class RobloxInputCheckDialog : Form
                 $"GUI input check final verdict={assessment.Verdict}; probe={result.ProbeId}; robloxReacted={observed}; success={assessment.IsSuccess}.");
             RobloxInputHealthSession.Record(target, assessment);
             ApplyAssessment(assessment);
+
+            if (!observed)
+            {
+                _status.Text += "\n\nA/B next step: run Physical-Key Diagnostic. It tests the same W with a non-zero hardware scan code without changing production playback.";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -175,8 +182,100 @@ internal sealed class RobloxInputCheckDialog : Form
         }
         finally
         {
-            _run.Enabled = true;
+            SetBusy(false);
         }
+    }
+
+    private async Task RunPhysicalDiagnosticAsync()
+    {
+        if (!_physical.Enabled)
+        {
+            return;
+        }
+
+        var target = RobloxProcessLocator.FindPreferred();
+        if (target is null)
+        {
+            _status.Text = "⚠ Roblox Player was not found. Open Roblox before running the physical-key diagnostic.";
+            return;
+        }
+
+        var consent = MessageBox.Show(
+            this,
+            $"This diagnostic will focus Roblox and hold '{char.ToUpperInvariant(RobloxFieldInputPolicy.ProbeKey)}' for about {RobloxFieldInputPolicy.ProbeHoldDuration.TotalMilliseconds:0} ms using the same keybd_event API but with the real non-zero keyboard scan code.\n\nThis is diagnostic-only. It cannot confirm or modify normal playback. Continue?",
+            "Run Physical-Key Diagnostic",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Warning);
+        if (consent != DialogResult.OK)
+        {
+            return;
+        }
+
+        SetBusy(true);
+        _status.Text = "Running physical-key diagnostic… Roblox must remain foreground until W is released.";
+
+        try
+        {
+            var result = await RobloxPhysicalKeyDiagnosticProbe.RunAsync(target).ConfigureAwait(true);
+            ClientDiagnostics.Log(
+                $"GUI physical-key diagnostic probe={result.ProbeId}; nativeDelivery={result.NativeDeliveryObserved}; " +
+                $"activation={result.ActivationConfirmed}; stableFocus={result.StableForegroundConfirmed}; desktopParity={result.DesktopParity}; " +
+                $"keyDown={result.WindowsReportedKeyDown}; foregroundHeld={result.ForegroundHeldDuringProbe}; " +
+                $"vk=0x{result.VirtualKey:X2}; scanCode=0x{result.ScanCode:X2}; heldMs={result.HoldDuration.TotalMilliseconds:0}.");
+
+            Activate();
+            if (!result.NativeDeliveryObserved)
+            {
+                _status.Text = "⚠ The physical-key diagnostic did not establish a safe Windows delivery boundary. Open Diagnostics and inspect the matching PHYSICAL_* INPUT_FORENSIC lines. Production playback was not changed.";
+                return;
+            }
+
+            var observed = MessageBox.Show(
+                this,
+                "Did Roblox visibly react to the physical-key W diagnostic?\n\nChoose Yes only if you saw movement or heard/saw the W-bound piano note.",
+                "Confirm Physical-Key Reaction",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question) == DialogResult.Yes;
+
+            RobloxPhysicalKeyDiagnosticProbe.LogHumanVerdict(result, observed);
+            ClientDiagnostics.Log(
+                $"GUI physical-key diagnostic final probe={result.ProbeId}; robloxReacted={observed}; productionChanged=false.");
+
+            if (observed)
+            {
+                _status.Text =
+                    "⚠ Roblox reacted to the non-zero scan-code diagnostic. This isolates a physical-key/scan-code acceptance difference, but normal playback remains deliberately gated and unchanged.\n\n" +
+                    "Next: Open Diagnostics and preserve both the PowerShell-oracle probe and PHYSICAL_* probe IDs. Production must only adopt a new emission semantic after this A/B evidence is reviewed and regression-protected.";
+            }
+            else
+            {
+                _status.Text =
+                    "⚠ Roblox did not react to the physical-key diagnostic either. Character mapping and simple scan-code presence are now weaker suspects.\n\n" +
+                    "Next: Open Diagnostics and preserve the probe ID; investigate Roblox/game keyboard capture, Raw Input behavior, overlays, privilege/session boundaries or other native-consumption differences. Production playback remains unchanged.";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _status.Text = "⚠ Physical-key diagnostic cancelled safely. A best-effort key-up was sent and production playback was not changed.";
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+            or ArgumentException
+            or System.ComponentModel.Win32Exception)
+        {
+            ClientDiagnostics.Log($"GUI physical-key diagnostic failed: {exception}");
+            _status.Text = $"⚠ Physical-key diagnostic failed: {exception.Message}\n\nOpen Diagnostics for the correlated INPUT_FORENSIC evidence. Production playback was not changed.";
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private void SetBusy(bool busy)
+    {
+        _run.Enabled = !busy;
+        _physical.Enabled = !busy;
     }
 
     private void ApplyAssessment(RobloxInputCheckAssessment assessment)
