@@ -71,6 +71,9 @@ public sealed record AudioToPianoTranscriptionResult(
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
+    private const double InferenceStartFraction = 0.15d;
+    private const double InferenceEndFraction = 0.70d;
+
     private readonly BasicPitchInferenceService inference;
     private readonly AudioIngestService ingest = new();
     private readonly BasicPitchNoteDecoder decoder = new();
@@ -109,7 +112,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var audio = ingest.DecodeFile(path, NormalizeIngestOptions(options.Ingest), cancellationToken);
         var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
-        Report(progress, AudioToPianoTranscriptionStage.Ingest, 0.15d, "Audio normalized for transcription.");
+        Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction, "Audio normalized for transcription.");
         return TranscribeNormalizedCore(
             audio,
             title ?? Path.GetFileNameWithoutExtension(path),
@@ -142,7 +145,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var audio = ingest.DecodeStream(stream, NormalizeIngestOptions(options.Ingest), cancellationToken);
         var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
-        Report(progress, AudioToPianoTranscriptionStage.Ingest, 0.15d, "Audio normalized for transcription.");
+        Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction, "Audio normalized for transcription.");
         return TranscribeNormalizedCore(audio, title, options, ingestElapsed, progress, cancellationToken);
     }
 
@@ -179,13 +182,16 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             throw new ArgumentException($"Audio-to-Piano requires {BasicPitchInferenceService.RequiredSampleRate} Hz normalized audio.", nameof(audio));
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Inference, 0.15d, "Listening for notes with Basic Pitch...");
+        Report(progress, AudioToPianoTranscriptionStage.Inference, InferenceStartFraction, "Listening for notes with Basic Pitch...");
+        var inferenceProgress = progress is null
+            ? null
+            : new InlineProgress<BasicPitchInferenceProgress>(value => ReportInferenceProgress(progress, value));
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var raw = inference.Infer(audio, cancellationToken);
+        var raw = inference.Infer(audio, inferenceProgress, cancellationToken);
         var inferenceElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Decode, 0.70d, "Turning model activations into note events...");
+        Report(progress, AudioToPianoTranscriptionStage.Decode, InferenceEndFraction, "Turning model activations into note events...");
         started = System.Diagnostics.Stopwatch.GetTimestamp();
         var decodedNotes = decoder.Decode(raw, options.Decoder, cancellationToken);
         var decodeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
@@ -236,6 +242,17 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         return result;
     }
 
+    private static void ReportInferenceProgress(
+        IProgress<AudioToPianoTranscriptionProgress> progress,
+        BasicPitchInferenceProgress value)
+    {
+        var fraction = InferenceStartFraction + ((InferenceEndFraction - InferenceStartFraction) * value.Fraction);
+        var message = value.CompletedChunks == 0
+            ? $"Basic Pitch prepared {value.TotalChunks} audio window(s)..."
+            : $"Basic Pitch analyzed {value.CompletedChunks} of {value.TotalChunks} audio window(s)...";
+        Report(progress, AudioToPianoTranscriptionStage.Inference, fraction, message);
+    }
+
     private static void Report(
         IProgress<AudioToPianoTranscriptionProgress>? progress,
         AudioToPianoTranscriptionStage stage,
@@ -260,5 +277,10 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             return;
         disposed = true;
         inference.Dispose();
+    }
+
+    private sealed class InlineProgress<T>(Action<T> callback) : IProgress<T>
+    {
+        public void Report(T value) => callback(value);
     }
 }
