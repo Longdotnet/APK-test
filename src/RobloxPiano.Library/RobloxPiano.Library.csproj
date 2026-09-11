@@ -4,6 +4,9 @@
     <RootNamespace>RobloxPiano.Library</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Melanchall.DryWetMidi.Nativeless" Version="8.0.3" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../RobloxPiano.Core/RobloxPiano.Core.csproj" />
   </ItemGroup>
 </Project>
