@@ -27,7 +27,35 @@ internal static class AudioAwareClientEntryPoint
             }
         }
 
+        if (args.Length == 1 && args[0].Equals("--create-piano-version", StringComparison.OrdinalIgnoreCase))
+        {
+            return RunCreatePianoVersionClient();
+        }
+
         return ClientEntryPoint.Main(args);
+    }
+
+    private static int RunCreatePianoVersionClient()
+    {
+        try
+        {
+            ClientConsoleWindow.Hide();
+            ApplicationConfiguration.Initialize();
+            ClientDiagnostics.Log("Create Piano Version client surface opened.");
+            Application.Run(new AudioToPianoCreateForm());
+            ClientDiagnostics.Log("Create Piano Version client surface closed.");
+            return 0;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            ClientDiagnostics.Log($"Create Piano Version client surface failed to start: {exception}");
+            MessageBox.Show(
+                exception.Message,
+                "Create Piano Version could not start",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return 13;
+        }
     }
 
     private static int WriteThirdPartyNotices()
