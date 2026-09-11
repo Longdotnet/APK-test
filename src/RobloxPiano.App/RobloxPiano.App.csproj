@@ -17,6 +17,7 @@
     <ProjectReference Include="../RobloxPiano.Library/RobloxPiano.Library.csproj" />
     <ProjectReference Include="../RobloxPiano.Audio/RobloxPiano.Audio.csproj" />
     <EmbeddedResource Include="THIRD-PARTY-NOTICES.txt" LogicalName="RobloxPiano.App.THIRD-PARTY-NOTICES.txt" />
+    <EmbeddedResource Include="THIRD-PARTY-DryWetMIDI.txt" LogicalName="RobloxPiano.App.THIRD-PARTY-DryWetMIDI.txt" />
   </ItemGroup>
 
   <!--

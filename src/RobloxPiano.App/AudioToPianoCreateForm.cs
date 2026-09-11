@@ -1,18 +1,25 @@
 using RobloxPiano.Audio;
+using RobloxPiano.Core;
+using RobloxPiano.Library;
 
 namespace RobloxPiano.App;
 
 internal sealed class AudioToPianoCreateForm : Form
 {
     private readonly AudioToPianoClientJob _job = new();
+    private readonly GeneratedTrackLibraryWriter _libraryWriter;
     private readonly TextBox _path = new() { ReadOnly = true, Dock = DockStyle.Fill, PlaceholderText = "Choose an owned/local audio file..." };
     private readonly Button _choose = new() { Text = "Choose Audio...", AutoSize = true };
     private readonly Button _create = new() { Text = "Create Piano Version", AutoSize = true, Enabled = false };
     private readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, Enabled = false };
+    private readonly Button _addToLibrary = new() { Text = "Add to Library", AutoSize = true, Enabled = false };
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100 };
     private readonly Label _status = CreateLabel("Choose an owned/local audio file. Nothing is uploaded.");
     private readonly Label _result = CreateLabel(string.Empty);
     private CancellationTokenSource? _runCancellation;
+    private PerformanceTrack? _generatedTrack;
+    private AudioTranscriptionReadiness? _generatedReadiness;
+    private bool _addedToLibrary;
 
     public AudioToPianoCreateForm()
     {
@@ -21,10 +28,17 @@ internal sealed class AudioToPianoCreateForm : Form
         MinimumSize = new Size(680, 360);
         Size = new Size(760, 430);
 
+        var managedRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RobloxPiano",
+            "sheets");
+        _libraryWriter = new GeneratedTrackLibraryWriter(managedRoot);
+
         BuildLayout();
         _choose.Click += (_, _) => ChooseAudio();
         _create.Click += async (_, _) => await CreateAsync().ConfigureAwait(true);
         _cancel.Click += (_, _) => CancelCreation();
+        _addToLibrary.Click += (_, _) => AddToLibrary();
         FormClosing += (_, _) => CancelCreation();
     }
 
@@ -41,7 +55,7 @@ internal sealed class AudioToPianoCreateForm : Form
         sourceRow.Controls.Add(_choose, 1, 0);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        actions.Controls.AddRange([_create, _cancel]);
+        actions.Controls.AddRange([_create, _cancel, _addToLibrary]);
 
         var root = new TableLayoutPanel
         {
@@ -81,6 +95,7 @@ internal sealed class AudioToPianoCreateForm : Form
             return;
 
         _path.Text = Path.GetFullPath(dialog.FileName);
+        ResetGeneratedResult();
         _create.Enabled = true;
         _progress.Value = 0;
         _status.Text = "Ready to create a piano version locally.";
@@ -92,6 +107,7 @@ internal sealed class AudioToPianoCreateForm : Form
         if (string.IsNullOrWhiteSpace(_path.Text) || _job.IsRunning)
             return;
 
+        ResetGeneratedResult();
         _runCancellation = new CancellationTokenSource();
         SetRunning(true);
         _result.Text = string.Empty;
@@ -116,19 +132,21 @@ internal sealed class AudioToPianoCreateForm : Form
             var transcription = jobResult.Transcription;
             var track = transcription.Arrangement.Track;
             var quality = transcription.Diagnostics.Quality;
+            _generatedTrack = track;
+            _generatedReadiness = quality.Readiness;
             var reasons = quality.Reasons.Count == 0 ? "none" : string.Join(", ", quality.Reasons);
             _status.Text = quality.Readiness switch
             {
-                AudioTranscriptionReadiness.Ready => "Ready — deterministic quality checks passed.",
-                AudioTranscriptionReadiness.NeedsReview => "Needs review — the result is preserved, but confidence warnings must stay visible.",
-                _ => "Rejected — keep this result out of the Library until the source/arrangement is repaired."
+                AudioTranscriptionReadiness.Ready => "Ready — deterministic quality checks passed. Review the summary, then Add to Library.",
+                AudioTranscriptionReadiness.NeedsReview => "Needs review — warnings must stay visible. Add is allowed only as an explicit reviewed choice.",
+                _ => "Rejected — this result cannot be added to the Library until the source/arrangement is repaired."
             };
             _result.Text =
                 $"{track.Title} • {track.Events.Count} events • {track.Bpm:0.###} BPM • {FormatTime(track.TimelineDuration)}{Environment.NewLine}" +
                 $"Readiness: {quality.Readiness} • reasons: {reasons}{Environment.NewLine}" +
                 $"Decoded notes: {transcription.Diagnostics.DecodedNotes}; retained after suppression: {transcription.Diagnostics.NotesAfterSuppression}; " +
                 $"elapsed: {transcription.Diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
-                "This phase intentionally does not auto-add generated output to the Library. Review/persist remains an explicit next step, and Roblox playback still requires the separate Runtime Input field gate.";
+                "Add to Library writes a standards-compliant MIDI, then re-imports it through the production MIDI parser and refuses the commit if note/timing parity fails. Roblox playback still requires the separate Runtime Input field gate.";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
         {
@@ -140,6 +158,39 @@ internal sealed class AudioToPianoCreateForm : Form
             _runCancellation?.Dispose();
             _runCancellation = null;
             SetRunning(false);
+        }
+    }
+
+    private void AddToLibrary()
+    {
+        if (_generatedTrack is null || _generatedReadiness is null || _generatedReadiness == AudioTranscriptionReadiness.Rejected || _addedToLibrary)
+            return;
+
+        if (_generatedReadiness == AudioTranscriptionReadiness.NeedsReview)
+        {
+            var decision = MessageBox.Show(
+                this,
+                "This piano version still has deterministic quality warnings shown on this screen. Add this reviewed result to your Library anyway?",
+                "Add reviewed piano version?",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (decision != DialogResult.Yes)
+                return;
+        }
+
+        try
+        {
+            var saved = _libraryWriter.Add(_generatedTrack);
+            _addedToLibrary = true;
+            _addToLibrary.Enabled = false;
+            _status.Text = $"Added to Library as {Path.GetFileName(saved.Path)} — {saved.NoteCount} notes, {saved.ByteCount:N0} bytes, production MIDI round-trip verified.";
+            ClientDiagnostics.Log($"Generated piano version committed to Library after MIDI round-trip verification: file='{Path.GetFileName(saved.Path)}', notes={saved.NoteCount}, bytes={saved.ByteCount}.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
+        {
+            ClientDiagnostics.Log($"Generated piano Library commit failed safely: {exception}");
+            _status.Text = $"Could not add this piano version to the Library: {exception.Message}";
         }
     }
 
@@ -160,11 +211,24 @@ internal sealed class AudioToPianoCreateForm : Form
         _job.Cancel();
     }
 
+    private void ResetGeneratedResult()
+    {
+        _generatedTrack = null;
+        _generatedReadiness = null;
+        _addedToLibrary = false;
+        _addToLibrary.Enabled = false;
+    }
+
     private void SetRunning(bool running)
     {
         _choose.Enabled = !running;
         _create.Enabled = !running && !string.IsNullOrWhiteSpace(_path.Text);
         _cancel.Enabled = running;
+        _addToLibrary.Enabled = !running
+            && !_addedToLibrary
+            && _generatedTrack is not null
+            && _generatedReadiness is not null
+            && _generatedReadiness != AudioTranscriptionReadiness.Rejected;
     }
 
     protected override void Dispose(bool disposing)
