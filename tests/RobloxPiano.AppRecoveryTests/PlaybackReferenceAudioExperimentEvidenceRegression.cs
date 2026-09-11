@@ -18,7 +18,10 @@ internal static class PlaybackReferenceAudioExperimentEvidenceRegression
         TamperedComparisonDeltaFailsClosed();
         DifferentCanonicalTrackIsRejected();
         TamperedReferenceFeatureRecordIsRejected();
-        Console.WriteLine("PASS  verified reference-audio Legacy A/B experiment evidence (4 cases)");
+        AtomicEvidenceRoundTripPreservesIdentity();
+        ArchivePersistenceIsIdempotentAndReExportable();
+        CorruptArchiveEntryDoesNotHideValidEvidence();
+        Console.WriteLine("PASS  verified reference-audio Legacy A/B experiment evidence (7 cases)");
     }
 
     private static void CreatesVerifiedEvidenceForSameReferenceAndCanonicalTrack()
@@ -68,6 +71,89 @@ internal static class PlaybackReferenceAudioExperimentEvidenceRegression
         Throws<InvalidDataException>(() => PlaybackReferenceAudioExperimentEvidenceStore.Create(
             CreateManifest(track), tampered, track),
             "normalized reference features must verify before they can enter experiment evidence");
+    }
+
+    private static void AtomicEvidenceRoundTripPreservesIdentity()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var track = CreatePulseTrack(500);
+            var evidence = PlaybackReferenceAudioExperimentEvidenceStore.Create(
+                CreateManifest(track),
+                ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 4, 500)),
+                track);
+            var path = Path.Combine(root, "roundtrip.legacy-ab-reference.json");
+            PlaybackReferenceAudioExperimentEvidenceStore.WriteVerifiedAtomic(path, evidence);
+            var readBack = PlaybackReferenceAudioExperimentEvidenceStore.ReadAndVerify(path);
+            Require(readBack.EvidenceSha256 == evidence.EvidenceSha256,
+                "atomic write/read-back must preserve exact reference evidence identity");
+            Require(!Directory.EnumerateFiles(root, "*.tmp-*").Any(),
+                "successful atomic export must not leave temporary files behind");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void ArchivePersistenceIsIdempotentAndReExportable()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var archive = Path.Combine(root, "archive");
+            var track = CreatePulseTrack(500);
+            var manifest = CreateManifest(track);
+            var evidence = PlaybackReferenceAudioExperimentEvidenceStore.Create(
+                manifest,
+                ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 4, 500)),
+                track);
+
+            var firstPath = PlaybackReferenceAudioExperimentArchive.PersistVerified(archive, evidence);
+            var secondPath = PlaybackReferenceAudioExperimentArchive.PersistVerified(archive, evidence);
+            Require(firstPath == secondPath, "persisting identical evidence must be idempotent");
+            Require(Directory.EnumerateFiles(archive, "*.legacy-ab-reference.json").Count() == 1,
+                "idempotent archive persistence must not duplicate evidence files");
+
+            var records = PlaybackReferenceAudioExperimentArchive.ReadVerifiedForExperiment(archive, manifest.EvidenceSha256);
+            Require(records.Count == 1 && records[0].EvidenceSha256 == evidence.EvidenceSha256,
+                "archive lookup must return only verified evidence for the selected experiment");
+
+            var export = Path.Combine(root, "export.legacy-ab-reference.json");
+            PlaybackReferenceAudioExperimentArchive.ExportVerified(records[0], export);
+            var exported = PlaybackReferenceAudioExperimentEvidenceStore.ReadAndVerify(export);
+            Require(exported.EvidenceSha256 == evidence.EvidenceSha256,
+                "re-export must preserve the immutable archived evidence hash");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void CorruptArchiveEntryDoesNotHideValidEvidence()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var track = CreatePulseTrack(500);
+            var manifest = CreateManifest(track);
+            var evidence = PlaybackReferenceAudioExperimentEvidenceStore.Create(
+                manifest,
+                ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 4, 500)),
+                track);
+            PlaybackReferenceAudioExperimentArchive.PersistVerified(root, evidence);
+            File.WriteAllText(Path.Combine(root, "corrupt.legacy-ab-reference.json"), "{ definitely-not-valid-json");
+
+            var records = PlaybackReferenceAudioExperimentArchive.ReadVerifiedForExperiment(root, manifest.EvidenceSha256);
+            Require(records.Count == 1 && records[0].EvidenceSha256 == evidence.EvidenceSha256,
+                "one corrupt archive file must not poison or hide independently verified evidence");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static PlaybackBaselineExperimentManifest CreateManifest(PerformanceTrack track)
@@ -145,6 +231,13 @@ internal static class PlaybackReferenceAudioExperimentEvidenceRegression
             manifest.LegacyX2MaxInputCallDeltaMilliseconds?.ToString("R", System.Globalization.CultureInfo.InvariantCulture) ?? "-",
             manifest.TransportEquivalenceSha256.ToLowerInvariant());
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private static string CreateTemporaryDirectory()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RobloxPiano-reference-evidence-regression-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
     }
 
     private static void Require(bool condition, string message)
