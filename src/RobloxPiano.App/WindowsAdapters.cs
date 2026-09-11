@@ -85,6 +85,12 @@ internal sealed class WindowsInputInjectionException : InvalidOperationException
     }
 }
 
+internal readonly record struct KeyboardStrokeMapping(
+    ushort VirtualKey,
+    byte Modifiers,
+    IntPtr KeyboardLayout,
+    uint KeyboardThreadId);
+
 internal sealed class WindowsKeyboardInputSink : IInputSink
 {
     internal const string BackendName = "keybd_event";
@@ -192,6 +198,9 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
     internal static ushort ResolveVirtualKeyForDiagnostics(char character)
         => ResolveStroke(character).VirtualKey;
 
+    internal static KeyboardStrokeMapping ResolveStrokeForDiagnostics(char character)
+        => ResolveStroke(character);
+
     internal static bool IsVirtualKeyDown(ushort virtualKey)
     {
         if (virtualKey > byte.MaxValue)
@@ -213,7 +222,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
-    private void LogDispatch(string action, IReadOnlyList<char> keys, IReadOnlyList<KeyStroke> strokes)
+    private void LogDispatch(string action, IReadOnlyList<char> keys, IReadOnlyList<KeyboardStrokeMapping> strokes)
     {
         var sequence = Interlocked.Increment(ref _dispatchSequence);
         if (sequence > 20 && sequence % 100 != 0)
@@ -222,11 +231,12 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         }
 
         var foreground = NativeMethods.GetForegroundWindow();
-        NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
-        var virtualKeys = string.Join(",", strokes.Select(stroke => $"0x{stroke.VirtualKey:X2}/m{stroke.Modifiers:X2}"));
+        var foregroundThreadId = NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
+        var virtualKeys = string.Join(",", strokes.Select(stroke =>
+            $"0x{stroke.VirtualKey:X2}/m{stroke.Modifiers:X2}/hkl0x{stroke.KeyboardLayout.ToInt64():X}/tid{stroke.KeyboardThreadId}"));
         ClientDiagnostics.Log(
             $"Input dispatch #{sequence} {action}: chars='{new string(keys.ToArray())}', vk=[{virtualKeys}], " +
-            $"thread={Environment.CurrentManagedThreadId}, fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}.");
+            $"thread={Environment.CurrentManagedThreadId}, fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}, fgTid={foregroundThreadId}.");
     }
 
     private void LogReleaseAll()
@@ -238,13 +248,26 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             $"fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}.");
     }
 
-    private static KeyStroke ResolveStroke(char character)
+    private static KeyboardStrokeMapping ResolveStroke(char character)
     {
-        var encoded = NativeMethods.VkKeyScanW(character);
+        var foreground = NativeMethods.GetForegroundWindow();
+        var keyboardThreadId = foreground == IntPtr.Zero
+            ? 0u
+            : NativeMethods.GetWindowThreadProcessId(foreground, out _);
+        var keyboardLayout = NativeMethods.GetKeyboardLayout(keyboardThreadId);
+        if (keyboardLayout == IntPtr.Zero)
+        {
+            keyboardThreadId = 0;
+            keyboardLayout = NativeMethods.GetKeyboardLayout(0);
+        }
+
+        var encoded = keyboardLayout == IntPtr.Zero
+            ? NativeMethods.VkKeyScanW(character)
+            : NativeMethods.VkKeyScanExW(character, keyboardLayout);
         if (encoded == -1)
         {
             throw new WindowsInputInjectionException(
-                $"Character U+{(int)character:X4} ('{character}') cannot be mapped by the active Windows keyboard layout.");
+                $"Character U+{(int)character:X4} ('{character}') cannot be mapped by the foreground Windows keyboard layout.");
         }
 
         var virtualKey = (ushort)(encoded & 0x00ff);
@@ -254,7 +277,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             throw new WindowsInputInjectionException($"Unsupported keyboard modifier state 0x{modifiers:X2} for '{character}'.");
         }
 
-        return new KeyStroke(virtualKey, modifiers);
+        return new KeyboardStrokeMapping(virtualKey, modifiers, keyboardLayout, keyboardThreadId);
     }
 
     private static void WaitForMinimumPhysicalHold(long pressedAt)
@@ -339,7 +362,6 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
     }
 
     internal readonly record struct FieldBaselineKeyEvent(byte VirtualKey, uint Flags);
-    private readonly record struct KeyStroke(ushort VirtualKey, byte Modifiers);
 }
 
 internal static class NativeMethods
@@ -352,8 +374,14 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetKeyboardLayout(uint idThread);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern short VkKeyScanW(char character);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern short VkKeyScanExW(char character, IntPtr keyboardLayout);
 
     [DllImport("user32.dll", EntryPoint = "keybd_event")]
     internal static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);

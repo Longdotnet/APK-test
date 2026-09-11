@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.2
+version: 0.40.3
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -13,20 +13,18 @@ SHA256: `{{SHA256}}`
 
 1. Download `RobloxPiano.exe` and double-click it; the Sheet Library remains the normal starting point.
 2. Open Roblox and run `Test Roblox Input` before trusting song playback for the current Roblox process.
-3. Watch Roblox during the W probe. A visible movement or W-bound piano note is the field acceptance oracle; focus or Windows API success alone is not treated as proof.
-4. If Roblox does not react, open Diagnostics and share every `INPUT_FORENSIC` line with the same `probe=...` value. Mapping, foreground, Windows key-state and the final human Yes/No reaction verdict are now correlated end-to-end.
+3. Watch Roblox during the W probe. A visible movement or W-bound piano note is still the field acceptance oracle; focus or Windows API success alone is not proof.
+4. If Roblox does not react, open Diagnostics and share every `INPUT_FORENSIC` line with the same `probe=...` value. The log now shows app/foreground/mapping keyboard layouts in addition to native key-state evidence.
 5. Support Bundle export remains available for deeper investigation.
 
-## Phase 55 P0 Roblox input forensics
+## Phase 56 P0 foreground keyboard-layout parity
 
-- The explicit Roblox field probe has a unique correlation id and emits an unsampled forensic sequence.
-- Diagnostics record requested character, Unicode, raw `VkKeyScanW`, resolved virtual key/modifier mask and active keyboard layout.
-- Target Roblox PID/HWND and foreground PID/HWND are captured at important stages.
-- The exact production `keybd_event` backend is used; no diagnostic-only injection backend exists.
-- Windows key state is sampled before DOWN, immediately after DOWN, after 25 ms, after 50 ms, before UP and after UP.
-- Elapsed physical hold and foreground continuity distinguish mapping/focus/native failures from Roblox rejection.
-- v0.40.2 closes the final correlation gap: the user's Roblox reaction Yes/No verdict is emitted through `INPUT_FORENSIC stage=VERDICT` with the exact same probe id.
-- ADR 0060 makes live Roblox reaction the P0 acceptance gate; CI/API invocation is not end-to-end proof.
+- Production character mapping now follows the current foreground Roblox window thread with `GetKeyboardLayout(foregroundThreadId)` + `VkKeyScanExW` instead of assuming the RobloxPiano UI thread layout.
+- The field-proven `keybd_event` backend, scan-code-zero shape, key-up flags and minimum physical key hold remain unchanged.
+- Mapping falls back to the calling-thread layout only when a usable foreground layout cannot be obtained; unmappable characters still fail closed.
+- `INPUT_FORENSIC stage=ENV` now records `appKeyboardLayout`, `foregroundKeyboardLayout`, `mappingLayout`, mapping/foreground thread IDs and an explicit `layoutParity=SAME|DIFFERENT` marker.
+- Normal sampled playback dispatch diagnostics include the keyboard layout and thread used to resolve each logged stroke.
+- ADR 0061 locks the target-layout mapping contract while preserving the live Roblox reaction acceptance gate from ADR 0060.
 
 ## Production capability and reliability
 
@@ -41,5 +39,6 @@ SHA256: `{{SHA256}}`
 
 - CI cannot observe a live Roblox client consuming synthetic input. Explicit GUI verification plus visible Roblox reaction remains the real-machine acceptance gate.
 - A log showing `keybd_event` invocation or Windows key state does not by itself prove Roblox consumed the key.
+- If `layoutParity=DIFFERENT`, v0.40.3 maps using `mappingLayout=foregroundKeyboardLayout`; this removes app-thread keyboard-layout divergence as a cause before investigating Roblox/native acceptance.
 - If Windows observes W DOWN while the selected Roblox process remains foreground and the correlated final verdict is `RobloxDidNotReact`, investigation stays on Roblox/native acceptance rather than scheduler, MIDI or unrelated feature work.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.
