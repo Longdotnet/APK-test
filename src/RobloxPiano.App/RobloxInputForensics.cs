@@ -6,7 +6,7 @@ internal static class RobloxInputForensics
 {
     internal static string NewProbeId() => Guid.NewGuid().ToString("N")[..12];
 
-    internal static void LogEnvironment(string probeId, RobloxWindowTarget target, char character)
+    internal static WindowsRobloxWindowIdentitySnapshot LogEnvironment(string probeId, RobloxWindowTarget target, char character)
     {
         var foreground = NativeMethods.GetForegroundWindow();
         var foregroundThreadId = NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
@@ -19,6 +19,7 @@ internal static class RobloxInputForensics
         var privilege = WindowsProcessPrivilege.Capture(target.ProcessId);
         var desktop = WindowsInputDesktop.Capture();
         var session = WindowsInteractiveSession.Capture(target.ProcessId);
+        var window = WindowsRobloxWindowIdentity.Capture(target);
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
@@ -35,6 +36,10 @@ internal static class RobloxInputForensics
             $"sessionParity={session.Parity} activeConsoleSession={WindowsInteractiveSession.FormatConsoleSession(session.ActiveConsoleSessionId)} " +
             $"appIsActiveConsole={session.AppIsActiveConsole} targetIsActiveConsole={session.TargetIsActiveConsole} " +
             $"sessionAppError={session.AppSessionError} sessionTargetError={session.TargetSessionError} " +
+            $"windowRelation={window.Relation} targetClass='{window.TargetWindowClass}' foregroundClass='{window.ForegroundWindowClass}' foregroundRootClass='{window.ForegroundRootClass}' " +
+            $"targetMainHwnd=0x{window.CurrentMainWindowHandle.ToInt64():X} targetMainReplaced={window.TargetMainWindowReplaced} " +
+            $"foregroundRootHwnd=0x{window.ForegroundRootHandle.ToInt64():X} foregroundRootPid={window.ForegroundRootProcessId} " +
+            $"foregroundRootOwnerHwnd=0x{window.ForegroundRootOwnerHandle.ToInt64():X} foregroundRootOwnerPid={window.ForegroundRootOwnerProcessId} " +
             $"managedThread={Environment.CurrentManagedThreadId} nativeThread={GetCurrentThreadId()} " +
             $"appPid={Environment.ProcessId} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
@@ -72,6 +77,24 @@ internal static class RobloxInputForensics
                 $"activeConsoleSession={WindowsInteractiveSession.FormatConsoleSession(session.ActiveConsoleSessionId)} " +
                 "guidance='Both processes share one Windows session, but it is not the active console session. Preserve this evidence when comparing local-console versus RDP/remote field behavior.'.");
         }
+
+        if (window.IsKnownTargetWindowReplacement)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=WINDOW_BLOCKER verdict=TARGET_WINDOW_REPLACED " +
+                $"targetHwnd=0x{window.TargetWindowHandle.ToInt64():X} currentMainHwnd=0x{window.CurrentMainWindowHandle.ToInt64():X} " +
+                "guidance='The selected Roblox process is still alive but its main window changed. Re-run Test Roblox Input so activation and observation bind to the current Roblox window before judging input consumption.'.");
+        }
+        else if (window.Relation == WindowsRobloxWindowRelation.SameProcessAlternateRoot)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=WINDOW_CONTEXT verdict=SAME_PROCESS_ALTERNATE_ROOT " +
+                $"targetHwnd=0x{window.TargetWindowHandle.ToInt64():X} foregroundHwnd=0x{window.ForegroundWindowHandle.ToInt64():X} " +
+                $"foregroundRootHwnd=0x{window.ForegroundRootHandle.ToInt64():X} foregroundRootOwnerHwnd=0x{window.ForegroundRootOwnerHandle.ToInt64():X} " +
+                "guidance='Foreground belongs to the Roblox PID but is not the originally selected root window. Preserve this evidence when comparing game, overlay, splash, or replacement-window behavior.'.");
+        }
+
+        return window;
     }
 
     internal static void LogMappingComparison(
@@ -113,11 +136,14 @@ internal static class RobloxInputForensics
         var foregroundThreadId = NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
         var foregroundKeyboardLayout = NativeMethods.GetKeyboardLayout(foregroundThreadId);
         var down = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
+        var window = WindowsRobloxWindowIdentity.Capture(target);
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage={stage} backend={WindowsKeyboardInputSink.BackendName} " +
             $"probeMapping={KeyboardMappingStrategy.PowerShellOracle} vk=0x{virtualKey:X2} keyState={(down ? "DOWN" : "UP")} targetForeground={target.IsForeground} " +
+            $"windowRelation={window.Relation} targetMainReplaced={window.TargetMainWindowReplaced} " +
             $"targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
+            $"foregroundRootHwnd=0x{window.ForegroundRootHandle.ToInt64():X} foregroundRootOwnerHwnd=0x{window.ForegroundRootOwnerHandle.ToInt64():X} " +
             $"foregroundKeyboardLayout=0x{foregroundKeyboardLayout.ToInt64():X} " +
             $"elapsedMs={(elapsed?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na")}.");
     }
