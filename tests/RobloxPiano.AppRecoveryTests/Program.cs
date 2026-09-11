@@ -26,8 +26,12 @@ internal static class Program
         Run("quality verdict explains focus interruption", TestQualityFocusInterrupted, failures);
         Run("quality verdict separates input latency from scheduler timing", TestQualityInputLatency, failures);
         Run("quality verdict flags scheduler timing degradation", TestQualityTimingDegraded, failures);
+        Run("input desktop classifier recognizes same desktop", TestInputDesktopSame, failures);
+        Run("input desktop classifier recognizes different desktop", TestInputDesktopDifferent, failures);
+        Run("input desktop classifier preserves unknown evidence", TestInputDesktopUnknown, failures);
+        Run("known input desktop mismatch blocks native delivery", TestInputDesktopMismatchAssessment, failures);
 
-        Console.WriteLine($"App recovery regressions: {19 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"App recovery regressions: {23 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine(failure);
@@ -327,6 +331,52 @@ internal static class Program
         var assessment = PlaybackSessionQualityAssessmentPolicy.Assess(Quality(p95: 13));
         Equal(PlaybackSessionQualityVerdict.TimingDegraded, assessment.Verdict, "timing degradation verdict");
         Contains(assessment.Guidance, "Legacy", "timing guidance should preserve baseline comparison workflow");
+    }
+
+    private static void TestInputDesktopSame()
+    {
+        Equal(
+            WindowsInputDesktopParity.Same,
+            WindowsInputDesktop.Classify("Default", "default"),
+            "desktop names should compare case-insensitively");
+    }
+
+    private static void TestInputDesktopDifferent()
+    {
+        Equal(
+            WindowsInputDesktopParity.Different,
+            WindowsInputDesktop.Classify("Default", "Winlogon"),
+            "different known desktops must be diagnosed as a mismatch");
+    }
+
+    private static void TestInputDesktopUnknown()
+    {
+        Equal(
+            WindowsInputDesktopParity.Unknown,
+            WindowsInputDesktop.Classify(null, "Default"),
+            "missing app desktop evidence must remain unknown");
+        Equal(
+            WindowsInputDesktopParity.Unknown,
+            WindowsInputDesktop.Classify("Default", string.Empty),
+            "missing input desktop evidence must remain unknown");
+    }
+
+    private static void TestInputDesktopMismatchAssessment()
+    {
+        var result = new RobloxFieldInputProbeResult(
+            "desktop-mismatch",
+            true,
+            true,
+            WindowsInputDesktopParity.Different,
+            false,
+            true,
+            0,
+            TimeSpan.Zero);
+
+        True(!result.NativeDeliveryObserved, "desktop mismatch must not count as native delivery");
+        var assessment = result.Assess(null);
+        Equal(RobloxInputCheckVerdict.InputDesktopMismatch, assessment.Verdict, "desktop mismatch verdict");
+        Contains(assessment.NextAction, "desktop", "desktop mismatch guidance");
     }
 
     private static void Run(string name, Action test, ICollection<string> failures)
