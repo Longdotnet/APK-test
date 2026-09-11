@@ -23,6 +23,10 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Prepare pinned Spotify Basic Pitch ONNX model
+        shell: pwsh
+        run: ./.github/scripts/prepare-basic-pitch-model.ps1
+
       - name: Show SDK
         run: dotnet --info
 
@@ -162,6 +166,12 @@ jobs:
         run: |
           & ./artifacts/publish/RobloxPiano.exe --input-abi-smoke
           if ($LASTEXITCODE -ne 0) { throw "Published executable Windows INPUT ABI smoke test failed" }
+
+      - name: Published EXE Audio model and ONNX runtime smoke test
+        shell: pwsh
+        run: |
+          & ./artifacts/publish/RobloxPiano.exe --audio-model-smoke
+          if ($LASTEXITCODE -ne 0) { throw "Published executable Audio model/runtime smoke test failed" }
 
       - name: Published EXE quality-report smoke test
         shell: pwsh
