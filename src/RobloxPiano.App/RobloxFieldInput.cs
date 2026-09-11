@@ -28,6 +28,7 @@ internal sealed record RobloxInputCheckAssessment(
     bool IsSuccess);
 
 internal sealed record RobloxFieldInputProbeResult(
+    string ProbeId,
     bool ActivationConfirmed,
     bool StableForegroundConfirmed,
     bool WindowsReportedKeyDown,
@@ -104,11 +105,6 @@ internal sealed record RobloxFieldInputProbeResult(
     }
 }
 
-/// <summary>
-/// Real-machine field probe that bypasses MIDI and the playback scheduler. It uses the
-/// exact production WindowsKeyboardInputSink to hold W long enough for a human to see
-/// Roblox move or hear the W-bound piano note, while diagnostics capture OS-level state.
-/// </summary>
 internal static class RobloxFieldInputProbe
 {
     public static async Task<RobloxFieldInputProbeResult> RunAsync(
@@ -118,22 +114,23 @@ internal static class RobloxFieldInputProbe
         ArgumentNullException.ThrowIfNull(target);
         cancellationToken.ThrowIfCancellationRequested();
 
-        ClientDiagnostics.Log(
-            $"Field input probe requested: targetPid={target.ProcessId}, " +
-            $"targetHwnd=0x{target.WindowHandle.ToInt64():X}, key='{RobloxFieldInputPolicy.ProbeKey}'.");
+        var probeId = RobloxInputForensics.NewProbeId();
+        RobloxInputForensics.LogEnvironment(probeId, target, RobloxFieldInputPolicy.ProbeKey);
 
         var activated = target.TryActivate();
         if (!activated)
         {
-            ClientDiagnostics.Log("Field input probe stopped: Roblox activation was not confirmed.");
-            return new RobloxFieldInputProbeResult(false, false, false, false, 0, TimeSpan.Zero);
+            var result = new RobloxFieldInputProbeResult(probeId, false, false, false, false, 0, TimeSpan.Zero);
+            RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
+            return result;
         }
 
         var stable = await WaitForStableForegroundAsync(target, cancellationToken).ConfigureAwait(false);
         if (!stable)
         {
-            ClientDiagnostics.Log("Field input probe stopped: selected Roblox PID did not remain foreground long enough.");
-            return new RobloxFieldInputProbeResult(true, false, false, false, 0, TimeSpan.Zero);
+            var result = new RobloxFieldInputProbeResult(probeId, true, false, false, false, 0, TimeSpan.Zero);
+            RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
+            return result;
         }
 
         var input = new WindowsKeyboardInputSink();
@@ -145,30 +142,42 @@ internal static class RobloxFieldInputProbe
 
         try
         {
+            RobloxInputForensics.LogKeyState(probeId, "BEFORE_DOWN", target, virtualKey);
             await input.KeyDownAsync(keys, cancellationToken).ConfigureAwait(false);
             keyDownObserved = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
-            ClientDiagnostics.Log(
-                $"Field input probe DOWN: key='{RobloxFieldInputPolicy.ProbeKey}', vk=0x{virtualKey:X2}, " +
-                $"asyncKeyStateDown={keyDownObserved}, targetForeground={target.IsForeground}, " +
-                $"thread={Environment.CurrentManagedThreadId}.");
+            RobloxInputForensics.LogKeyState(probeId, "AFTER_DOWN_0MS", target, virtualKey, Stopwatch.GetElapsedTime(started));
 
-            await Task.Delay(RobloxFieldInputPolicy.ProbeHoldDuration, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            keyDownObserved |= WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
+            RobloxInputForensics.LogKeyState(probeId, "AFTER_DOWN_25MS", target, virtualKey, Stopwatch.GetElapsedTime(started));
+
+            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            keyDownObserved |= WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
+            RobloxInputForensics.LogKeyState(probeId, "AFTER_DOWN_50MS", target, virtualKey, Stopwatch.GetElapsedTime(started));
+
+            var remaining = RobloxFieldInputPolicy.ProbeHoldDuration - Stopwatch.GetElapsedTime(started);
+            if (remaining > TimeSpan.Zero)
+            {
+                await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
+            }
+
             foregroundHeld = target.IsForeground;
+            RobloxInputForensics.LogKeyState(probeId, "BEFORE_UP", target, virtualKey, Stopwatch.GetElapsedTime(started));
             await input.KeyUpAsync(keys, CancellationToken.None).ConfigureAwait(false);
 
             var held = Stopwatch.GetElapsedTime(started);
-            ClientDiagnostics.Log(
-                $"Field input probe UP: key='{RobloxFieldInputPolicy.ProbeKey}', vk=0x{virtualKey:X2}, " +
-                $"heldMs={held.TotalMilliseconds:0}, targetForegroundHeld={foregroundHeld}, " +
-                $"asyncKeyStateAfterUp={WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey)}.");
+            RobloxInputForensics.LogKeyState(probeId, "AFTER_UP", target, virtualKey, held);
 
-            return new RobloxFieldInputProbeResult(
+            var result = new RobloxFieldInputProbeResult(
+                probeId,
                 true,
                 true,
                 keyDownObserved,
                 foregroundHeld,
                 virtualKey,
                 held);
+            RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
+            return result;
         }
         finally
         {
