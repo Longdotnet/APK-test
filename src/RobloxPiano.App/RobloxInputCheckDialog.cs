@@ -117,6 +117,7 @@ internal sealed class RobloxInputCheckDialog : Form
             return;
         }
 
+        var matrixSession = CaptureProbeSession("REAL_KEY", target);
         SetBusy(true);
         _status.Text = "Real-key baseline armed… when Roblox is foreground, physically press and release W once.";
         try
@@ -125,14 +126,14 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.PhysicalBaselineObserved)
             {
-                LogMatrixCell("REAL_KEY", result.ProbeId, "BASELINE_NOT_CONFIRMED", null);
+                LogMatrixCell("REAL_KEY", result.ProbeId, "BASELINE_NOT_CONFIRMED", null, matrixSession);
                 _status.Text = "⚠ A complete non-injected W down/up pair was not observed while Roblox stayed foreground. Retry and physically press W once within 10 seconds.";
                 return;
             }
 
             var observed = AskReaction("real physical W baseline", "Confirm Real-Key Roblox Reaction");
             RobloxHardwareKeyBaselineProbe.LogHumanVerdict(result, observed);
-            LogMatrixCell("REAL_KEY", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed);
+            LogMatrixCell("REAL_KEY", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed, matrixSession);
             _status.Text = observed
                 ? "✓ Real W reached Roblox visibly. Now run PowerShell-Oracle Check without changing the Roblox experience/session. If synthetic W fails, Diagnostics will contain a correlated real-vs-synthetic boundary."
                 : "⚠ Real W was observed by Windows but Roblox did not visibly react. Synthetic-vs-physical comparison is not meaningful until the selected Roblox surface responds to a real W.";
@@ -170,6 +171,7 @@ internal sealed class RobloxInputCheckDialog : Form
             return;
         }
 
+        var matrixSession = CaptureProbeSession("POWERSHELL_ORACLE", target);
         SetBusy(true);
         _status.Text = "Running PowerShell-oracle check… keep Roblox foreground until W is released.";
         try
@@ -181,7 +183,7 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.NativeDeliveryObserved)
             {
-                LogMatrixCell("POWERSHELL_ORACLE", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null);
+                LogMatrixCell("POWERSHELL_ORACLE", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, matrixSession);
                 RobloxInputHealthSession.Record(target, nativeAssessment);
                 ApplyAssessment(nativeAssessment);
                 return;
@@ -190,7 +192,7 @@ internal sealed class RobloxInputCheckDialog : Form
             var observed = AskReaction("PowerShell-oracle W test", "Confirm Roblox Reaction");
             var assessment = result.Assess(observed);
             RobloxInputForensics.LogVerdict(result.ProbeId, assessment, observed);
-            LogMatrixCell("POWERSHELL_ORACLE", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed);
+            LogMatrixCell("POWERSHELL_ORACLE", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed, matrixSession);
             RobloxInputHealthSession.Record(target, assessment);
             ApplyAssessment(assessment);
             if (!observed)
@@ -239,6 +241,7 @@ internal sealed class RobloxInputCheckDialog : Form
             return;
         }
 
+        var matrixSession = CaptureProbeSession("KEYBD_EVENT_SCAN", target);
         SetBusy(true);
         _status.Text = "Running keybd_event scan diagnostic… keep Roblox foreground until W is released.";
         try
@@ -247,14 +250,14 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.NativeDeliveryObserved)
             {
-                LogMatrixCell("KEYBD_EVENT_SCAN", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null);
+                LogMatrixCell("KEYBD_EVENT_SCAN", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, matrixSession);
                 _status.Text = "⚠ keybd_event scan diagnostic did not establish safe Windows delivery. Inspect matching PHYSICAL_* INPUT_FORENSIC lines.";
                 return;
             }
 
             var observed = AskReaction("keybd_event scan-code W diagnostic", "Confirm keybd_event Scan Reaction");
             RobloxPhysicalKeyDiagnosticProbe.LogHumanVerdict(result, observed);
-            LogMatrixCell("KEYBD_EVENT_SCAN", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed);
+            LogMatrixCell("KEYBD_EVENT_SCAN", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed, matrixSession);
             _status.Text = observed
                 ? "⚠ Roblox reacted to synthetic keybd_event with a non-zero scan code. Scan-code semantics are now a leading input difference; production remains unchanged."
                 : "⚠ No reaction. Next matrix cell: SendInput VK Diagnostic.";
@@ -288,6 +291,7 @@ internal sealed class RobloxInputCheckDialog : Form
             return;
         }
 
+        var matrixSession = CaptureProbeSession("SENDINPUT_VK", target);
         SetBusy(true);
         _status.Text = "Running SendInput virtual-key diagnostic… keep Roblox foreground until W is released.";
         try
@@ -296,14 +300,14 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.NativeDeliveryObserved)
             {
-                LogMatrixCell("SENDINPUT_VK", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null);
+                LogMatrixCell("SENDINPUT_VK", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, matrixSession);
                 _status.Text = "⚠ SendInput VK diagnostic did not establish safe Windows delivery. Inspect matching SENDINPUT_VK_* INPUT_FORENSIC lines.";
                 return;
             }
 
             var observed = AskReaction("SendInput virtual-key W diagnostic", "Confirm SendInput VK Reaction");
             RobloxSendInputVirtualKeyDiagnosticProbe.LogHumanVerdict(result, observed);
-            LogMatrixCell("SENDINPUT_VK", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed);
+            LogMatrixCell("SENDINPUT_VK", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed, matrixSession);
             _status.Text = observed
                 ? "⚠ Roblox reacted to SendInput virtual-key semantics. This isolates the injection API from scan-code semantics; production remains unchanged."
                 : "⚠ No reaction. Next matrix cell: SendInput Scan Diagnostic.";
@@ -337,6 +341,7 @@ internal sealed class RobloxInputCheckDialog : Form
             return;
         }
 
+        var matrixSession = CaptureProbeSession("SENDINPUT_SCAN", target);
         SetBusy(true);
         _status.Text = "Running SendInput scan-code diagnostic… keep Roblox foreground until W is released.";
         try
@@ -345,14 +350,14 @@ internal sealed class RobloxInputCheckDialog : Form
             Activate();
             if (!result.NativeDeliveryObserved)
             {
-                LogMatrixCell("SENDINPUT_SCAN", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null);
+                LogMatrixCell("SENDINPUT_SCAN", result.ProbeId, "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, matrixSession);
                 _status.Text = "⚠ SendInput scan diagnostic did not establish safe Windows delivery. Inspect matching SENDINPUT_* INPUT_FORENSIC lines.";
                 return;
             }
 
             var observed = AskReaction("SendInput scan-code W diagnostic", "Confirm SendInput Scan Reaction");
             RobloxSendInputScanDiagnosticProbe.LogHumanVerdict(result, observed);
-            LogMatrixCell("SENDINPUT_SCAN", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed);
+            LogMatrixCell("SENDINPUT_SCAN", result.ProbeId, observed ? "ROBLOX_REACTED" : "ROBLOX_NO_REACTION", observed, matrixSession);
             _status.Text = observed
                 ? "⚠ Roblox reacted to SendInput physical scan-code semantics. Preserve this matrix ID; production remains unchanged until field evidence is reviewed and regression-protected."
                 : "⚠ No reaction. If REAL_KEY reacted in this same matrix while all synthetic cells did not, the evidence now isolates the unresolved boundary after Windows synthetic injection and before Roblox game-input consumption.";
@@ -372,10 +377,33 @@ internal sealed class RobloxInputCheckDialog : Form
         }
     }
 
-    private RobloxInputMatrixAssessment LogMatrixCell(string cell, string probeId, string verdict, bool? reacted)
+    private RobloxInputMatrixSessionIdentity? CaptureProbeSession(string cell, RobloxWindowTarget target)
     {
-        var evidence = new RobloxInputMatrixCellEvidence(cell, probeId, verdict, reacted);
+        if (!RobloxInputMatrixSessionIdentity.TryCapture(target, out var identity))
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_MATRIX_SESSION matrix={_matrixId} cell={cell} stage=PROBE_START identity=UNAVAILABLE source=SELECTED_TARGET continuityTrusted=false authorizesPlayback=false.");
+            return null;
+        }
+
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_SESSION matrix={_matrixId} cell={cell} stage=PROBE_START identity={identity.ToLogToken()} source=SELECTED_TARGET continuityTrusted=true authorizesPlayback=false.");
+        return identity;
+    }
+
+    private RobloxInputMatrixAssessment LogMatrixCell(
+        string cell,
+        string probeId,
+        string verdict,
+        bool? reacted,
+        RobloxInputMatrixSessionIdentity? sessionIdentity)
+    {
+        var evidence = new RobloxInputMatrixCellEvidence(cell, probeId, verdict, reacted, sessionIdentity);
         _matrixCells[cell] = evidence;
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_SESSION matrix={_matrixId} probe={probeId} cell={cell} stage=RESULT_RETAINED " +
+            $"identity={(sessionIdentity is null ? "UNAVAILABLE" : sessionIdentity.Value.ToLogToken())} " +
+            $"source=PROBE_START continuityTrusted={sessionIdentity is not null} authorizesPlayback=false.");
         ClientDiagnostics.Log(
             $"INPUT_MATRIX matrix={_matrixId} probe={probeId} cell={cell} verdict={verdict} " +
             $"robloxReaction={(reacted is null ? "UNKNOWN" : reacted.Value ? "YES" : "NO")} authorizesPlayback=false.");

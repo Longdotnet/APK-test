@@ -99,6 +99,18 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("A synthetic winner without stable session identity must not be conclusive.");
         }
 
+        var unboundLegacyEvidence = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_VK", "unbound", "ROBLOX_REACTED", true)
+        ]);
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, unboundLegacyEvidence.Verdict, "unbound evidence must never post-hoc capture the current Roblox target");
+        Equal("MATRIX_SESSION_IDENTITY_UNAVAILABLE", unboundLegacyEvidence.FailureBoundary, "unbound evidence boundary");
+        if (unboundLegacyEvidence.IsConclusive)
+        {
+            throw new InvalidOperationException("Evidence without a probe-start identity must fail closed even when Roblox visibly reacted.");
+        }
+
         var latestCellWins = RobloxInputMatrixAssessmentPolicy.Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),

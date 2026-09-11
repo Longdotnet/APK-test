@@ -21,12 +21,7 @@ internal sealed record RobloxInputMatrixCellEvidence(
         string probeId,
         string verdict,
         bool? robloxReaction)
-        : this(
-            cell,
-            probeId,
-            verdict,
-            robloxReaction,
-            CaptureSessionIdentity(cell, probeId))
+        : this(cell, probeId, verdict, robloxReaction, null)
     {
     }
 
@@ -35,20 +30,6 @@ internal sealed record RobloxInputMatrixCellEvidence(
     public bool WindowsBoundaryConfirmed => Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION";
     public bool Reacted => RobloxReaction == true && Verdict == "ROBLOX_REACTED";
     public bool ExplicitNoReaction => RobloxReaction == false && Verdict == "ROBLOX_NO_REACTION";
-
-    private static RobloxInputMatrixSessionIdentity? CaptureSessionIdentity(string cell, string probeId)
-    {
-        if (!RobloxInputMatrixSessionIdentity.TryCapture(out var identity))
-        {
-            ClientDiagnostics.Log(
-                $"INPUT_MATRIX_SESSION probe={probeId} cell={cell} identity=UNAVAILABLE continuityTrusted=false authorizesPlayback=false.");
-            return null;
-        }
-
-        ClientDiagnostics.Log(
-            $"INPUT_MATRIX_SESSION probe={probeId} cell={cell} identity={identity.ToLogToken()} continuityTrusted=true authorizesPlayback=false.");
-        return identity;
-    }
 }
 
 internal sealed record RobloxInputMatrixAssessment(
@@ -178,7 +159,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
         {
             return (
                 "MATRIX_SESSION_IDENTITY_UNAVAILABLE",
-                "At least one matrix cell could not establish a stable Roblox PID/start-time/window identity, so cross-cell evidence is not comparable.",
+                "At least one matrix cell could not establish a probe-bound Roblox PID/start-time/window identity, so cross-cell evidence is not comparable.",
                 "Keep Roblox open, close and reopen Roblox Input Check, then rerun the matrix from Real-Key Baseline. Do not combine this evidence with a previous session.");
         }
 
