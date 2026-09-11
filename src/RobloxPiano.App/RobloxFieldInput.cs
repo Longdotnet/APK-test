@@ -7,6 +7,7 @@ internal static class RobloxFieldInputPolicy
     internal static readonly TimeSpan StableFocusDuration = TimeSpan.FromMilliseconds(750);
     internal static readonly TimeSpan ProbeHoldDuration = TimeSpan.FromMilliseconds(650);
     internal static readonly TimeSpan ProbeFocusTimeout = TimeSpan.FromSeconds(3);
+    internal static readonly TimeSpan ProbeContinuitySampleInterval = TimeSpan.FromMilliseconds(25);
     internal const char ProbeKey = 'w';
 }
 
@@ -109,7 +110,7 @@ internal sealed record RobloxFieldInputProbeResult(
             return new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.FocusLostDuringProbe,
                 "Roblox lost foreground while the W test key was held.",
-                "Keep Roblox focused for the entire check and retry. Playback intentionally stops input under the same condition.",
+                "Keep Roblox focused for the entire check and retry. The probe now releases W immediately when a sampled focus loss is observed.",
                 false);
         }
 
@@ -203,47 +204,70 @@ internal static class RobloxFieldInputProbe
         var input = new WindowsKeyboardInputSink(KeyboardMappingStrategy.PowerShellOracle);
         var keys = new[] { RobloxFieldInputPolicy.ProbeKey };
         var virtualKey = oracleMapping.VirtualKey;
-        var keyDownObserved = false;
-        var foregroundHeld = false;
+        var continuity = new RobloxProbeFocusContinuity();
         var started = Stopwatch.GetTimestamp();
 
         try
         {
             RobloxInputForensics.LogKeyState(probeId, "BEFORE_DOWN", target, virtualKey);
             await input.KeyDownAsync(keys, cancellationToken).ConfigureAwait(false);
-            keyDownObserved = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
-            RobloxInputForensics.LogKeyState(probeId, "AFTER_DOWN_0MS", target, virtualKey, Stopwatch.GetElapsedTime(started));
 
-            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
-            keyDownObserved |= WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
-            RobloxInputForensics.LogKeyState(probeId, "AFTER_DOWN_25MS", target, virtualKey, Stopwatch.GetElapsedTime(started));
-
-            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
-            keyDownObserved |= WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
-            RobloxInputForensics.LogKeyState(probeId, "AFTER_DOWN_50MS", target, virtualKey, Stopwatch.GetElapsedTime(started));
-
-            var remaining = RobloxFieldInputPolicy.ProbeHoldDuration - Stopwatch.GetElapsedTime(started);
-            if (remaining > TimeSpan.Zero)
+            var sampleIndex = 0;
+            while (true)
             {
-                await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                var elapsed = Stopwatch.GetElapsedTime(started);
+                var foregroundNow = target.IsForeground;
+                var keyDownNow = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
+                var held = continuity.Observe(foregroundNow, keyDownNow, elapsed);
+                RobloxInputForensics.LogKeyState(
+                    probeId,
+                    $"HOLD_SAMPLE_{sampleIndex:000}",
+                    target,
+                    virtualKey,
+                    elapsed);
+
+                if (!held)
+                {
+                    ClientDiagnostics.Log(
+                        $"INPUT_FORENSIC probe={probeId} stage=FOCUS_LOST_DURING_HOLD verdict=FOCUS_LOST_BEFORE_UP " +
+                        $"firstLossMs={continuity.FirstFocusLossAt?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
+                        $"samples={continuity.SamplesObserved} action=RELEASE_IMMEDIATELY.");
+                    break;
+                }
+
+                if (elapsed >= RobloxFieldInputPolicy.ProbeHoldDuration)
+                {
+                    break;
+                }
+
+                var remaining = RobloxFieldInputPolicy.ProbeHoldDuration - elapsed;
+                var delay = remaining < RobloxFieldInputPolicy.ProbeContinuitySampleInterval
+                    ? remaining
+                    : RobloxFieldInputPolicy.ProbeContinuitySampleInterval;
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                }
+
+                sampleIndex++;
             }
 
-            foregroundHeld = target.IsForeground;
             RobloxInputForensics.LogKeyState(probeId, "BEFORE_UP", target, virtualKey, Stopwatch.GetElapsedTime(started));
             await input.KeyUpAsync(keys, CancellationToken.None).ConfigureAwait(false);
 
-            var held = Stopwatch.GetElapsedTime(started);
-            RobloxInputForensics.LogKeyState(probeId, "AFTER_UP", target, virtualKey, held);
+            var holdDuration = Stopwatch.GetElapsedTime(started);
+            RobloxInputForensics.LogKeyState(probeId, "AFTER_UP", target, virtualKey, holdDuration);
 
             var result = new RobloxFieldInputProbeResult(
                 probeId,
                 true,
                 true,
                 desktop.Parity,
-                keyDownObserved,
-                foregroundHeld,
+                continuity.WindowsKeyDownObserved,
+                continuity.ForegroundHeldContinuously,
                 virtualKey,
-                held)
+                holdDuration)
             {
                 ProductionMappingEquivalentToOracle = mappingEquivalent
             };
