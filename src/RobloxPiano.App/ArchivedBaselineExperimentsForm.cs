@@ -356,6 +356,7 @@ internal sealed class ArchivedBaselineExperimentsForm : Form
 
     private static bool IsDiagnosticsException(Exception exception)
         => exception is IOException
+            or InvalidDataException
             or UnauthorizedAccessException
             or ArgumentException
             or FormatException
