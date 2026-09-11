@@ -15,6 +15,7 @@ SHA256: `{{SHA256}}`
 2. Open Roblox and run `Test Roblox Input` before trusting song playback for the current Roblox process.
 3. Watch Roblox during the W probe. A visible movement or W-bound piano note is the field acceptance oracle; focus or Windows API success alone is not treated as proof.
 4. If Roblox does not react, open Diagnostics and share the correlated `INPUT_FORENSIC probe=...` lines. They now identify mapping, foreground, Windows key-state and final-verdict boundaries directly.
+5. Support Bundle export remains available for a bounded support package when deeper investigation is needed.
 
 ## Phase 55 P0 Roblox input forensics
 
