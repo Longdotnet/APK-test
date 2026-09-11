@@ -31,6 +31,10 @@ internal readonly record struct WindowsRobloxWindowIdentitySnapshot(
     bool TargetMainWindowReplaced)
 {
     public bool IsKnownTargetWindowReplacement => TargetProcessAlive && TargetMainWindowReplaced;
+
+    public bool IsTrustedProbeSurface => !IsKnownTargetWindowReplacement
+        && Relation is WindowsRobloxWindowRelation.ExactTarget
+            or WindowsRobloxWindowRelation.TargetWindowTree;
 }
 
 internal static class WindowsRobloxWindowIdentity

@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.13
+version: 0.40.14
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -17,21 +17,21 @@ SHA256: `{{SHA256}}`
 4. If Roblox does not visibly move or play the W-bound note, run `Physical-Key Diagnostic`, `SendInput VK Diagnostic`, then `SendInput Scan Diagnostic` to isolate key semantics from injection API behavior.
 5. Preserve the correlated `INPUT_FORENSIC` lines or export a **Support Bundle** for field review.
 
-## Phase 66 P0 foreground/root-window identity forensics
+## Phase 67 P0 fail-closed Roblox window continuity
 
-- Every explicit input probe now captures the foreground HWND/PID/TID together with `GA_ROOT` and `GA_ROOTOWNER` identities, process ownership and privacy-safe window class names.
-- The selected Roblox HWND is compared with the process's current `MainWindowHandle`, so a live Roblox process that replaced its top-level window is visible instead of being mistaken for the original field target.
-- `WINDOW_BLOCKER / TARGET_WINDOW_REPLACED` is emitted when the selected Roblox PID is still alive but its current main HWND no longer matches the selected target HWND.
-- `WINDOW_CONTEXT / SAME_PROCESS_ALTERNATE_ROOT` records cases where foreground still belongs to the Roblox PID but is a different top-level/root window, which helps separate the game surface from overlays, splash windows and replacement-window behavior.
-- Key-state samples carry `windowRelation`, root/root-owner HWNDs and replacement state under the same stable probe ID, so one client log can show exactly when the window identity changed during the attempt.
-- Deterministic regression coverage protects exact-target, target-tree, same-process alternate-root, unrelated-process, unknown and live-window-replacement classification.
-- No injection backend, scheduler, playback mapping, focus authorization or platform-security boundary is changed by this phase.
+- The authorizing PowerShell-oracle probe now requires the exact selected Roblox window or its selected root/owner tree before injection and throughout the W hold; same PID alone is no longer sufficient.
+- Stable-focus acquisition resets when the foreground is a same-process alternate root, an unknown/different surface, or the selected Roblox process has replaced its `MainWindowHandle`.
+- Window identity is sampled at the same 25 ms cadence as focus/key-state continuity while W is held.
+- `WINDOW_IDENTITY_LOST_DURING_HOLD / WINDOW_IDENTITY_LOST_BEFORE_UP` is sticky for the attempt and releases W immediately instead of waiting for the nominal 650 ms hold.
+- `NativeDeliveryObserved` now requires trusted window identity to have remained continuous, so an alternate/splash/replaced Roblox surface cannot authorize Play even if the original game window later regains foreground.
+- The blocker log preserves first-loss time, target/current-main/foreground/root HWNDs and `windowRelation` under the same stable probe ID.
+- Deterministic regressions protect exact target/tree acceptance, same-PID alternate-root rejection, unknown rejection, live main-window replacement rejection, immediate authorization invalidation, and the rule that Windows-side evidence still requires explicit Roblox field observation.
+- No normal scheduler/playback mapping, Legacy baseline, injection backend, held-key/pedal ownership, platform-security boundary, or Audio-to-Piano subsystem is changed by this phase.
 
 ## Field interpretation
 
-- `targetMainReplaced=true` or `TARGET_WINDOW_REPLACED`: rerun Test Roblox Input and bind to the current Roblox window before using the attempt as Roblox-consumption evidence.
-- `windowRelation=SameProcessAlternateRoot`: preserve the log; the foreground is still in the Roblox PID, but not the originally selected root surface.
-- `windowRelation=ExactTarget` or `TargetWindowTree` throughout the probe, together with same-session/desktop/elevation parity, continuous focus and Windows key-down evidence, makes stale-window/root-window confusion a weaker suspect.
+- `WINDOW_IDENTITY_LOST_BEFORE_UP`, `windowRelation=SameProcessAlternateRoot`, or `targetMainReplaced=true`: the attempt is invalid for Roblox-consumption conclusions; rerun Test Roblox Input so it binds to the current game surface.
+- `windowRelation=ExactTarget` or `TargetWindowTree` throughout the full probe, together with same session/desktop/elevation parity, continuous focus and Windows key-down evidence, makes stale/replaced/alternate Roblox surface confusion a weaker suspect.
 - Even perfect Windows-side evidence does not satisfy the P0 gate. Only visible Roblox movement or a W-bound piano reaction is `FIELD PASS`.
 
 ## Production capability and reliability
@@ -45,5 +45,5 @@ SHA256: `{{SHA256}}`
 
 - CI cannot observe a live Roblox client consuming synthetic input. Visible Roblox reaction remains the acceptance gate.
 - A Windows API success or `GetAsyncKeyState` DOWN observation is not by itself proof that Roblox consumed the key.
-- Any sampled focus loss, privilege mismatch, input-desktop mismatch, known cross-session mismatch or stale/replaced target window invalidates that attempt for Roblox-consumption conclusions.
+- Any sampled focus loss, window-identity drift, privilege mismatch, input-desktop mismatch, known cross-session mismatch or stale/replaced target window invalidates that attempt for Roblox-consumption conclusions.
 - The executable remains unsigned, so Windows SmartScreen may show a reputation warning.

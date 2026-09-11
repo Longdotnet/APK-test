@@ -21,7 +21,8 @@ internal enum RobloxInputCheckVerdict
     FocusLostDuringProbe = 5,
     NativeDeliveryAwaitingObservation = 6,
     InputDesktopMismatch = 7,
-    PowerShellOracleConfirmedProductionMappingDiffers = 8
+    PowerShellOracleConfirmedProductionMappingDiffers = 8,
+    WindowIdentityLostDuringProbe = 9
 }
 
 internal sealed record RobloxInputCheckAssessment(
@@ -37,10 +38,33 @@ internal sealed record RobloxFieldInputProbeResult(
     WindowsInputDesktopParity DesktopParity,
     bool WindowsReportedKeyDown,
     bool ForegroundHeldDuringProbe,
+    bool WindowIdentityHeldDuringProbe,
     ushort VirtualKey,
     TimeSpan HoldDuration)
 {
     public bool ProductionMappingEquivalentToOracle { get; init; } = true;
+
+    internal RobloxFieldInputProbeResult(
+        string probeId,
+        bool activationConfirmed,
+        bool stableForegroundConfirmed,
+        WindowsInputDesktopParity desktopParity,
+        bool windowsReportedKeyDown,
+        bool foregroundHeldDuringProbe,
+        ushort virtualKey,
+        TimeSpan holdDuration)
+        : this(
+            probeId,
+            activationConfirmed,
+            stableForegroundConfirmed,
+            desktopParity,
+            windowsReportedKeyDown,
+            foregroundHeldDuringProbe,
+            foregroundHeldDuringProbe,
+            virtualKey,
+            holdDuration)
+    {
+    }
 
     internal RobloxFieldInputProbeResult(
         bool activationConfirmed,
@@ -56,6 +80,7 @@ internal sealed record RobloxFieldInputProbeResult(
             WindowsInputDesktopParity.Same,
             windowsReportedKeyDown,
             foregroundHeldDuringProbe,
+            foregroundHeldDuringProbe,
             virtualKey,
             holdDuration)
     {
@@ -65,7 +90,8 @@ internal sealed record RobloxFieldInputProbeResult(
         && StableForegroundConfirmed
         && DesktopParity != WindowsInputDesktopParity.Different
         && WindowsReportedKeyDown
-        && ForegroundHeldDuringProbe;
+        && ForegroundHeldDuringProbe
+        && WindowIdentityHeldDuringProbe;
 
     public RobloxInputCheckAssessment Assess(bool? robloxReacted)
     {
@@ -82,7 +108,7 @@ internal sealed record RobloxFieldInputProbeResult(
         {
             return new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.FocusUnstable,
-                "Roblox did not stay foreground long enough to safely send the test key.",
+                "Roblox did not stay on the selected game window long enough to safely send the test key.",
                 "Stop switching windows or overlays for a moment, keep the selected Roblox Player visible, then retry.",
                 false);
         }
@@ -110,7 +136,16 @@ internal sealed record RobloxFieldInputProbeResult(
             return new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.FocusLostDuringProbe,
                 "Roblox lost foreground while the W test key was held.",
-                "Keep Roblox focused for the entire check and retry. The probe now releases W immediately when a sampled focus loss is observed.",
+                "Keep Roblox focused for the entire check and retry. The probe releases W immediately when a sampled focus loss is observed.",
+                false);
+        }
+
+        if (!WindowIdentityHeldDuringProbe)
+        {
+            return new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.WindowIdentityLostDuringProbe,
+                "The foreground stayed in Roblox, but it moved away from the selected game window/root while W was held.",
+                "Re-run Test Roblox Input so it binds to the current Roblox game window. Close or avoid same-process splash/alternate surfaces during the probe.",
                 false);
         }
 
@@ -118,7 +153,7 @@ internal sealed record RobloxFieldInputProbeResult(
         {
             return new RobloxInputCheckAssessment(
                 RobloxInputCheckVerdict.NativeDeliveryAwaitingObservation,
-                "Windows delivered the exact PowerShell-oracle W test while Roblox remained foreground.",
+                "Windows delivered the exact PowerShell-oracle W test while the selected Roblox game surface remained stable.",
                 "Confirm whether Roblox visibly moved or played the W-bound piano note; that observation separates Windows delivery from Roblox consumption.",
                 false);
         }
@@ -164,7 +199,7 @@ internal static class RobloxFieldInputProbe
         var activated = target.TryActivate();
         if (!activated)
         {
-            var result = new RobloxFieldInputProbeResult(probeId, false, false, WindowsInputDesktopParity.Unknown, false, false, 0, TimeSpan.Zero);
+            var result = new RobloxFieldInputProbeResult(probeId, false, false, WindowsInputDesktopParity.Unknown, false, false, false, 0, TimeSpan.Zero);
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
             return result;
         }
@@ -172,7 +207,7 @@ internal static class RobloxFieldInputProbe
         var stable = await WaitForStableForegroundAsync(target, cancellationToken).ConfigureAwait(false);
         if (!stable)
         {
-            var result = new RobloxFieldInputProbeResult(probeId, true, false, WindowsInputDesktopParity.Unknown, false, false, 0, TimeSpan.Zero);
+            var result = new RobloxFieldInputProbeResult(probeId, true, false, WindowsInputDesktopParity.Unknown, false, false, false, 0, TimeSpan.Zero);
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
             return result;
         }
@@ -181,6 +216,7 @@ internal static class RobloxFieldInputProbe
         RobloxInputForensics.LogDesktopSnapshot(probeId, "PRE_INJECTION", desktop, target);
         if (desktop.IsKnownMismatch)
         {
+            var trustedWindow = WindowsRobloxWindowIdentity.Capture(target).IsTrustedProbeSurface;
             var result = new RobloxFieldInputProbeResult(
                 probeId,
                 true,
@@ -188,6 +224,7 @@ internal static class RobloxFieldInputProbe
                 desktop.Parity,
                 false,
                 target.IsForeground,
+                trustedWindow,
                 0,
                 TimeSpan.Zero);
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
@@ -205,6 +242,8 @@ internal static class RobloxFieldInputProbe
         var keys = new[] { RobloxFieldInputPolicy.ProbeKey };
         var virtualKey = oracleMapping.VirtualKey;
         var continuity = new RobloxProbeFocusContinuity();
+        var windowIdentityHeld = true;
+        TimeSpan? firstWindowIdentityLossAt = null;
         var started = Stopwatch.GetTimestamp();
 
         try
@@ -220,6 +259,14 @@ internal static class RobloxFieldInputProbe
                 var foregroundNow = target.IsForeground;
                 var keyDownNow = WindowsKeyboardInputSink.IsVirtualKeyDown(virtualKey);
                 var held = continuity.Observe(foregroundNow, keyDownNow, elapsed);
+                var window = WindowsRobloxWindowIdentity.Capture(target);
+                var trustedWindow = window.IsTrustedProbeSurface;
+                if (!trustedWindow && windowIdentityHeld)
+                {
+                    windowIdentityHeld = false;
+                    firstWindowIdentityLossAt = elapsed;
+                }
+
                 RobloxInputForensics.LogKeyState(
                     probeId,
                     $"HOLD_SAMPLE_{sampleIndex:000}",
@@ -232,6 +279,18 @@ internal static class RobloxFieldInputProbe
                     ClientDiagnostics.Log(
                         $"INPUT_FORENSIC probe={probeId} stage=FOCUS_LOST_DURING_HOLD verdict=FOCUS_LOST_BEFORE_UP " +
                         $"firstLossMs={continuity.FirstFocusLossAt?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
+                        $"samples={continuity.SamplesObserved} action=RELEASE_IMMEDIATELY.");
+                    break;
+                }
+
+                if (!trustedWindow)
+                {
+                    ClientDiagnostics.Log(
+                        $"INPUT_FORENSIC probe={probeId} stage=WINDOW_IDENTITY_LOST_DURING_HOLD verdict=WINDOW_IDENTITY_LOST_BEFORE_UP " +
+                        $"firstLossMs={firstWindowIdentityLossAt?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
+                        $"windowRelation={window.Relation} targetMainReplaced={window.TargetMainWindowReplaced} " +
+                        $"targetHwnd=0x{window.TargetWindowHandle.ToInt64():X} currentMainHwnd=0x{window.CurrentMainWindowHandle.ToInt64():X} " +
+                        $"foregroundHwnd=0x{window.ForegroundWindowHandle.ToInt64():X} foregroundRootHwnd=0x{window.ForegroundRootHandle.ToInt64():X} " +
                         $"samples={continuity.SamplesObserved} action=RELEASE_IMMEDIATELY.");
                     break;
                 }
@@ -266,6 +325,7 @@ internal static class RobloxFieldInputProbe
                 desktop.Parity,
                 continuity.WindowsKeyDownObserved,
                 continuity.ForegroundHeldContinuously,
+                windowIdentityHeld,
                 virtualKey,
                 holdDuration)
             {
@@ -291,7 +351,9 @@ internal static class RobloxFieldInputProbe
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (target.IsForeground)
+            var trustedSurface = target.IsForeground
+                && WindowsRobloxWindowIdentity.Capture(target).IsTrustedProbeSurface;
+            if (trustedSurface)
             {
                 stableSince ??= Stopwatch.GetTimestamp();
                 if (Stopwatch.GetElapsedTime(stableSince.Value) >= RobloxFieldInputPolicy.StableFocusDuration)

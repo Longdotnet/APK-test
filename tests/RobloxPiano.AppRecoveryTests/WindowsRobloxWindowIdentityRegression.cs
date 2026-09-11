@@ -43,27 +43,47 @@ internal static class WindowsRobloxWindowIdentityRegression
             WindowsRobloxWindowIdentity.Classify(IntPtr.Zero, 10, foreground, 10, root, 10, owner, 10),
             "missing selected HWND");
 
-        var replaced = new WindowsRobloxWindowIdentitySnapshot(
-            target,
-            new IntPtr(0x999),
-            foreground,
-            10,
-            11,
-            root,
-            10,
-            owner,
-            10,
-            "WINDOWSCLIENT",
-            "WINDOWSCLIENT",
-            "WINDOWSCLIENT",
-            WindowsRobloxWindowRelation.SameProcessAlternateRoot,
-            true,
-            true);
+        var exact = Snapshot(WindowsRobloxWindowRelation.ExactTarget, target, target, targetMainWindowReplaced: false);
+        True(exact.IsTrustedProbeSurface, "exact selected Roblox surface must be trusted for the authorizing probe");
+
+        var tree = Snapshot(WindowsRobloxWindowRelation.TargetWindowTree, target, target, targetMainWindowReplaced: false);
+        True(tree.IsTrustedProbeSurface, "selected Roblox window tree must be trusted for the authorizing probe");
+
+        var alternate = Snapshot(WindowsRobloxWindowRelation.SameProcessAlternateRoot, target, target, targetMainWindowReplaced: false);
+        False(alternate.IsTrustedProbeSurface, "same-PID alternate root must not authorize continued input");
+
+        var replaced = Snapshot(WindowsRobloxWindowRelation.ExactTarget, target, new IntPtr(0x999), targetMainWindowReplaced: true);
         True(replaced.IsKnownTargetWindowReplacement, "live Roblox process with changed MainWindowHandle must be explicit");
+        False(replaced.IsTrustedProbeSurface, "a replaced Roblox main window must fail closed even if the old HWND is foreground");
+
+        var unknown = Snapshot(WindowsRobloxWindowRelation.Unknown, target, target, targetMainWindowReplaced: false);
+        False(unknown.IsTrustedProbeSurface, "unknown window identity must fail closed for an authorizing probe");
 
         var processGone = replaced with { TargetProcessAlive = false };
         False(processGone.IsKnownTargetWindowReplacement, "dead process is not classified as a live-window replacement");
     }
+
+    private static WindowsRobloxWindowIdentitySnapshot Snapshot(
+        WindowsRobloxWindowRelation relation,
+        IntPtr target,
+        IntPtr currentMain,
+        bool targetMainWindowReplaced)
+        => new(
+            target,
+            currentMain,
+            target,
+            10,
+            11,
+            target,
+            10,
+            target,
+            10,
+            "WINDOWSCLIENT",
+            "WINDOWSCLIENT",
+            "WINDOWSCLIENT",
+            relation,
+            true,
+            targetMainWindowReplaced);
 
     private static void Equal<T>(T expected, T actual, string message) where T : notnull
     {
