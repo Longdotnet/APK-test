@@ -15,10 +15,12 @@ public sealed record AudioTranscriptionQualityOptions(
     double MinimumReadyTimelineCoverage = 0.50,
     double MinimumReadyEventsPerSecond = 0.50,
     double MaximumReadyEventsPerSecond = 16.0,
+    double MaximumReadyHarmonicSuppressionRatio = 0.15,
     double RejectBelowRetentionRatio = 0.10,
     float RejectBelowMeanActivation = 0.15f,
     double RejectBelowTimelineCoverage = 0.10,
-    double RejectAboveEventsPerSecond = 30.0)
+    double RejectAboveEventsPerSecond = 30.0,
+    double RejectAboveHarmonicSuppressionRatio = 0.50)
 {
     internal void Validate()
     {
@@ -26,8 +28,10 @@ public sealed record AudioTranscriptionQualityOptions(
         ValidateRatio(MaximumReadyLossRatio, nameof(MaximumReadyLossRatio));
         ValidateRatio(MaximumReadyLowActivationRatio, nameof(MaximumReadyLowActivationRatio));
         ValidateRatio(MinimumReadyTimelineCoverage, nameof(MinimumReadyTimelineCoverage));
+        ValidateRatio(MaximumReadyHarmonicSuppressionRatio, nameof(MaximumReadyHarmonicSuppressionRatio));
         ValidateRatio(RejectBelowRetentionRatio, nameof(RejectBelowRetentionRatio));
         ValidateRatio(RejectBelowTimelineCoverage, nameof(RejectBelowTimelineCoverage));
+        ValidateRatio(RejectAboveHarmonicSuppressionRatio, nameof(RejectAboveHarmonicSuppressionRatio));
 
         if (!float.IsFinite(MinimumReadyMeanActivation) || MinimumReadyMeanActivation is < 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(MinimumReadyMeanActivation));
@@ -45,6 +49,8 @@ public sealed record AudioTranscriptionQualityOptions(
             throw new ArgumentException("Rejected activation threshold cannot exceed ready activation threshold.");
         if (RejectBelowTimelineCoverage > MinimumReadyTimelineCoverage)
             throw new ArgumentException("Rejected coverage threshold cannot exceed ready coverage threshold.");
+        if (RejectAboveHarmonicSuppressionRatio <= MaximumReadyHarmonicSuppressionRatio)
+            throw new ArgumentException("Rejected suppression threshold must exceed ready suppression threshold.");
     }
 
     private static void ValidateRatio(double value, string name)
@@ -62,6 +68,7 @@ public sealed record AudioTranscriptionQualityAssessment(
     double OctaveFoldRatio,
     double TimelineCoverage,
     double EventsPerSecond,
+    double HarmonicSuppressionRatio,
     float MeanActivation,
     IReadOnlyList<string> Reasons)
 {
@@ -71,6 +78,8 @@ public sealed record AudioTranscriptionQualityAssessment(
 /// <summary>
 /// Deterministic quality/readiness policy for generated Audio-to-Piano arrangements.
 /// It never mutates notes or playback truth: it only classifies already-produced canonical output.
+/// Harmonic suppression pressure is treated as evidence that the source/model output required substantial repair,
+/// not as permission to silently promote a cleaned track to Ready.
 /// </summary>
 public sealed class AudioTranscriptionQualityEvaluator
 {
@@ -78,6 +87,14 @@ public sealed class AudioTranscriptionQualityEvaluator
         TimeSpan sourceDuration,
         RobloxPianoArrangementDiagnostics arrangement,
         TimeSpan arrangedTimeline,
+        AudioTranscriptionQualityOptions? options = null) =>
+        Evaluate(sourceDuration, arrangement, arrangedTimeline, null, options);
+
+    public AudioTranscriptionQualityAssessment Evaluate(
+        TimeSpan sourceDuration,
+        RobloxPianoArrangementDiagnostics arrangement,
+        TimeSpan arrangedTimeline,
+        BasicPitchHarmonicSuppressionDiagnostics? harmonicSuppression,
         AudioTranscriptionQualityOptions? options = null)
     {
         if (sourceDuration <= TimeSpan.Zero)
@@ -89,6 +106,11 @@ public sealed class AudioTranscriptionQualityEvaluator
             throw new ArgumentException("Quality evaluation requires at least one decoded source note.", nameof(arrangement));
         if (arrangement.ArrangedEvents <= 0)
             throw new ArgumentException("Quality evaluation requires at least one arranged event.", nameof(arrangement));
+        if (harmonicSuppression is { InputNotes: <= 0 })
+            throw new ArgumentException("Suppression diagnostics must contain at least one input note.", nameof(harmonicSuppression));
+        if (harmonicSuppression is not null
+            && (harmonicSuppression.RetainedNotes < 0 || harmonicSuppression.RetainedNotes > harmonicSuppression.InputNotes))
+            throw new ArgumentException("Suppression diagnostics contain an invalid retained-note count.", nameof(harmonicSuppression));
 
         options ??= new AudioTranscriptionQualityOptions();
         options.Validate();
@@ -104,6 +126,9 @@ public sealed class AudioTranscriptionQualityEvaluator
         var octaveFoldRatio = Math.Clamp(arrangement.OctaveFoldedNotes / (double)sourceNotes, 0d, 1d);
         var coverage = Math.Clamp(arrangedTimeline.TotalSeconds / sourceDuration.TotalSeconds, 0d, 1d);
         var eventsPerSecond = arrangement.ArrangedEvents / sourceDuration.TotalSeconds;
+        var suppressionRatio = harmonicSuppression is null
+            ? 0d
+            : Math.Clamp(harmonicSuppression.SuppressedNotes / (double)harmonicSuppression.InputNotes, 0d, 1d);
 
         var reasons = new List<string>();
         var rejected = false;
@@ -128,6 +153,11 @@ public sealed class AudioTranscriptionQualityEvaluator
             rejected = true;
             reasons.Add("EVENT_DENSITY_CRITICAL");
         }
+        if (suppressionRatio > options.RejectAboveHarmonicSuppressionRatio)
+        {
+            rejected = true;
+            reasons.Add("HARMONIC_ARTIFACTS_CRITICAL");
+        }
 
         if (!rejected)
         {
@@ -145,6 +175,8 @@ public sealed class AudioTranscriptionQualityEvaluator
                 reasons.Add("EVENT_DENSITY_SPARSE");
             if (eventsPerSecond > options.MaximumReadyEventsPerSecond)
                 reasons.Add("EVENT_DENSITY_HIGH");
+            if (suppressionRatio > options.MaximumReadyHarmonicSuppressionRatio)
+                reasons.Add("HARMONIC_ARTIFACTS_HIGH");
         }
 
         var readiness = rejected
@@ -161,6 +193,7 @@ public sealed class AudioTranscriptionQualityEvaluator
             octaveFoldRatio,
             coverage,
             eventsPerSecond,
+            suppressionRatio,
             arrangement.MeanActivation,
             reasons.AsReadOnly());
     }

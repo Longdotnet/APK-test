@@ -33,9 +33,13 @@ var tests = new (string Name, Action Run)[]
     ("Roblox arranger honors pre-cancellation", RobloxPianoArrangerRegression.PreCancelledArrangementStopsBeforeMutation),
     ("transcription quality marks clean arrangements Ready", AudioTranscriptionQualityRegression.CleanArrangementIsReady),
     ("transcription quality marks lossy arrangements NeedsReview", AudioTranscriptionQualityRegression.LossyArrangementRequiresReview),
+    ("transcription quality marks elevated harmonic suppression NeedsReview", AudioTranscriptionQualityRegression.ElevatedSuppressionRequiresReview),
+    ("transcription quality rejects critical harmonic suppression", AudioTranscriptionQualityRegression.CriticalSuppressionIsRejected),
+    ("transcription quality keeps ready suppression boundary Ready", AudioTranscriptionQualityRegression.SuppressionAtReadyBoundaryRemainsReady),
     ("transcription quality rejects critically incomplete timelines", AudioTranscriptionQualityRegression.CriticalCoverageIsRejected),
     ("transcription quality rejects pathological event density", AudioTranscriptionQualityRegression.ExtremeEventDensityIsRejected),
-    ("transcription quality thresholds fail closed", AudioTranscriptionQualityRegression.InvalidThresholdsFailClosed)
+    ("transcription quality thresholds fail closed", AudioTranscriptionQualityRegression.InvalidThresholdsFailClosed),
+    ("transcription suppression thresholds fail closed", AudioTranscriptionQualityRegression.InvalidSuppressionThresholdsFailClosed)
 };
 
 var failed = 0;
