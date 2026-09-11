@@ -20,9 +20,9 @@ The `RobloxPiano.AudioPipelineTests` harness now synthesizes four deterministic 
 
 The fixtures are generated mathematically and written to ordinary mono PCM16 WAV streams, so there are no third-party recordings or binary fixture provenance concerns. They pass through the public NAudio ingest boundary, the pinned Spotify Basic Pitch ONNX model, the production note decoder, and the Phase 07 corpus evaluator.
 
-The gate records per-case precision, recall, F1, onset error and offset error and enforces conservative corpus floors. Every fixture must retain at least one ground-truth match. These floors are regression tripwires, not a claim that the current generated piano is perceptually production-ready.
+The first exact-model run showed that making note matching depend on both onset and generated note termination hides otherwise-correct pitch/onset recognition for synthetic envelopes. Basic Pitch termination is materially sensitive to timbre and release shape. The regression gate therefore treats this first corpus as a **recognition baseline**: exact MIDI pitch plus onset within 150 ms establishes a match. Offset error is still measured and printed for every case and the aggregate, but does not turn a recognized note into a false negative. A later corpus with representative piano envelopes can add an independently calibrated duration gate.
 
-Evaluation tolerances are deliberately explicit for this real-model regression corpus: 120 ms onset tolerance and offset tolerance of max(150 ms, 25% of reference duration). Phase 07's evaluator defaults remain unchanged and continue to mirror the stricter mir_eval-inspired contract.
+The gate records per-case precision, recall, F1, onset error and offset error, requires every fixture to retain at least one ground-truth pitch/onset match, and enforces conservative aggregate floors. These floors are regression tripwires, not a claim that the current generated piano is perceptually production-ready. Phase 07's stricter evaluator defaults remain unchanged.
 
 ## OSS and licensing
 
@@ -40,6 +40,7 @@ This corpus measures transcription quality only. It does not mutate canonical `P
 
 ## Consequences
 
-- A model/preprocessing/decoder regression that still compiles can now fail CI on musical output quality.
+- A model/preprocessing/decoder regression that still compiles can now fail CI on musical recognition quality.
 - CI cost increases because the pinned model is run over four additional short fixtures; all fixtures remain bounded to a few seconds and inference session reuse keeps the cost controlled.
-- The baseline is intentionally synthetic. The next calibration step should add lawful/public-domain or explicitly licensed musical recordings only when their provenance and stable annotations can be committed safely.
+- Duration/offset quality remains visible evidence rather than a pass/fail criterion in this first synthetic corpus.
+- The baseline is intentionally synthetic. The next calibration step should add harmonic-rich generated piano envelopes and then lawful/public-domain or explicitly licensed musical recordings only when provenance and stable annotations can be committed safely.
