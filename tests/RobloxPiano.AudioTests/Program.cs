@@ -10,6 +10,8 @@ var tests = new (string Name, Action Run)[]
     ("pre-cancelled ingest exits deterministically", CancellationIsHonored),
     ("Basic Pitch chunk plan matches Spotify overlap contract", BasicPitchChunkPlanMatchesReference),
     ("Basic Pitch ONNX inference returns bounded canonical raw tensors", BasicPitchOnnxInference),
+    ("Audio-to-Piano progress is monotonic and cancellation-safe", AudioToPianoProgressRegression.ProgressIsMonotonicAndCancellationNeverCompletes),
+    ("Audio-to-Piano progress values fail closed", AudioToPianoProgressRegression.ProgressContractFailsClosedOnInvalidValues),
     ("Basic Pitch onset and energy decoding matches reference semantics", BasicPitchDecoderRegression.OnsetEnergyParityFixture),
     ("Basic Pitch inferred onset recovers sharp attacks", BasicPitchDecoderRegression.InferredOnsetRecoversSharpAttack),
     ("Basic Pitch Melodia recovery extracts sustained energy", BasicPitchDecoderRegression.MelodiaRecoversSustainedEnergyWithoutOnset),
