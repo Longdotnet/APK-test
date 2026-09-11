@@ -90,7 +90,7 @@ internal static class InputMatrixAssessmentRegression
         var missingIdentity = RobloxInputMatrixAssessmentPolicy.Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
-            Cell("KEYBD_EVENT_SCAN", "ROBLOX_REACTED", true, session: null)
+            new RobloxInputMatrixCellEvidence("KEYBD_EVENT_SCAN", "missing", "ROBLOX_REACTED", true, null)
         ]);
         Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, missingIdentity.Verdict, "missing session identity must fail closed");
         Equal("MATRIX_SESSION_IDENTITY_UNAVAILABLE", missingIdentity.FailureBoundary, "missing session boundary");
@@ -114,7 +114,7 @@ internal static class InputMatrixAssessmentRegression
         string verdict,
         bool? reacted,
         string probe = "probe",
-        RobloxInputMatrixSessionIdentity? session = default)
+        RobloxInputMatrixSessionIdentity? session = null)
         => new(cell, probe, verdict, reacted, session ?? SessionA);
 
     private static void Equal<T>(T expected, T actual, string name)
