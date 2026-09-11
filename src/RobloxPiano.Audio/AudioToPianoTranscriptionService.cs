@@ -3,7 +3,8 @@ namespace RobloxPiano.Audio;
 public sealed record AudioToPianoTranscriptionOptions(
     AudioIngestOptions? Ingest = null,
     BasicPitchNoteDecoderOptions? Decoder = null,
-    RobloxPianoArrangementOptions? Arrangement = null);
+    RobloxPianoArrangementOptions? Arrangement = null,
+    AudioTranscriptionQualityOptions? Quality = null);
 
 public sealed record AudioToPianoTranscriptionDiagnostics(
     TimeSpan SourceDuration,
@@ -11,13 +12,15 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     int InferenceFrames,
     int DecodedNotes,
     RobloxPianoArrangementDiagnostics Arrangement,
+    AudioTranscriptionQualityAssessment Quality,
     TimeSpan IngestElapsed,
     TimeSpan InferenceElapsed,
     TimeSpan DecodeElapsed,
-    TimeSpan ArrangeElapsed)
+    TimeSpan ArrangeElapsed,
+    TimeSpan QualityElapsed)
 {
-    public bool RequiresReview => Arrangement.RequiresReview || DecodedNotes == 0;
-    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + ArrangeElapsed;
+    public bool RequiresReview => Quality.RequiresReview;
+    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + ArrangeElapsed + QualityElapsed;
 }
 
 public sealed record AudioToPianoTranscriptionResult(
@@ -27,7 +30,7 @@ public sealed record AudioToPianoTranscriptionResult(
 /// <summary>
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
 /// The service composes existing deterministic ingest, Basic Pitch inference, note decoding and arranger layers;
-/// it does not schedule input or mutate playback state.
+/// it does not schedule input or mutate playback state. Quality classification is advisory/fail-visible only.
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
@@ -35,6 +38,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
     private readonly AudioIngestService ingest = new();
     private readonly BasicPitchNoteDecoder decoder = new();
     private readonly RobloxPianoArranger arranger = new();
+    private readonly AudioTranscriptionQualityEvaluator qualityEvaluator = new();
     private bool disposed;
 
     public AudioToPianoTranscriptionService(
@@ -118,16 +122,27 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         var arrangement = arranger.Arrange(title, notes, options.Arrangement, cancellationToken);
         var arrangeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
+        cancellationToken.ThrowIfCancellationRequested();
+        started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var quality = qualityEvaluator.Evaluate(
+            audio.Duration,
+            arrangement.Diagnostics,
+            arrangement.Track.TimelineDuration,
+            options.Quality);
+        var qualityElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+
         var diagnostics = new AudioToPianoTranscriptionDiagnostics(
             audio.Duration,
             audio.Samples.Length,
             raw.Notes.Frames,
             notes.Count,
             arrangement.Diagnostics,
+            quality,
             ingestElapsed,
             inferenceElapsed,
             decodeElapsed,
-            arrangeElapsed);
+            arrangeElapsed,
+            qualityElapsed);
         return new AudioToPianoTranscriptionResult(arrangement, diagnostics);
     }
 
