@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.17
+version: 0.40.18
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -12,42 +12,37 @@ SHA256: `{{SHA256}}`
 ## Client flow
 
 1. Download `RobloxPiano.exe` and double-click it; the **Sheet Library** remains the normal client starting point.
-2. Open Roblox, then run `Test Roblox Input` before trusting playback for that Roblox process.
-3. Start with **Run Real-Key Baseline**. Roblox Piano focuses Roblox, injects nothing, then waits up to 10 seconds for you to physically press and release W once.
-4. Confirm whether the same Roblox surface visibly moved or played the W-bound note.
-5. Without changing the Roblox experience/session, run **Run PowerShell-Oracle Check**. If needed, continue with **keybd_event Scan Diagnostic**, **SendInput VK Diagnostic**, and **SendInput Scan Diagnostic**.
-6. Preserve the correlated `INPUT_MATRIX` / `INPUT_FORENSIC` lines or export a **Support Bundle** for field review.
+2. Existing MIDI/MusicXML/VPS/TXT library and playback behavior remains unchanged.
+3. The executable now carries the pinned Spotify Basic Pitch model plus the native ONNX Runtime dependencies needed by the upcoming local-audio **Create Piano Version** flow. No Python, Node, .NET SDK, Visual Studio, ML runtime or manual model download is required.
+4. Open Roblox and run `Test Roblox Input` before trusting playback for that Roblox process. Runtime Input P0 remains an independent field gate.
+5. Preserve `INPUT_MATRIX` / `INPUT_FORENSIC` lines or export a **Support Bundle** when diagnosing Roblox input.
 
-## Phase 70 P0 real-key versus synthetic field baseline
+## Audio-to-Piano production bundle gate
 
-- The client now has a bounded real-W baseline that injects no input. It observes only the W key while Roblox owns foreground and removes the keyboard hook after release, cancellation or timeout.
-- Windows `LLKHF_INJECTED` is used to reject OS-marked injected W events. An unmarked event is treated only as a physical-baseline candidate; it is not claimed as cryptographic proof of hardware provenance.
-- The former **Physical-Key Diagnostic** was synthetic `keybd_event` with a non-zero scan code. It is now named **keybd_event Scan Diagnostic** so the UI no longer implies it captures a real physical key.
-- One stable matrix ID correlates the human Roblox observation for `REAL_KEY`, `POWERSHELL_ORACLE`, `KEYBD_EVENT_SCAN`, `SENDINPUT_VK`, and `SENDINPUT_SCAN`, while each cell retains its independent forensic probe ID.
-- If real W visibly reacts on the same Roblox surface but a synthetic probe has clean Windows delivery and no Roblox reaction, the field evidence now isolates the unresolved boundary toward synthetic delivery / Roblox game-input consumption rather than basic focus or a non-responsive game surface.
-- The baseline cannot authorize Play, change scheduler truth or produce `FIELD_CONFIRMED_PASS`. Production still requires an actual Roblox reaction from the executable's Test Roblox Input / Play path.
-- No injection backend, normal scheduler/playback mapping, Legacy baseline, held-key/pedal ownership, Audio-to-Piano subsystem or platform-security boundary is changed by this phase.
+- The production App now references `RobloxPiano.Audio`, so the same executable that clients receive contains the NAudio decode boundary, Microsoft ONNX Runtime and deterministic Audio-to-Piano pipeline code.
+- CI and release fetch the Spotify Basic Pitch `nmp.onnx` model from pinned upstream commit `fa5997af0a8210982619003269994a1be25eddf3` and require Git blob `c30e5f9438e798604b7177aa26be1fe64482f767` with exact length 230444 bytes before compilation.
+- The model is embedded into `RobloxPiano.Audio`; runtime extraction re-validates the same pinned identity before use.
+- Published single-EXE validation runs `--audio-model-smoke`, materializes the embedded model and constructs a real `AudioToPianoTranscriptionService`, which initializes a Microsoft ONNX Runtime `InferenceSession`. This catches missing model/native-runtime packaging on the actual release candidate rather than only in source-level Audio tests.
+- Model preparation is centralized in one CI script used by `audio-oss-gate`, `production-gate` and `production-release`, avoiding provenance drift between test and release pipelines.
+- This phase intentionally does not expose the local-audio creation UI yet. It establishes the clean-machine production prerequisite before allowing a normal client to click **Create Piano Version**.
 
-## Field interpretation
+## OSS and attribution
 
-- `REAL_KEY_ROBLOX_REACTED` means a complete non-injected-candidate W down/up pair was observed while Roblox remained foreground and the client confirmed visible Roblox movement or the W-bound note.
-- `REAL_KEY_ROBLOX_NO_REACTION` means the selected Roblox surface did not provide a usable physical baseline; synthetic-vs-real conclusions should not be drawn from that matrix.
-- `INPUT_MATRIX matrix=...` ties the real baseline and supported synthetic cells to one client field campaign so support evidence is not accidentally compared across unrelated sessions.
-- Existing session/desktop/elevation/layout/window/GUI-focus/Raw Input context remains relevant. Any known blocker still invalidates a synthetic attempt for Roblox-consumption conclusions.
-- Even perfect Windows-side evidence does not satisfy the P0 gate. Only visible Roblox reaction from the production executable's input path is `FIELD PASS`.
+- Spotify Basic Pitch remains the pinned Automatic Music Transcription model/semantic reference under Apache-2.0, including its upstream NOTICE attribution.
+- Microsoft ONNX Runtime remains the native .NET inference engine; NAudio remains the Windows audio decode/normalization boundary, both under their upstream redistribution terms.
+- `RobloxPiano.exe --third-party-notices` displays the embedded Basic Pitch license/NOTICE plus ONNX Runtime and NAudio license attribution without requiring a sidecar file. The published Audio smoke validates that this resource survived the single-file bundle.
+- No Python/PyTorch/Demucs/ffmpeg dependency is introduced.
 
 ## Production capability and reliability
 
 - Self-contained Windows x64 single EXE; no manual Python, Node, .NET SDK, Visual Studio or PowerShell-module dependency.
 - **Legacy** and **Legacy x2** remain protected regression/perceptual baselines.
-- Runtime focus/input authorization, emergency release-all and held-key/pedal ownership remain fail-closed.
-- AI/network are not required for input truth.
+- Runtime focus/input authorization, emergency release-all and held-key/pedal ownership remain fail-closed and are not modified by this Audio phase.
+- AI/network are not required for transcription truth or input truth.
 
 ## Current boundaries
 
-- CI cannot observe a live Roblox client consuming synthetic input. Visible Roblox reaction remains the acceptance gate.
-- A Windows API success or `GetAsyncKeyState` DOWN observation is not by itself proof that Roblox consumed the key.
-- The low-level hook can reject Windows-marked injected events but cannot provide cryptographic hardware attestation.
-- Any sampled focus loss, window-identity drift, privilege mismatch, input-desktop mismatch, known cross-session mismatch or stale/replaced target window invalidates that attempt for Roblox-consumption conclusions.
-- GUI-thread and Raw Input inventory evidence narrow the consumption boundary but do not expose another process's internal registration or prove Roblox's game engine accepted the event.
+- The Audio pipeline is now packaged and runtime-smoke-tested in the production executable, but client-facing local-audio selection/progress/review/add-to-library UX is still the next phase.
+- The packaged model and native runtime increase distribution size and first-use model materialization work; CI validates the exact release candidate rather than assuming source-level tests imply packaging correctness.
+- CI cannot observe a live Roblox client consuming synthetic input. Visible Roblox reaction remains the Runtime Input P0 acceptance gate, and this release does not claim end-to-end Play-in-Roblox success from Audio-to-Piano.
 - The executable remains unsigned, so Windows SmartScreen may show a reputation warning.
