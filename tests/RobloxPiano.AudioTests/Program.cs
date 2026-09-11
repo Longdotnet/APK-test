@@ -21,7 +21,12 @@ var tests = new (string Name, Action Run)[]
     ("Roblox arranger merges octave-folded duplicate pitches", RobloxPianoArrangerRegression.FoldedDuplicatePitchIsMergedDeterministically),
     ("Roblox arranger prevents overlapping ownership of one key", RobloxPianoArrangerRegression.SameKeyOverlapIsTrimmedBeforeCanonicalPlayback),
     ("Roblox arranger surfaces low-confidence review diagnostics", RobloxPianoArrangerRegression.ShortAndLowActivationNotesProduceReviewDiagnostics),
-    ("Roblox arranger honors pre-cancellation", RobloxPianoArrangerRegression.PreCancelledArrangementStopsBeforeMutation)
+    ("Roblox arranger honors pre-cancellation", RobloxPianoArrangerRegression.PreCancelledArrangementStopsBeforeMutation),
+    ("transcription quality marks clean arrangements Ready", AudioTranscriptionQualityRegression.CleanArrangementIsReady),
+    ("transcription quality marks lossy arrangements NeedsReview", AudioTranscriptionQualityRegression.LossyArrangementRequiresReview),
+    ("transcription quality rejects critically incomplete timelines", AudioTranscriptionQualityRegression.CriticalCoverageIsRejected),
+    ("transcription quality rejects pathological event density", AudioTranscriptionQualityRegression.ExtremeEventDensityIsRejected),
+    ("transcription quality thresholds fail closed", AudioTranscriptionQualityRegression.InvalidThresholdsFailClosed)
 };
 
 var failed = 0;
