@@ -130,12 +130,24 @@ internal sealed class RobloxInputCheckDialog : Form
         }
         catch (OperationCanceledException)
         {
-            ApplyAssessment(new RobloxInputCheckAssessment(RobloxInputCheckVerdict.FocusUnstable, "The input check was cancelled safely.", "No keys remain held. Retry when Roblox is ready.", false));
+            var assessment = new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.FocusUnstable,
+                "The input check was cancelled safely.",
+                "No keys remain held. Retry when Roblox is ready.",
+                false);
+            RobloxInputHealthSession.Record(target, assessment);
+            ApplyAssessment(assessment);
         }
         catch (Exception exception) when (IsExpectedInputException(exception))
         {
             ClientDiagnostics.Log($"GUI input check failed: {exception}");
-            ApplyAssessment(new RobloxInputCheckAssessment(RobloxInputCheckVerdict.WindowsKeyStateNotObserved, $"Input check failed: {exception.Message}", "Open Diagnostics, resolve the Windows/input blocker, then retry.", false));
+            var assessment = new RobloxInputCheckAssessment(
+                RobloxInputCheckVerdict.WindowsKeyStateNotObserved,
+                $"Input check failed: {exception.Message}",
+                "Open Diagnostics, resolve the Windows/input blocker, then retry.",
+                false);
+            RobloxInputHealthSession.Record(target, assessment);
+            ApplyAssessment(assessment);
         }
         finally
         {
