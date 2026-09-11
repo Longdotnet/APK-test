@@ -15,6 +15,7 @@ internal static class RobloxInputForensics
         var mapping = WindowsKeyboardInputSink.ResolveStrokeForDiagnostics(character);
         var layoutParity = appKeyboardLayout == foregroundKeyboardLayout ? "SAME" : "DIFFERENT";
         var privilege = WindowsProcessPrivilege.Capture(target.ProcessId);
+        var desktop = WindowsInputDesktop.Capture();
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
@@ -22,6 +23,8 @@ internal static class RobloxInputForensics
             $"mappingLayout=0x{mapping.KeyboardLayout.ToInt64():X} mappingThread={mapping.KeyboardThreadId} " +
             $"appKeyboardLayout=0x{appKeyboardLayout.ToInt64():X} foregroundKeyboardLayout=0x{foregroundKeyboardLayout.ToInt64():X} layoutParity={layoutParity} " +
             $"appElevation={privilege.AppElevation} targetElevation={privilege.TargetElevation} elevationParity={privilege.Parity} " +
+            $"appDesktop='{desktop.AppDesktopName ?? "UNKNOWN"}' inputDesktop='{desktop.InputDesktopName ?? "UNKNOWN"}' desktopParity={desktop.Parity} " +
+            $"desktopAppError={desktop.AppDesktopError} desktopInputError={desktop.InputDesktopError} " +
             $"managedThread={Environment.CurrentManagedThreadId} nativeThread={GetCurrentThreadId()} " +
             $"appPid={Environment.ProcessId} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
@@ -33,6 +36,27 @@ internal static class RobloxInputForensics
                 $"INPUT_FORENSIC probe={probeId} stage=PRIVILEGE_BLOCKER verdict=TARGET_HIGHER_INTEGRITY " +
                 "guidance='Roblox is elevated while RobloxPiano is not. Run both at the same privilege level before judging native input acceptance.'.");
         }
+
+        if (desktop.IsKnownMismatch)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=DESKTOP_BLOCKER verdict=INPUT_DESKTOP_MISMATCH " +
+                $"appDesktop='{desktop.AppDesktopName}' inputDesktop='{desktop.InputDesktopName}' " +
+                "guidance='Return Roblox and RobloxPiano to the same normal interactive Windows desktop before judging native input acceptance.'.");
+        }
+    }
+
+    internal static void LogDesktopSnapshot(
+        string probeId,
+        string stage,
+        WindowsInputDesktopSnapshot snapshot,
+        RobloxWindowTarget target)
+    {
+        ClientDiagnostics.Log(
+            $"INPUT_FORENSIC probe={probeId} stage={stage} " +
+            $"desktopParity={snapshot.Parity} appDesktop='{snapshot.AppDesktopName ?? "UNKNOWN"}' inputDesktop='{snapshot.InputDesktopName ?? "UNKNOWN"}' " +
+            $"desktopThread={snapshot.CurrentThreadId} appDesktopError={snapshot.AppDesktopError} inputDesktopError={snapshot.InputDesktopError} " +
+            $"targetForeground={target.IsForeground} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X}.");
     }
 
     internal static void LogKeyState(
