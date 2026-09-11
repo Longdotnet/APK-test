@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using RobloxPiano.Core;
 
 namespace RobloxPiano.App;
@@ -27,6 +28,14 @@ internal sealed record PlaybackReferenceAudioExperimentEvidence(
 /// </summary>
 internal static class PlaybackReferenceAudioExperimentEvidenceStore
 {
+    internal const string ExportSuffix = ".legacy-ab-reference.json";
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+
     internal static PlaybackReferenceAudioExperimentEvidence Create(
         PlaybackBaselineExperimentManifest experiment,
         ReferenceAudioAnalysis reference,
@@ -67,6 +76,65 @@ internal static class PlaybackReferenceAudioExperimentEvidenceStore
             string.Empty);
 
         return unsigned with { EvidenceSha256 = ComputeEvidenceSha256(unsigned) };
+    }
+
+    internal static void WriteVerifiedAtomic(
+        string path,
+        PlaybackReferenceAudioExperimentEvidence evidence)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(evidence);
+
+        if (!Verify(evidence, out var error))
+        {
+            throw new InvalidDataException($"Reference-audio experiment evidence failed verification before export. {error}");
+        }
+
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(
+                temporaryPath,
+                JsonSerializer.Serialize(evidence, JsonOptions),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            var readBack = ReadAndVerify(temporaryPath);
+            if (!string.Equals(readBack.EvidenceSha256, evidence.EvidenceSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Reference-audio experiment evidence changed during atomic export verification.");
+            }
+
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    internal static PlaybackReferenceAudioExperimentEvidence ReadAndVerify(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var evidence = JsonSerializer.Deserialize<PlaybackReferenceAudioExperimentEvidence>(
+            File.ReadAllText(path),
+            JsonOptions)
+            ?? throw new InvalidDataException("Reference-audio experiment evidence is empty.");
+
+        if (!Verify(evidence, out var error))
+        {
+            throw new InvalidDataException($"Reference-audio experiment evidence is invalid. {error}");
+        }
+
+        return evidence;
     }
 
     internal static bool Verify(PlaybackReferenceAudioExperimentEvidence evidence, out string? error)
