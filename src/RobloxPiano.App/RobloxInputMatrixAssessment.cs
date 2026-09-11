@@ -4,6 +4,7 @@ internal enum RobloxInputMatrixVerdict
 {
     InsufficientEvidence,
     RealKeyBaselineInvalid,
+    SessionContinuityInvalid,
     RealKeyWorksSyntheticFails,
     SyntheticVariantWorks
 }
@@ -12,15 +13,42 @@ internal sealed record RobloxInputMatrixCellEvidence(
     string Cell,
     string ProbeId,
     string Verdict,
-    bool? RobloxReaction)
+    bool? RobloxReaction,
+    RobloxInputMatrixSessionIdentity? SessionIdentity)
 {
+    public RobloxInputMatrixCellEvidence(
+        string cell,
+        string probeId,
+        string verdict,
+        bool? robloxReaction)
+        : this(
+            cell,
+            probeId,
+            verdict,
+            robloxReaction,
+            CaptureSessionIdentity(cell, probeId))
+    {
+    }
+
     public bool IsRealKey => Cell.Equals("REAL_KEY", StringComparison.Ordinal);
     public bool IsSynthetic => !IsRealKey;
-    public bool WindowsBoundaryConfirmed => IsRealKey
-        ? Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION"
-        : Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION";
+    public bool WindowsBoundaryConfirmed => Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION";
     public bool Reacted => RobloxReaction == true && Verdict == "ROBLOX_REACTED";
     public bool ExplicitNoReaction => RobloxReaction == false && Verdict == "ROBLOX_NO_REACTION";
+
+    private static RobloxInputMatrixSessionIdentity? CaptureSessionIdentity(string cell, string probeId)
+    {
+        if (!RobloxInputMatrixSessionIdentity.TryCapture(out var identity))
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_MATRIX_SESSION probe={probeId} cell={cell} identity=UNAVAILABLE continuityTrusted=false authorizesPlayback=false.");
+            return null;
+        }
+
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_SESSION probe={probeId} cell={cell} identity={identity.ToLogToken()} continuityTrusted=true authorizesPlayback=false.");
+        return identity;
+    }
 }
 
 internal sealed record RobloxInputMatrixAssessment(
@@ -64,6 +92,19 @@ internal static class RobloxInputMatrixAssessmentPolicy
             .Where(cell => !cells.TryGetValue(cell, out var item) || !item.WindowsBoundaryConfirmed)
             .ToArray();
 
+        var continuity = AssessSessionContinuity(cells.Values);
+        if (continuity is not null)
+        {
+            return new RobloxInputMatrixAssessment(
+                RobloxInputMatrixVerdict.SessionContinuityInvalid,
+                continuity.Value.Boundary,
+                continuity.Value.Summary,
+                continuity.Value.NextAction,
+                Array.Empty<string>(),
+                failures,
+                pending);
+        }
+
         if (winners.Length > 0)
         {
             return new RobloxInputMatrixAssessment(
@@ -101,7 +142,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
         if (pending.Length > 0)
         {
             return Incomplete(
-                "Real W visibly reached Roblox. Complete every synthetic cell with confirmed Windows delivery on the same Roblox surface/session.",
+                "Real W visibly reached Roblox. Complete every synthetic cell with confirmed Windows delivery on the same Roblox process lifetime and selected window.",
                 failures,
                 pending);
         }
@@ -111,7 +152,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
             return new RobloxInputMatrixAssessment(
                 RobloxInputMatrixVerdict.RealKeyWorksSyntheticFails,
                 "POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION",
-                "Real W visibly reached Roblox while every synthetic variant reached the Windows boundary but produced no visible Roblox reaction.",
+                "Real W visibly reached Roblox while every synthetic variant reached the Windows boundary but produced no visible Roblox reaction in one trusted Roblox process/window session.",
                 "Treat focus/basic target selection as a weak suspect. Preserve this matrix and investigate Roblox/device-origin consumption semantics before adding another synthetic backend.",
                 Array.Empty<string>(),
                 failures,
@@ -122,6 +163,38 @@ internal static class RobloxInputMatrixAssessmentPolicy
             "The matrix contains evidence that cannot yet produce a deterministic cross-cell verdict.",
             failures,
             pending);
+    }
+
+    private static (string Boundary, string Summary, string NextAction)? AssessSessionContinuity(
+        IEnumerable<RobloxInputMatrixCellEvidence> evidence)
+    {
+        var items = evidence.ToArray();
+        if (items.Length == 0)
+        {
+            return null;
+        }
+
+        if (items.Any(item => item.SessionIdentity is null))
+        {
+            return (
+                "MATRIX_SESSION_IDENTITY_UNAVAILABLE",
+                "At least one matrix cell could not establish a stable Roblox PID/start-time/window identity, so cross-cell evidence is not comparable.",
+                "Keep Roblox open, close and reopen Roblox Input Check, then rerun the matrix from Real-Key Baseline. Do not combine this evidence with a previous session.");
+        }
+
+        var sessions = items
+            .Select(item => item.SessionIdentity!.Value)
+            .Distinct()
+            .ToArray();
+        if (sessions.Length > 1)
+        {
+            return (
+                "ROBLOX_SESSION_CHANGED",
+                "Matrix cells belong to different Roblox process lifetimes or selected HWNDs. A cross-session result cannot establish an input boundary.",
+                "Close and reopen Roblox Input Check after Roblox stabilizes, then rerun every cell on the same Roblox process/window. Evidence from the previous lifetime stays diagnostic-only.");
+        }
+
+        return null;
     }
 
     private static RobloxInputMatrixAssessment Incomplete(
