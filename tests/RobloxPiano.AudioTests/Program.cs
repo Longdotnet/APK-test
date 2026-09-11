@@ -10,6 +10,8 @@ var tests = new (string Name, Action Run)[]
     ("pre-cancelled ingest exits deterministically", CancellationIsHonored),
     ("Basic Pitch chunk plan matches Spotify overlap contract", BasicPitchChunkPlanMatchesReference),
     ("Basic Pitch ONNX inference returns bounded canonical raw tensors", BasicPitchOnnxInference),
+    ("Audio-to-Piano progress is monotonic and cancellation-safe", AudioToPianoProgressRegression.ProgressIsMonotonicAndCancellationNeverCompletes),
+    ("Audio-to-Piano progress values fail closed", AudioToPianoProgressRegression.ProgressContractFailsClosedOnInvalidValues),
     ("Basic Pitch onset and energy decoding matches reference semantics", BasicPitchDecoderRegression.OnsetEnergyParityFixture),
     ("Basic Pitch inferred onset recovers sharp attacks", BasicPitchDecoderRegression.InferredOnsetRecoversSharpAttack),
     ("Basic Pitch Melodia recovery extracts sustained energy", BasicPitchDecoderRegression.MelodiaRecoversSustainedEnergyWithoutOnset),
@@ -105,6 +107,7 @@ static void ResamplesToBasicPitchRate()
 
     Equal(22_050, audio.SampleRate);
     Equal(1, audio.Channels);
+    Equal(frames.Length, audio.Samples.Length);
     True(Math.Abs(audio.Samples.Length - 5_513) <= 4, $"Unexpected resampled sample count {audio.Samples.Length}.");
     True(Math.Abs(audio.Duration.TotalSeconds - 0.25) < 0.002, $"Unexpected duration {audio.Duration}.");
     True(audio.Samples.All(float.IsFinite), "Resampled output must contain only finite samples.");
