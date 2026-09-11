@@ -62,20 +62,18 @@ internal static class WindowsProcessPrivilege
         try
         {
             using var process = Process.GetProcessById(processId);
-            if (!NativeMethods.OpenProcessToken(process.Handle, TokenQuery, out var tokenHandle))
+            if (!OpenProcessToken(process.Handle, TokenQuery, out var tokenHandle))
             {
                 return ProcessElevationState.Unknown;
             }
 
             try
             {
-                var elevation = new NativeMethods.TokenElevation();
-                var size = Marshal.SizeOf<NativeMethods.TokenElevation>();
+                var size = Marshal.SizeOf<TokenElevation>();
                 var buffer = Marshal.AllocHGlobal(size);
                 try
                 {
-                    Marshal.StructureToPtr(elevation, buffer, false);
-                    if (!NativeMethods.GetTokenInformation(
+                    if (!GetTokenInformation(
                             tokenHandle,
                             TokenElevationInformationClass,
                             buffer,
@@ -85,7 +83,7 @@ internal static class WindowsProcessPrivilege
                         return ProcessElevationState.Unknown;
                     }
 
-                    elevation = Marshal.PtrToStructure<NativeMethods.TokenElevation>(buffer);
+                    var elevation = Marshal.PtrToStructure<TokenElevation>(buffer);
                     return elevation.TokenIsElevated != 0
                         ? ProcessElevationState.Elevated
                         : ProcessElevationState.Standard;
@@ -97,7 +95,7 @@ internal static class WindowsProcessPrivilege
             }
             finally
             {
-                NativeMethods.CloseHandle(tokenHandle);
+                CloseHandle(tokenHandle);
             }
         }
         catch (ArgumentException)
@@ -113,4 +111,27 @@ internal static class WindowsProcessPrivilege
             return ProcessElevationState.Unknown;
         }
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct TokenElevation
+    {
+        internal readonly uint TokenIsElevated;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle,
+        int tokenInformationClass,
+        IntPtr tokenInformation,
+        int tokenInformationLength,
+        out int returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 }
