@@ -7,7 +7,9 @@ var tests = new (string Name, Action Run)[]
     ("44.1 kHz PCM is resampled to Basic Pitch rate", ResamplesToBasicPitchRate),
     ("duration bound fails closed instead of truncating", DurationBoundFailsClosed),
     ("empty decoded audio fails closed", EmptyAudioFailsClosed),
-    ("pre-cancelled ingest exits deterministically", CancellationIsHonored)
+    ("pre-cancelled ingest exits deterministically", CancellationIsHonored),
+    ("Basic Pitch chunk plan matches Spotify overlap contract", BasicPitchChunkPlanMatchesReference),
+    ("Basic Pitch ONNX inference returns bounded canonical raw tensors", BasicPitchOnnxInference)
 };
 
 var failed = 0;
@@ -27,11 +29,11 @@ foreach (var test in tests)
 
 if (failed != 0)
 {
-    Console.Error.WriteLine($"Audio ingest regression harness failed: {failed}/{tests.Length} tests failed.");
+    Console.Error.WriteLine($"Audio OSS regression harness failed: {failed}/{tests.Length} tests failed.");
     return 1;
 }
 
-Console.WriteLine($"Audio ingest regression harness passed: {tests.Length}/{tests.Length}.");
+Console.WriteLine($"Audio OSS regression harness passed: {tests.Length}/{tests.Length}.");
 return 0;
 
 static void StereoDownmix()
@@ -100,6 +102,48 @@ static void CancellationIsHonored()
     cts.Cancel();
 
     Throws<OperationCanceledException>(() => new AudioIngestService().DecodeStream(stream, cancellationToken: cts.Token));
+}
+
+static void BasicPitchChunkPlanMatchesReference()
+{
+    var oneSecond = BasicPitchChunkPlan.Create(BasicPitchInferenceService.RequiredSampleRate);
+    Equal(43_844, oneSecond.ChunkSamples);
+    Equal(7_680, oneSecond.OverlapSamples);
+    Equal(36_164, oneSecond.HopSamples);
+    Equal(3_840, oneSecond.PrefixPaddingSamples);
+    Equal(1, oneSecond.ChunkCount);
+
+    var longAudio = BasicPitchChunkPlan.Create(BasicPitchInferenceService.RequiredSampleRate * 60);
+    True(longAudio.ChunkCount > 1, "One minute of audio must be chunked.");
+    True(longAudio.HopSamples == longAudio.ChunkSamples - longAudio.OverlapSamples, "Chunk hop must preserve the Spotify overlap contract.");
+}
+
+static void BasicPitchOnnxInference()
+{
+    var modelPath = Environment.GetEnvironmentVariable("BASIC_PITCH_MODEL_PATH");
+    if (string.IsNullOrWhiteSpace(modelPath))
+        throw new InvalidOperationException("BASIC_PITCH_MODEL_PATH is required for the real-model regression test.");
+
+    var samples = new float[BasicPitchInferenceService.RequiredSampleRate / 4];
+    for (var i = 0; i < samples.Length; i++)
+        samples[i] = (float)(Math.Sin(2 * Math.PI * 440 * i / BasicPitchInferenceService.RequiredSampleRate) * 0.15);
+
+    using var inference = new BasicPitchInferenceService(modelPath, new BasicPitchInferenceOptions(MaxChunksPerBatch: 2));
+    var result = inference.Infer(new NormalizedAudio(samples, BasicPitchInferenceService.RequiredSampleRate));
+
+    var expectedFrames = (int)Math.Floor(samples.Length * (BasicPitchInferenceService.AnnotationFramesPerSecond / (double)BasicPitchInferenceService.RequiredSampleRate));
+    Equal(expectedFrames, result.Notes.Frames);
+    Equal(expectedFrames, result.Onsets.Frames);
+    Equal(expectedFrames, result.Contours.Frames);
+    Equal(BasicPitchInferenceService.NoteBins, result.Notes.Bins);
+    Equal(BasicPitchInferenceService.NoteBins, result.Onsets.Bins);
+    Equal(BasicPitchInferenceService.ContourBins, result.Contours.Bins);
+    True(result.Notes.Values.All(float.IsFinite), "Note activations must be finite.");
+    True(result.Onsets.Values.All(float.IsFinite), "Onset activations must be finite.");
+    True(result.Contours.Values.All(float.IsFinite), "Contour activations must be finite.");
+    True(result.Notes.Values.All(value => value is >= 0f and <= 1f), "Note activations must be probabilities.");
+    True(result.Onsets.Values.All(value => value is >= 0f and <= 1f), "Onset activations must be probabilities.");
+    True(result.Contours.Values.All(value => value is >= 0f and <= 1f), "Contour activations must be probabilities.");
 }
 
 static byte[] BuildPcm16Wave(int sampleRate, IReadOnlyList<(short Left, short Right)> frames)
