@@ -46,8 +46,8 @@ public static class PerformanceTrackMidiExporter
                 if (!keyToMidi.TryGetValue(key, out var midiNote))
                     throw new InvalidDataException($"Generated track contains Roblox key '{key}' outside the classic 61-key profile.");
 
-                edges.Add(new MidiEdge(startTick, isNoteOn: true, midiNote));
-                edges.Add(new MidiEdge(endTick, isNoteOn: false, midiNote));
+                edges.Add(new MidiEdge(startTick, true, midiNote));
+                edges.Add(new MidiEdge(endTick, false, midiNote));
             }
         }
 
