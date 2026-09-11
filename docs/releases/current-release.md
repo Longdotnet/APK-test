@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.9
+version: 0.40.10
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,22 +15,21 @@ SHA256: `{{SHA256}}`
 2. Open Roblox and run `Test Roblox Input` before trusting song playback for the current Roblox process.
 3. Watch Roblox during the W probe. The normal check still replays the exact known-good PowerShell character-mapping contract (`VkKeyScanW` + `keybd_event`, scan code `0`).
 4. A visible movement or W-bound piano note is still the field acceptance oracle; focus or Windows API success alone is not proof.
-5. The W hold now samples the exact Roblox foreground continuously at a bounded 25 ms cadence. If focus is sampled lost at any point, W is released immediately and that probe cannot authorize playback even if Roblox regains focus before the dialog returns.
+5. All three explicit W probes now sample the exact Roblox foreground continuously at a bounded 25 ms cadence. If focus is sampled lost at any point, the held W is released immediately and that attempt cannot be treated as native-delivery evidence even if Roblox regains focus before the dialog returns.
 6. If the PowerShell-oracle W reaches Windows but Roblox still does not react, run `Physical-Key Diagnostic`. It keeps `keybd_event` but adds the real non-zero scan code.
 7. If the physical-key diagnostic also reaches Windows but Roblox still does not react, run `SendInput Diagnostic`. It keeps the same physical scan-code meaning but emits through the supported Windows `SendInput` API.
 8. Neither diagnostic can authorize normal playback or silently change the production backend. Preserve the oracle, `PHYSICAL_*` and `SENDINPUT_*` probe IDs and open Diagnostics for comparison.
 9. Support Bundle export remains available for deeper investigation.
 
-## Phase 62 P0 field-probe focus continuity
+## Phase 63 P0 diagnostic focus continuity
 
-- Closes a forensic and safety gap in the authorizing PowerShell-oracle probe: foreground was previously checked before injection and at the end of the 650 ms hold, leaving a blind interval where a transient overlay/focus switch could be missed.
-- The held-key interval is now sampled at 25 ms cadence under the same stable probe ID using `HOLD_SAMPLE_NNN` stages.
-- Focus continuity is sticky. Once any sample reports that the exact Roblox target is no longer foreground, later focus recovery cannot rewrite the probe as healthy.
-- The first sampled loss time is retained and logged as `FOCUS_LOST_DURING_HOLD` with `action=RELEASE_IMMEDIATELY`.
-- On sampled focus loss the hold loop ends immediately, KeyUp is issued, release-all remains in the `finally` path, and `NativeDeliveryObserved` cannot become true for that attempt.
-- Windows key-down observation is accumulated across the same full hold sequence instead of relying only on the first 50 ms.
-- Normal playback mapping/backend, physical-key diagnostic, SendInput diagnostic, scheduler, Legacy baselines and Audio-to-Piano are unchanged.
-- ADR 0072 records the contract and regression coverage protects sticky transient-loss behavior.
+- Extends the sticky 25 ms focus-continuity contract from the authorizing PowerShell-oracle probe to both diagnostic A/B paths.
+- Physical scan-code `keybd_event` attempts now emit `PHYSICAL_HOLD_SAMPLE_NNN`; SendInput scan-code attempts emit `SENDINPUT_HOLD_SAMPLE_NNN` under their stable probe IDs.
+- If either diagnostic observes the exact Roblox target lose foreground while W is held, it logs the first sampled loss time, stops the hold immediately, sends the matching KeyUp, and remains fail-closed even if foreground later returns.
+- Windows key-down observation is accumulated across the full held interval instead of relying on only the first 50 ms.
+- `NativeDeliveryObserved` for both diagnostics now requires uninterrupted sampled foreground for the complete hold.
+- Verdict logs include `continuousFocus` so one field log can distinguish native input evidence from an invalid transient-focus attempt.
+- Normal playback mapping/backend, scheduler, Legacy baselines and Audio-to-Piano are unchanged.
 
 ## Production capability and reliability
 
@@ -45,11 +44,11 @@ SHA256: `{{SHA256}}`
 
 - CI cannot observe a live Roblox client consuming synthetic input. Explicit GUI verification plus visible Roblox reaction remains the real-machine acceptance gate.
 - A log showing `keybd_event`/`SendInput` invocation or Windows key state does not by itself prove Roblox consumed the key.
-- If `FOCUS_LOST_DURING_HOLD` appears, that attempt is invalid for Roblox-consumption conclusions; keep the exact Roblox window foreground for the complete probe and retry.
+- Any `FOCUS_LOST_DURING_HOLD`, `PHYSICAL_FOCUS_LOST_DURING_HOLD`, or `SENDINPUT_FOCUS_LOST_DURING_HOLD` marker invalidates that attempt for Roblox-consumption conclusions; keep the exact Roblox window foreground for the complete probe and retry.
 - If `elevationParity=TargetHigher`, first remove that privilege mismatch and rerun the probe before treating Roblox consumption as the remaining failure boundary.
 - If `desktopParity=Different`, first return Roblox and RobloxPiano to the same normal interactive Windows desktop and rerun the probe; no test key is emitted while the known mismatch exists.
 - If `semanticParity=DIFFERENT` plus the exact PowerShell oracle visibly reacts, normal playback remains unconfirmed because production mapping differs.
 - If the PowerShell oracle fails but physical-scan `keybd_event` reacts, scan-code acceptance is the leading candidate; normal playback remains unchanged until a separate production change is justified.
 - If both `keybd_event` paths fail but the SendInput scan-code path reacts, the injection API semantic becomes the leading candidate; normal playback still remains unchanged until separately reviewed and regression-protected.
-- If all three paths show safe Windows delivery, uninterrupted Roblox foreground and final NO reaction, character mapping, simple scan-code presence and the `keybd_event` versus `SendInput` distinction are weaker suspects. Investigate Roblox/game input consumption, environment/session/overlay/security policy or a requirement not represented by supported Windows synthetic-input APIs.
+- If all three paths show safe Windows delivery, uninterrupted sampled Roblox foreground and final NO reaction, character mapping, simple scan-code presence and the `keybd_event` versus `SendInput` distinction are weaker suspects. Investigate Roblox/game input consumption, environment/session/overlay/security policy or a requirement not represented by supported Windows synthetic-input APIs.
 - The executable is currently unsigned, so Windows SmartScreen may still show a reputation warning.

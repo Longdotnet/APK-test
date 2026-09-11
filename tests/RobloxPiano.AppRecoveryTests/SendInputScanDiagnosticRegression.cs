@@ -39,6 +39,19 @@ internal static class SendInputScanDiagnosticRegression
             throw new InvalidOperationException("SendInput diagnostic key up must preserve the scan code and add only KEYEVENTF_KEYUP.");
         }
 
+        var continuous = new RobloxSendInputScanProbeResult(
+            "test", true, true, WindowsInputDesktopParity.Same, true, true, 0x57, 0x11, TimeSpan.FromMilliseconds(650));
+        if (!continuous.NativeDeliveryObserved)
+        {
+            throw new InvalidOperationException("A fully observed SendInput diagnostic with continuous focus must remain eligible as native-delivery evidence.");
+        }
+
+        var transientFocusLoss = continuous with { ForegroundHeldDuringProbe = false };
+        if (transientFocusLoss.NativeDeliveryObserved)
+        {
+            throw new InvalidOperationException("SendInput diagnostic must fail closed when any sampled focus loss occurs during the held key.");
+        }
+
         var extendedDown = RobloxSendInputScanDiagnosticProbe.BuildEvent(0x25, 0x4B, extended: true, keyUp: false);
         var expectedExtended = RobloxSendInputScanDiagnosticProbe.KeyEventFScanCode | RobloxSendInputScanDiagnosticProbe.KeyEventFExtendedKey;
         if (extendedDown.Flags != expectedExtended)
