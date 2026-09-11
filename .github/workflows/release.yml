@@ -27,6 +27,10 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Prepare pinned Spotify Basic Pitch ONNX model
+        shell: pwsh
+        run: ./.github/scripts/prepare-basic-pitch-model.ps1
+
       - name: Resolve immutable release version
         id: version
         shell: pwsh
@@ -146,6 +150,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Published executable STA UI startup smoke test failed" }
           & $exe --input-abi-smoke
           if ($LASTEXITCODE -ne 0) { throw "Published executable Windows input compatibility smoke test failed" }
+          & $exe --audio-model-smoke
+          if ($LASTEXITCODE -ne 0) { throw "Published executable Audio model/runtime smoke test failed" }
 
       - name: Generate checksum and render release notes
         if: steps.guard.outputs.publish == 'true'
