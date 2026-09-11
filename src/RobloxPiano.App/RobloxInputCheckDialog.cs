@@ -122,7 +122,7 @@ internal sealed class RobloxInputCheckDialog : Form
             var result = await RobloxFieldInputProbe.RunAsync(target).ConfigureAwait(true);
             var nativeAssessment = result.Assess(null);
             ClientDiagnostics.Log(
-                $"GUI input check native verdict={nativeAssessment.Verdict}; nativeDelivery={result.NativeDeliveryObserved}; " +
+                $"GUI input check native verdict={nativeAssessment.Verdict}; probe={result.ProbeId}; nativeDelivery={result.NativeDeliveryObserved}; " +
                 $"activation={result.ActivationConfirmed}; stableFocus={result.StableForegroundConfirmed}; " +
                 $"keyDown={result.WindowsReportedKeyDown}; foregroundHeld={result.ForegroundHeldDuringProbe}; " +
                 $"vk=0x{result.VirtualKey:X2}; heldMs={result.HoldDuration.TotalMilliseconds:0}.");
@@ -143,8 +143,9 @@ internal sealed class RobloxInputCheckDialog : Form
                 MessageBoxIcon.Question) == DialogResult.Yes;
 
             var assessment = result.Assess(observed);
+            RobloxInputForensics.LogVerdict(result.ProbeId, assessment, observed);
             ClientDiagnostics.Log(
-                $"GUI input check final verdict={assessment.Verdict}; robloxReacted={observed}; success={assessment.IsSuccess}.");
+                $"GUI input check final verdict={assessment.Verdict}; probe={result.ProbeId}; robloxReacted={observed}; success={assessment.IsSuccess}.");
             RobloxInputHealthSession.Record(target, assessment);
             ApplyAssessment(assessment);
         }
