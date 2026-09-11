@@ -39,6 +39,9 @@ internal static class RobloxSendInputScanDiagnosticProbe
     internal const uint KeyEventFScanCode = 0x0008;
     private const uint InputKeyboard = 1;
 
+    internal static int NativeInputSize => Marshal.SizeOf<Input>();
+    internal static int ExpectedNativeInputSize => IntPtr.Size == 8 ? 40 : 28;
+
     public static async Task<RobloxSendInputScanProbeResult> RunAsync(
         RobloxWindowTarget target,
         CancellationToken cancellationToken = default)
@@ -77,6 +80,12 @@ internal static class RobloxSendInputScanDiagnosticProbe
             return failed;
         }
 
+        if (NativeInputSize != ExpectedNativeInputSize)
+        {
+            throw new WindowsInputInjectionException(
+                $"SendInput ABI mismatch: managed INPUT size={NativeInputSize}, expected={ExpectedNativeInputSize} for pointer size {IntPtr.Size}.");
+        }
+
         var oracle = WindowsKeyboardInputSink.ResolvePowerShellOracleStrokeForDiagnostics(RobloxFieldInputPolicy.ProbeKey);
         if (oracle.Modifiers != 0)
         {
@@ -92,7 +101,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=SENDINPUT_MAPPING backend=SendInput " +
             $"vk=0x{oracle.VirtualKey:X2} scanCode=0x{scanCode:X2} extended={extended} layout=0x{oracle.KeyboardLayout.ToInt64():X} " +
-            "semantics=DIAGNOSTIC_SCANCODE_ONLY productionChanged=false.");
+            $"inputSize={NativeInputSize} semantics=DIAGNOSTIC_SCANCODE_ONLY productionChanged=false.");
 
         var keyDownObserved = false;
         var foregroundHeld = false;
@@ -160,7 +169,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
 
         extended = (mappedScanCode & 0xFF00u) is 0xE000u or 0xE100u;
         var normalized = mappedScanCode & 0xFFu;
-        if (normalized == 0 || normalized > ushort.MaxValue)
+        if (normalized == 0)
         {
             throw new WindowsInputInjectionException(
                 $"Windows returned unsupported scan-code value 0x{mappedScanCode:X}.");
@@ -221,7 +230,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
             }
         };
 
-        var inserted = SendInput(1, [input], Marshal.SizeOf<Input>());
+        var inserted = SendInput(1, [input], NativeInputSize);
         if (inserted != 1)
         {
             var error = Marshal.GetLastWin32Error();
@@ -306,7 +315,21 @@ internal static class RobloxSendInputScanDiagnosticProbe
     private struct InputUnion
     {
         [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
         public KeyboardInput Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int Dx;
+        public int Dy;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
