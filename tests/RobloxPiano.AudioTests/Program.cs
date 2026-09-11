@@ -9,7 +9,13 @@ var tests = new (string Name, Action Run)[]
     ("empty decoded audio fails closed", EmptyAudioFailsClosed),
     ("pre-cancelled ingest exits deterministically", CancellationIsHonored),
     ("Basic Pitch chunk plan matches Spotify overlap contract", BasicPitchChunkPlanMatchesReference),
-    ("Basic Pitch ONNX inference returns bounded canonical raw tensors", BasicPitchOnnxInference)
+    ("Basic Pitch ONNX inference returns bounded canonical raw tensors", BasicPitchOnnxInference),
+    ("Basic Pitch onset and energy decoding matches reference semantics", BasicPitchDecoderRegression.OnsetEnergyParityFixture),
+    ("Basic Pitch inferred onset recovers sharp attacks", BasicPitchDecoderRegression.InferredOnsetRecoversSharpAttack),
+    ("Basic Pitch Melodia recovery extracts sustained energy", BasicPitchDecoderRegression.MelodiaRecoversSustainedEnergyWithoutOnset),
+    ("Basic Pitch pitch bend keeps third-semitone contour units", BasicPitchDecoderRegression.PitchBendUsesSpotifyThirdSemitoneBins),
+    ("Basic Pitch frequency constraint excludes out-of-band notes", BasicPitchDecoderRegression.FrequencyConstraintFailsClosedOutsideRequestedBand),
+    ("Basic Pitch decoder rejects invalid activation tensors", BasicPitchDecoderRegression.InvalidTensorProbabilityIsRejected)
 };
 
 var failed = 0;
