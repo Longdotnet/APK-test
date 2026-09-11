@@ -141,6 +141,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             audio.Duration,
             arrangement.Diagnostics,
             arrangement.Track.TimelineDuration,
+            suppression.Diagnostics,
             options.Quality);
         var qualityElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
