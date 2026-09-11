@@ -21,6 +21,7 @@ internal static class RobloxInputForensics
         var session = WindowsInteractiveSession.Capture(target.ProcessId);
         var window = WindowsRobloxWindowIdentity.Capture(target);
         var gui = WindowsGuiThreadInputContext.Capture(target);
+        var rawInput = WindowsRawInputContext.Capture();
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=ENV " +
@@ -46,6 +47,9 @@ internal static class RobloxInputForensics
             $"guiFocusHwnd=0x{gui.FocusWindowHandle.ToInt64():X} guiFocusRelation={gui.FocusRelation} guiFocusAssessment={gui.FocusAssessment} " +
             $"guiCaptureHwnd=0x{gui.CaptureWindowHandle.ToInt64():X} guiCaptureRelation={gui.CaptureRelation} " +
             $"guiMenuOwnerHwnd=0x{gui.MenuOwnerWindowHandle.ToInt64():X} guiMoveSizeHwnd=0x{gui.MoveSizeWindowHandle.ToInt64():X} guiCaretHwnd=0x{gui.CaretWindowHandle.ToInt64():X} " +
+            $"rawInputInventoryOk={rawInput.CaptureSucceeded} rawInputError={rawInput.Win32Error} rawKeyboardDevices={rawInput.KeyboardDeviceCount} " +
+            $"rawMouseDevices={rawInput.MouseDeviceCount} rawHidDevices={rawInput.HidDeviceCount} rawInputAssessment={rawInput.Assessment} " +
+            $"targetRawRegistration={WindowsRawInputContextSnapshot.TargetRegistrationVisibility} " +
             $"managedThread={Environment.CurrentManagedThreadId} nativeThread={GetCurrentThreadId()} " +
             $"appPid={Environment.ProcessId} targetPid={target.ProcessId} targetHwnd=0x{target.WindowHandle.ToInt64():X} " +
             $"foregroundPid={foregroundPid} foregroundHwnd=0x{foreground.ToInt64():X} foregroundTid={foregroundThreadId} " +
@@ -101,6 +105,7 @@ internal static class RobloxInputForensics
         }
 
         LogGuiThreadContext(probeId, "GUI_CONTEXT", gui);
+        LogRawInputContext(probeId, rawInput);
         return window;
     }
 
@@ -203,6 +208,27 @@ internal static class RobloxInputForensics
             ClientDiagnostics.Log(
                 $"INPUT_FORENSIC probe={probeId} stage=GUI_FOCUS_CONTEXT verdict=GUI_FOCUS_NONE " +
                 "guidance='The foreground GUI thread reports no focus HWND. Preserve this evidence when comparing Roblox experiences and overlays; do not treat it as field PASS or FAIL by itself.'.");
+        }
+    }
+
+    private static void LogRawInputContext(string probeId, WindowsRawInputContextSnapshot rawInput)
+    {
+        ClientDiagnostics.Log(
+            $"INPUT_FORENSIC probe={probeId} stage=RAW_INPUT_CONTEXT rawInputInventoryOk={rawInput.CaptureSucceeded} rawInputError={rawInput.Win32Error} " +
+            $"keyboardDevices={rawInput.KeyboardDeviceCount} mouseDevices={rawInput.MouseDeviceCount} hidDevices={rawInput.HidDeviceCount} " +
+            $"assessment={rawInput.Assessment} targetRegistration={WindowsRawInputContextSnapshot.TargetRegistrationVisibility}.");
+
+        if (!rawInput.CaptureSucceeded)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=RAW_INPUT_CONTEXT_UNAVAILABLE verdict=RAW_INPUT_DEVICE_INVENTORY_UNAVAILABLE win32Error={rawInput.Win32Error} " +
+                "guidance='Windows raw-input device inventory could not be captured. Do not infer Roblox input-path behavior from this attempt.'.");
+        }
+        else if (rawInput.Assessment == WindowsRawInputInventoryAssessment.PhysicalKeyboardDeviceObserved)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=RAW_INPUT_CONTEXT verdict=RAW_INPUT_CONSUMPTION_UNOBSERVABLE " +
+                "guidance='At least one keyboard-class Raw Input device exists, but public Win32 APIs do not expose another process's RegisterRawInputDevices state. Synthetic key-state evidence therefore does not prove Roblox received a hardware Raw Input packet.'.");
         }
     }
 
