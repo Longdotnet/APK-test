@@ -14,9 +14,12 @@ internal static class PianoLikeCorpusRegression
             modelPath,
             new BasicPitchInferenceOptions(MaxChunksPerBatch: 2));
         var decoder = new BasicPitchNoteDecoder();
+        var suppressor = new BasicPitchHarmonicSuppressor();
         var ingest = new AudioIngestService();
         var evaluator = new AudioTranscriptionCorpusEvaluator();
-        var cases = new List<AudioTranscriptionEvaluationCase>();
+        var baselineCases = new List<AudioTranscriptionEvaluationCase>();
+        var suppressedCases = new List<AudioTranscriptionEvaluationCase>();
+        var suppressedTotal = 0;
 
         foreach (var fixture in BuildPianoLikeCorpus())
         {
@@ -31,38 +34,68 @@ internal static class PianoLikeCorpusRegression
             if (estimated.Count == 0)
                 throw new InvalidOperationException($"Piano-like corpus fixture '{fixture.Name}' produced no decoded notes.");
 
-            cases.Add(new AudioTranscriptionEvaluationCase(fixture.Name, fixture.Reference, estimated));
+            var suppression = suppressor.Suppress(estimated, SuppressionOptions());
+            if (suppression.Notes.Count == 0)
+                throw new InvalidOperationException($"Piano-like corpus fixture '{fixture.Name}' lost every decoded note during harmonic suppression.");
+
+            suppressedTotal += suppression.Diagnostics.SuppressedNotes;
+            Console.WriteLine(
+                $"PIANO_SUPPRESSION {fixture.Name} decoded={estimated.Count} retained={suppression.Notes.Count} suppressed={suppression.Diagnostics.SuppressedNotes}");
+            foreach (var decision in suppression.Diagnostics.Suppressed)
+            {
+                Console.WriteLine(
+                    $"PIANO_SUPPRESSION_DECISION {fixture.Name} candidate={decision.Candidate.MidiNote} anchor={decision.Anchor.MidiNote} " +
+                    $"harmonic={decision.Harmonic} pitchError={decision.HarmonicPitchErrorSemitones:F3} " +
+                    $"overlap={decision.CandidateOverlapRatio:F3} amplitudeRatio={decision.CandidateToAnchorAmplitudeRatio:F3}");
+            }
+
+            baselineCases.Add(new AudioTranscriptionEvaluationCase(fixture.Name, fixture.Reference, estimated));
+            suppressedCases.Add(new AudioTranscriptionEvaluationCase(fixture.Name, fixture.Reference, suppression.Notes));
         }
 
-        var corpus = evaluator.Evaluate(
-            cases,
-            new AudioTranscriptionEvaluationOptions(
-                OnsetTolerance: TimeSpan.FromMilliseconds(150),
-                RequireOffsetMatch: false));
+        var evaluationOptions = new AudioTranscriptionEvaluationOptions(
+            OnsetTolerance: TimeSpan.FromMilliseconds(150),
+            RequireOffsetMatch: false);
+        var baseline = evaluator.Evaluate(baselineCases, evaluationOptions);
+        var corpus = evaluator.Evaluate(suppressedCases, evaluationOptions);
 
         foreach (var (name, result) in corpus.Results)
         {
+            var baselineResult = baseline.Results[name];
             Console.WriteLine(
-                $"PIANO_CORPUS {name} reference={result.ReferenceNotes} estimated={result.EstimatedNotes} matched={result.MatchedNotes} " +
-                $"precision={result.Precision:F3} recall={result.Recall:F3} f1={result.F1:F3} " +
+                $"PIANO_CORPUS {name} baselineEstimated={baselineResult.EstimatedNotes} estimated={result.EstimatedNotes} " +
+                $"reference={result.ReferenceNotes} matched={result.MatchedNotes} precision={result.Precision:F3} recall={result.Recall:F3} f1={result.F1:F3} " +
                 $"onsetMs={result.MeanAbsoluteOnsetErrorMilliseconds:F1} offsetMs={result.MeanAbsoluteOffsetErrorMilliseconds:F1}");
 
             if (result.MatchedNotes == 0)
                 throw new InvalidOperationException($"Piano-like corpus fixture '{name}' lost every ground-truth pitch/onset note.");
+            if (result.MatchedNotes < baselineResult.MatchedNotes)
+                throw new InvalidOperationException(
+                    $"Harmonic suppression lost a ground-truth match in '{name}': baseline={baselineResult.MatchedNotes}, suppressed={result.MatchedNotes}.");
         }
 
         Console.WriteLine(
-            $"PIANO_CORPUS SUMMARY cases={corpus.Cases} reference={corpus.ReferenceNotes} estimated={corpus.EstimatedNotes} matched={corpus.MatchedNotes} " +
+            $"PIANO_CORPUS BASELINE cases={baseline.Cases} reference={baseline.ReferenceNotes} estimated={baseline.EstimatedNotes} matched={baseline.MatchedNotes} " +
+            $"microPrecision={baseline.MicroPrecision:F3} microRecall={baseline.MicroRecall:F3} microF1={baseline.MicroF1:F3} macroF1={baseline.MacroF1:F3}");
+        Console.WriteLine(
+            $"PIANO_CORPUS SUMMARY cases={corpus.Cases} reference={corpus.ReferenceNotes} estimated={corpus.EstimatedNotes} matched={corpus.MatchedNotes} suppressed={suppressedTotal} " +
             $"microPrecision={corpus.MicroPrecision:F3} microRecall={corpus.MicroRecall:F3} microF1={corpus.MicroF1:F3} macroF1={corpus.MacroF1:F3} " +
             $"onsetMs={corpus.MeanAbsoluteOnsetErrorMilliseconds:F1} offsetMs={corpus.MeanAbsoluteOffsetErrorMilliseconds:F1}");
 
-        // Calibrated from the first pinned fa5997a nmp.onnx evidence run:
-        // 12/12 references matched, precision=.162, recall=1.000, micro-F1=.279,
-        // macro-F1=.341 and mean onset=12.3 ms. Harmonic-rich synthetic piano predictably
-        // produces partial-related false positives, so the gate keeps 10-15% regression
-        // headroom while separately protecting melody recall and timing from collapse.
+        // Phase 09 pinned fa5997a baseline: 12/12 references matched, precision=.162, recall=1.000,
+        // micro-F1=.279, macro-F1=.341 and mean onset=12.3 ms. Phase 10 additionally requires
+        // suppression never to lose a matched ground-truth note and never to reduce corpus precision/F1.
         if (corpus.Cases != 4)
             throw new InvalidOperationException($"Expected 4 piano-like corpus cases, got {corpus.Cases}.");
+        if (corpus.MatchedNotes < baseline.MatchedNotes)
+            throw new InvalidOperationException(
+                $"Harmonic suppression reduced matched notes: baseline={baseline.MatchedNotes}, suppressed={corpus.MatchedNotes}.");
+        if (corpus.MicroPrecision + 1e-9 < baseline.MicroPrecision)
+            throw new InvalidOperationException(
+                $"Harmonic suppression reduced precision: baseline={baseline.MicroPrecision:F3}, suppressed={corpus.MicroPrecision:F3}.");
+        if (corpus.MicroF1 + 1e-9 < baseline.MicroF1)
+            throw new InvalidOperationException(
+                $"Harmonic suppression reduced micro F1: baseline={baseline.MicroF1:F3}, suppressed={corpus.MicroF1:F3}.");
         if (corpus.MicroPrecision < 0.14)
             throw new InvalidOperationException($"Piano-like corpus precision regressed below 0.14: {corpus.MicroPrecision:F3}.");
         if (corpus.MicroRecall < 0.90)
@@ -82,6 +115,15 @@ internal static class PianoLikeCorpusRegression
         EnergyToleranceFrames: 8,
         UseMelodiaRecovery: true,
         IncludePitchBends: true);
+
+    private static BasicPitchHarmonicSuppressionOptions SuppressionOptions() => new(
+        MinimumHarmonic: 3,
+        MaximumHarmonic: 6,
+        OnsetTolerance: TimeSpan.FromMilliseconds(45),
+        MinimumCandidateOverlapRatio: 0.80,
+        MaximumCandidateToAnchorAmplitudeRatio: 0.50f,
+        MaximumHarmonicPitchErrorSemitones: 0.20,
+        ProtectPowerOfTwoHarmonics: true);
 
     private static IReadOnlyList<CorpusFixture> BuildPianoLikeCorpus() =>
     [
