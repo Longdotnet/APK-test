@@ -27,7 +27,7 @@ internal sealed class RobloxInputCheckDialog : Form
         {
             AutoSize = true,
             MaximumSize = new Size(540, 0),
-            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates Roblox activation, stable focus, Windows key delivery, and Roblox actually reacting. A confirmed result belongs only to the current Roblox process. No AI or network is used."
+            Text = "Use this when Play appears to run but Roblox produces no notes. The check separates Roblox activation, stable focus, Windows input-desktop readiness, Windows key delivery, and Roblox actually reacting. A confirmed result belongs only to the current Roblox process. No AI or network is used."
         };
         var observation = new Label
         {
@@ -123,7 +123,7 @@ internal sealed class RobloxInputCheckDialog : Form
             var nativeAssessment = result.Assess(null);
             ClientDiagnostics.Log(
                 $"GUI input check native verdict={nativeAssessment.Verdict}; probe={result.ProbeId}; nativeDelivery={result.NativeDeliveryObserved}; " +
-                $"activation={result.ActivationConfirmed}; stableFocus={result.StableForegroundConfirmed}; " +
+                $"activation={result.ActivationConfirmed}; stableFocus={result.StableForegroundConfirmed}; desktopParity={result.DesktopParity}; " +
                 $"keyDown={result.WindowsReportedKeyDown}; foregroundHeld={result.ForegroundHeldDuringProbe}; " +
                 $"vk=0x{result.VirtualKey:X2}; heldMs={result.HoldDuration.TotalMilliseconds:0}.");
 
