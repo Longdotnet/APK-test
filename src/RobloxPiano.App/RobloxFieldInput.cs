@@ -36,6 +36,24 @@ internal sealed record RobloxFieldInputProbeResult(
     ushort VirtualKey,
     TimeSpan HoldDuration)
 {
+    internal RobloxFieldInputProbeResult(
+        bool activationConfirmed,
+        bool stableForegroundConfirmed,
+        bool windowsReportedKeyDown,
+        bool foregroundHeldDuringProbe,
+        ushort virtualKey,
+        TimeSpan holdDuration)
+        : this(
+            "synthetic",
+            activationConfirmed,
+            stableForegroundConfirmed,
+            windowsReportedKeyDown,
+            foregroundHeldDuringProbe,
+            virtualKey,
+            holdDuration)
+    {
+    }
+
     public bool NativeDeliveryObserved => ActivationConfirmed
         && StableForegroundConfirmed
         && WindowsReportedKeyDown
