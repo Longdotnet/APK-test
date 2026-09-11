@@ -5,7 +5,14 @@ namespace RobloxPiano.App;
 internal sealed class RobloxInputCheckDialog : Form
 {
     private readonly string _matrixId = RobloxInputForensics.NewProbeId();
+    private readonly Dictionary<string, RobloxInputMatrixCellEvidence> _matrixCells = new(StringComparer.Ordinal);
     private readonly Label _status = new() { AutoSize = true, MaximumSize = new Size(650, 0) };
+    private readonly Label _matrixStatus = new()
+    {
+        AutoSize = true,
+        MaximumSize = new Size(760, 0),
+        Text = "Matrix verdict: INSUFFICIENT_EVIDENCE — run the real-key baseline first."
+    };
     private readonly Button _run = new() { Text = "Run PowerShell-Oracle Check", AutoSize = true };
     private readonly Button _realKey = new() { Text = "Run Real-Key Baseline", AutoSize = true };
     private readonly Button _physical = new() { Text = "Run keybd_event Scan Diagnostic", AutoSize = true };
@@ -19,7 +26,7 @@ internal sealed class RobloxInputCheckDialog : Form
         Text = "Roblox Input Check";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(760, 430);
-        Size = new Size(900, 540);
+        Size = new Size(900, 560);
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
@@ -62,6 +69,7 @@ internal sealed class RobloxInputCheckDialog : Form
         root.Controls.Add(observation);
         root.Controls.Add(privacy);
         root.Controls.Add(_status);
+        root.Controls.Add(_matrixStatus);
         root.Controls.Add(buttons);
         Controls.Add(root);
 
@@ -364,10 +372,25 @@ internal sealed class RobloxInputCheckDialog : Form
         }
     }
 
-    private void LogMatrixCell(string cell, string probeId, string verdict, bool? reacted)
-        => ClientDiagnostics.Log(
+    private RobloxInputMatrixAssessment LogMatrixCell(string cell, string probeId, string verdict, bool? reacted)
+    {
+        var evidence = new RobloxInputMatrixCellEvidence(cell, probeId, verdict, reacted);
+        _matrixCells[cell] = evidence;
+        ClientDiagnostics.Log(
             $"INPUT_MATRIX matrix={_matrixId} probe={probeId} cell={cell} verdict={verdict} " +
             $"robloxReaction={(reacted is null ? "UNKNOWN" : reacted.Value ? "YES" : "NO")} authorizesPlayback=false.");
+
+        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(_matrixCells.Values);
+        var winners = assessment.WinningCells.Count == 0 ? "NONE" : string.Join(",", assessment.WinningCells);
+        var failures = assessment.FailingCells.Count == 0 ? "NONE" : string.Join(",", assessment.FailingCells);
+        var pending = assessment.PendingCells.Count == 0 ? "NONE" : string.Join(",", assessment.PendingCells);
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_SUMMARY matrix={_matrixId} verdict={assessment.Verdict} boundary={assessment.FailureBoundary} " +
+            $"winningCells={winners} failingCells={failures} pendingCells={pending} conclusive={assessment.IsConclusive} " +
+            "fieldPass=false authorizesPlayback=false.");
+        _matrixStatus.Text = $"Matrix verdict: {assessment.Verdict} — {assessment.Summary}\nNext: {assessment.NextAction}";
+        return assessment;
+    }
 
     private bool Confirm(string text, string caption)
         => MessageBox.Show(this, text, caption, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) == DialogResult.OK;
