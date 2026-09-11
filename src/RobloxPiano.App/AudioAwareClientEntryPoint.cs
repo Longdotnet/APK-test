@@ -8,7 +8,11 @@ namespace RobloxPiano.App;
 /// </summary>
 internal static class AudioAwareClientEntryPoint
 {
-    private const string NoticesResourceName = "RobloxPiano.App.THIRD-PARTY-NOTICES.txt";
+    private static readonly string[] NoticeResourceNames =
+    [
+        "RobloxPiano.App.THIRD-PARTY-NOTICES.txt",
+        "RobloxPiano.App.THIRD-PARTY-DryWetMIDI.txt"
+    ];
 
     [STAThread]
     public static int Main(string[] args)
@@ -82,7 +86,9 @@ internal static class AudioAwareClientEntryPoint
                 "Copyright 2022 Spotify AB",
                 "Apache License",
                 "Copyright (c) Microsoft Corporation",
-                "Copyright 2008-2026 Mark Heath"
+                "Copyright 2008-2026 Mark Heath",
+                "DryWetMIDI Nativeless 8.0.3",
+                "Copyright (c) 2018 Maxim Dobroselsky"
             })
             {
                 if (!notices.Contains(requiredToken, StringComparison.Ordinal))
@@ -102,9 +108,15 @@ internal static class AudioAwareClientEntryPoint
 
     private static string ReadThirdPartyNotices()
     {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(NoticesResourceName)
-            ?? throw new InvalidOperationException($"Embedded notice resource '{NoticesResourceName}' is missing.");
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
+        var assembly = Assembly.GetExecutingAssembly();
+        var sections = new List<string>(NoticeResourceNames.Length);
+        foreach (var resourceName in NoticeResourceNames)
+        {
+            using var stream = assembly.GetManifestResourceStream(resourceName)
+                ?? throw new InvalidOperationException($"Embedded notice resource '{resourceName}' is missing.");
+            using var reader = new StreamReader(stream);
+            sections.Add(reader.ReadToEnd().TrimEnd());
+        }
+        return string.Join(Environment.NewLine + Environment.NewLine, sections) + Environment.NewLine;
     }
 }
