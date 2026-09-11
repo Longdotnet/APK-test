@@ -59,6 +59,16 @@ internal static class RobloxInputMatrixAssessmentPolicy
     {
         ArgumentNullException.ThrowIfNull(evidence);
 
+        var currentSession = CaptureCurrentSessionIdentity();
+        return Assess(evidence, currentSession);
+    }
+
+    internal static RobloxInputMatrixAssessment Assess(
+        IEnumerable<RobloxInputMatrixCellEvidence> evidence,
+        RobloxInputMatrixSessionIdentity? currentSessionIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+
         var cells = evidence
             .GroupBy(item => item.Cell, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
@@ -73,7 +83,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
             .Where(cell => !cells.TryGetValue(cell, out var item) || !item.WindowsBoundaryConfirmed)
             .ToArray();
 
-        var continuity = AssessSessionContinuity(cells.Values);
+        var continuity = AssessSessionContinuity(cells.Values, currentSessionIdentity);
         if (continuity is not null)
         {
             return new RobloxInputMatrixAssessment(
@@ -146,8 +156,24 @@ internal static class RobloxInputMatrixAssessmentPolicy
             pending);
     }
 
+    private static RobloxInputMatrixSessionIdentity? CaptureCurrentSessionIdentity()
+    {
+        var target = RobloxProcessLocator.FindPreferred();
+        if (target is null || !RobloxInputMatrixSessionIdentity.TryCapture(target, out var identity))
+        {
+            ClientDiagnostics.Log(
+                "INPUT_MATRIX_REACTION_CONTEXT stage=ASSESS_CURRENT identity=UNAVAILABLE reactionContextTrusted=false authorizesPlayback=false.");
+            return null;
+        }
+
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_REACTION_CONTEXT stage=ASSESS_CURRENT identity={identity.ToLogToken()} reactionContextTrusted=true authorizesPlayback=false.");
+        return identity;
+    }
+
     private static (string Boundary, string Summary, string NextAction)? AssessSessionContinuity(
-        IEnumerable<RobloxInputMatrixCellEvidence> evidence)
+        IEnumerable<RobloxInputMatrixCellEvidence> evidence,
+        RobloxInputMatrixSessionIdentity? currentSessionIdentity)
     {
         var items = evidence.ToArray();
         if (items.Length == 0)
@@ -173,6 +199,22 @@ internal static class RobloxInputMatrixAssessmentPolicy
                 "ROBLOX_SESSION_CHANGED",
                 "Matrix cells belong to different Roblox process lifetimes or selected HWNDs. A cross-session result cannot establish an input boundary.",
                 "Close and reopen Roblox Input Check after Roblox stabilizes, then rerun every cell on the same Roblox process/window. Evidence from the previous lifetime stays diagnostic-only.");
+        }
+
+        if (currentSessionIdentity is null)
+        {
+            return (
+                "REACTION_CONTEXT_IDENTITY_UNAVAILABLE",
+                "The current Roblox process/window identity could not be re-established when the field reaction was assessed, so the human Yes/No observation cannot be safely attributed to retained probe evidence.",
+                "Keep Roblox open and stable, then retry the current matrix cell. Do not use the previous reaction answer as field evidence.");
+        }
+
+        if (sessions[0] != currentSessionIdentity.Value)
+        {
+            return (
+                "REACTION_CONTEXT_CHANGED",
+                "Roblox changed process lifetime or selected HWND before the retained field reaction could be assessed. The human Yes/No response is stale relative to the probe-bound session.",
+                "Discard this reaction attribution, keep Roblox on one stable surface, then retry the current matrix cell. Do not combine the stale response with the new Roblox session.");
         }
 
         return null;
