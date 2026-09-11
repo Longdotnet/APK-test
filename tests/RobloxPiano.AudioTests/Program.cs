@@ -15,7 +15,13 @@ var tests = new (string Name, Action Run)[]
     ("Basic Pitch Melodia recovery extracts sustained energy", BasicPitchDecoderRegression.MelodiaRecoversSustainedEnergyWithoutOnset),
     ("Basic Pitch pitch bend keeps third-semitone contour units", BasicPitchDecoderRegression.PitchBendUsesSpotifyThirdSemitoneBins),
     ("Basic Pitch frequency constraint excludes out-of-band notes", BasicPitchDecoderRegression.FrequencyConstraintFailsClosedOutsideRequestedBand),
-    ("Basic Pitch decoder rejects invalid activation tensors", BasicPitchDecoderRegression.InvalidTensorProbabilityIsRejected)
+    ("Basic Pitch decoder rejects invalid activation tensors", BasicPitchDecoderRegression.InvalidTensorProbabilityIsRejected),
+    ("Roblox arranger octave-folds into classic 61-key pitch classes", RobloxPianoArrangerRegression.OctaveFoldingKeepsPitchClassInsideClassic61),
+    ("Roblox arranger density policy preserves melody priority", RobloxPianoArrangerRegression.DensityLimitAlwaysKeepsHighestMelodyPitch),
+    ("Roblox arranger merges octave-folded duplicate pitches", RobloxPianoArrangerRegression.FoldedDuplicatePitchIsMergedDeterministically),
+    ("Roblox arranger prevents overlapping ownership of one key", RobloxPianoArrangerRegression.SameKeyOverlapIsTrimmedBeforeCanonicalPlayback),
+    ("Roblox arranger surfaces low-confidence review diagnostics", RobloxPianoArrangerRegression.ShortAndLowActivationNotesProduceReviewDiagnostics),
+    ("Roblox arranger honors pre-cancellation", RobloxPianoArrangerRegression.PreCancelledArrangementStopsBeforeMutation)
 };
 
 var failed = 0;
@@ -80,6 +86,7 @@ static void ResamplesToBasicPitchRate()
     var audio = new AudioIngestService().DecodeStream(stream);
 
     Equal(22_050, audio.SampleRate);
+    Equal(1, audio.Channels);
     True(Math.Abs(audio.Samples.Length - 5_513) <= 4, $"Unexpected resampled sample count {audio.Samples.Length}.");
     True(Math.Abs(audio.Duration.TotalSeconds - 0.25) < 0.002, $"Unexpected duration {audio.Duration}.");
     True(audio.Samples.All(float.IsFinite), "Resampled output must contain only finite samples.");

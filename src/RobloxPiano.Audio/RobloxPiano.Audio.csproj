@@ -5,6 +5,9 @@
     <RootNamespace>RobloxPiano.Audio</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../RobloxPiano.Core/RobloxPiano.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="NAudio" Version="3.1.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
   </ItemGroup>
