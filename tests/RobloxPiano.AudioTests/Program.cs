@@ -107,7 +107,6 @@ static void ResamplesToBasicPitchRate()
 
     Equal(22_050, audio.SampleRate);
     Equal(1, audio.Channels);
-    Equal(frames.Length, audio.Samples.Length);
     True(Math.Abs(audio.Samples.Length - 5_513) <= 4, $"Unexpected resampled sample count {audio.Samples.Length}.");
     True(Math.Abs(audio.Duration.TotalSeconds - 0.25) < 0.002, $"Unexpected duration {audio.Duration}.");
     True(audio.Samples.All(float.IsFinite), "Resampled output must contain only finite samples.");
