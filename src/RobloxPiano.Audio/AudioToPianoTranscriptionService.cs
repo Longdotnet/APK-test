@@ -3,6 +3,7 @@ namespace RobloxPiano.Audio;
 public sealed record AudioToPianoTranscriptionOptions(
     AudioIngestOptions? Ingest = null,
     BasicPitchNoteDecoderOptions? Decoder = null,
+    BasicPitchHarmonicSuppressionOptions? HarmonicSuppression = null,
     RobloxPianoArrangementOptions? Arrangement = null,
     AudioTranscriptionQualityOptions? Quality = null);
 
@@ -11,16 +12,19 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     int SourceSamples,
     int InferenceFrames,
     int DecodedNotes,
+    BasicPitchHarmonicSuppressionDiagnostics HarmonicSuppression,
     RobloxPianoArrangementDiagnostics Arrangement,
     AudioTranscriptionQualityAssessment Quality,
     TimeSpan IngestElapsed,
     TimeSpan InferenceElapsed,
     TimeSpan DecodeElapsed,
+    TimeSpan SuppressionElapsed,
     TimeSpan ArrangeElapsed,
     TimeSpan QualityElapsed)
 {
     public bool RequiresReview => Quality.RequiresReview;
-    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + ArrangeElapsed + QualityElapsed;
+    public int NotesAfterSuppression => HarmonicSuppression.RetainedNotes;
+    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed;
 }
 
 public sealed record AudioToPianoTranscriptionResult(
@@ -29,14 +33,16 @@ public sealed record AudioToPianoTranscriptionResult(
 
 /// <summary>
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
-/// The service composes existing deterministic ingest, Basic Pitch inference, note decoding and arranger layers;
-/// it does not schedule input or mutate playback state. Quality classification is advisory/fail-visible only.
+/// The service composes deterministic ingest, Basic Pitch inference, note decoding, conservative harmonic suppression
+/// and arranger layers; it does not schedule input or mutate playback state. Quality classification and every
+/// suppression decision remain fail-visible in diagnostics.
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
     private readonly BasicPitchInferenceService inference;
     private readonly AudioIngestService ingest = new();
     private readonly BasicPitchNoteDecoder decoder = new();
+    private readonly BasicPitchHarmonicSuppressor harmonicSuppressor = new();
     private readonly RobloxPianoArranger arranger = new();
     private readonly AudioTranscriptionQualityEvaluator qualityEvaluator = new();
     private bool disposed;
@@ -112,14 +118,21 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var notes = decoder.Decode(raw, options.Decoder, cancellationToken);
+        var decodedNotes = decoder.Decode(raw, options.Decoder, cancellationToken);
         var decodeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
-        if (notes.Count == 0)
+        if (decodedNotes.Count == 0)
             throw new InvalidDataException("Basic Pitch produced no playable note events for this audio.");
 
         cancellationToken.ThrowIfCancellationRequested();
         started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var arrangement = arranger.Arrange(title, notes, options.Arrangement, cancellationToken);
+        var suppression = harmonicSuppressor.Suppress(decodedNotes, options.HarmonicSuppression, cancellationToken);
+        var suppressionElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        if (suppression.Notes.Count == 0)
+            throw new InvalidDataException("Basic Pitch harmonic suppression removed every decoded note; review the source or suppression policy.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var arrangement = arranger.Arrange(title, suppression.Notes, options.Arrangement, cancellationToken);
         var arrangeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -135,12 +148,14 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             audio.Duration,
             audio.Samples.Length,
             raw.Notes.Frames,
-            notes.Count,
+            decodedNotes.Count,
+            suppression.Diagnostics,
             arrangement.Diagnostics,
             quality,
             ingestElapsed,
             inferenceElapsed,
             decodeElapsed,
+            suppressionElapsed,
             arrangeElapsed,
             qualityElapsed);
         return new AudioToPianoTranscriptionResult(arrangement, diagnostics);
