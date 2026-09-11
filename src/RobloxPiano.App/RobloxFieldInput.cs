@@ -45,6 +45,28 @@ internal sealed record RobloxFieldInputProbeResult(
     public bool ProductionMappingEquivalentToOracle { get; init; } = true;
 
     internal RobloxFieldInputProbeResult(
+        string probeId,
+        bool activationConfirmed,
+        bool stableForegroundConfirmed,
+        WindowsInputDesktopParity desktopParity,
+        bool windowsReportedKeyDown,
+        bool foregroundHeldDuringProbe,
+        ushort virtualKey,
+        TimeSpan holdDuration)
+        : this(
+            probeId,
+            activationConfirmed,
+            stableForegroundConfirmed,
+            desktopParity,
+            windowsReportedKeyDown,
+            foregroundHeldDuringProbe,
+            foregroundHeldDuringProbe,
+            virtualKey,
+            holdDuration)
+    {
+    }
+
+    internal RobloxFieldInputProbeResult(
         bool activationConfirmed,
         bool stableForegroundConfirmed,
         bool windowsReportedKeyDown,
