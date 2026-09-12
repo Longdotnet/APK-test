@@ -40,6 +40,19 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
             return RobloxInputMatrixSyntheticProvenanceTrust.Missing;
         }
 
+        // LLKHF_LOWER_IL_INJECTED is useful forensic evidence, but it means Windows observed
+        // the event as originating from a lower-integrity process. While Runtime Input P0 is
+        // explicitly investigating UIPI/integrity boundaries, that event cannot safely prove
+        // that a clean synthetic path reached the same trust boundary as Roblox. Fail closed
+        // rather than allowing it to establish either a synthetic winner or an all-synthetic
+        // Roblox-consumption failure.
+        if (snapshot.LowerIntegrityInjectedTargetEventCount > 0
+            || snapshot.DownProvenance == WindowsLowLevelKeyboardProvenanceKind.LowerIntegrityInjected
+            || snapshot.UpProvenance == WindowsLowLevelKeyboardProvenanceKind.LowerIntegrityInjected)
+        {
+            return RobloxInputMatrixSyntheticProvenanceTrust.Contaminated;
+        }
+
         return snapshot.UncontaminatedInjectedPairObserved
             ? RobloxInputMatrixSyntheticProvenanceTrust.Clean
             : RobloxInputMatrixSyntheticProvenanceTrust.Contaminated;
