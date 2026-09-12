@@ -71,7 +71,7 @@ internal sealed class RobloxSyntheticProbeForegroundContinuity : IDisposable
 
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=SYNTHETIC_CONTINUITY_ARMED probePath={probePath} " +
-            "foregroundEvents=true pollingFallback=true authorizesPlayback=false productionChanged=false.");
+            "foregroundEvents=true pollingFallback=true preKeyDownGate=true authorizesPlayback=false productionChanged=false.");
     }
 
     internal void BeginHold()
@@ -84,6 +84,30 @@ internal sealed class RobloxSyntheticProbeForegroundContinuity : IDisposable
 
         lock (stateGate)
         {
+            if (!ContinuityPreserved)
+            {
+                throw new InvalidOperationException("Synthetic foreground continuity was already lost before key down.");
+            }
+
+            var identity = WindowsRobloxWindowIdentity.Capture(target);
+            var targetForeground = target.IsForeground;
+            if (!CanBeginHold(ContinuityPreserved, identity.IsTrustedProbeSurface, targetForeground))
+            {
+                ContinuityPreserved = false;
+                FirstContinuityLossAt = TimeSpan.Zero;
+                FirstContinuityLossSource = "PRE_KEYDOWN_GATE";
+                lossSignal.TrySetResult(true);
+                ClientDiagnostics.Log(
+                    $"INPUT_FORENSIC probe={probeId} stage=SYNTHETIC_PRE_KEYDOWN_GATE probePath={probePath} " +
+                    $"targetForeground={targetForeground} trustedSurface={identity.IsTrustedProbeSurface} " +
+                    $"windowRelation={identity.Relation} targetMainReplaced={identity.TargetMainWindowReplaced} " +
+                    $"targetHwnd=0x{identity.TargetWindowHandle.ToInt64():X} currentMainHwnd=0x{identity.CurrentMainWindowHandle.ToInt64():X} " +
+                    $"foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} foregroundRootHwnd=0x{identity.ForegroundRootHandle.ToInt64():X} " +
+                    "verdict=FOCUS_LOST_BEFORE_DOWN action=ABORT_BEFORE_DOWN authorizesPlayback=false productionChanged=false.");
+                throw new InvalidOperationException(
+                    "Roblox lost the trusted selected foreground surface immediately before synthetic key down. Input was not sent.");
+            }
+
             holdStartedAt = Stopwatch.GetTimestamp();
             holdActive = true;
         }
@@ -140,6 +164,12 @@ internal sealed class RobloxSyntheticProbeForegroundContinuity : IDisposable
         await delayTask.ConfigureAwait(false);
         return ContinuityPreserved;
     }
+
+    internal static bool CanBeginHold(
+        bool continuityPreserved,
+        bool trustedTargetSurface,
+        bool targetForeground)
+        => continuityPreserved && trustedTargetSurface && targetForeground;
 
     internal static bool ShouldPreserveAfterObservation(
         bool holdActive,
