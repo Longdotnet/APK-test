@@ -117,15 +117,12 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
 
     public GeneratedPianoPreviewInfo Info { get; }
 
-    public int Read(float[] buffer, int offset, int count)
+    public int Read(Span<float> buffer)
     {
-        ArgumentNullException.ThrowIfNull(buffer);
-        if (offset < 0 || count < 0 || offset > buffer.Length - count)
-            throw new ArgumentOutOfRangeException(nameof(offset));
-        if (_samplePosition >= _totalSamples || count == 0)
+        if (_samplePosition >= _totalSamples || buffer.Length == 0)
             return 0;
 
-        var samplesToWrite = (int)Math.Min(count, _totalSamples - _samplePosition);
+        var samplesToWrite = (int)Math.Min(buffer.Length, _totalSamples - _samplePosition);
         for (var index = 0; index < samplesToWrite; index++)
         {
             var sample = _samplePosition;
@@ -153,7 +150,7 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
             }
 
             var normalization = _active.Count <= 1 ? 1d : 1d / Math.Sqrt(_active.Count);
-            buffer[offset + index] = (float)Math.Clamp(mixed * normalization * _masterGain, -1d, 1d);
+            buffer[index] = (float)Math.Clamp(mixed * normalization * _masterGain, -1d, 1d);
             _samplePosition++;
         }
 
@@ -173,7 +170,7 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
 
 public sealed class GeneratedPianoPreviewPlayer : IDisposable
 {
-    private WaveOutEvent? _output;
+    private WaveOut? _output;
 
     public bool IsPlaying => _output?.PlaybackState == PlaybackState.Playing;
 
@@ -183,10 +180,10 @@ public sealed class GeneratedPianoPreviewPlayer : IDisposable
     {
         Stop();
         var provider = new GeneratedPianoPreviewSampleProvider(track, options);
-        var output = new WaveOutEvent { DesiredLatency = 100 };
+        var output = new WaveOut { BufferMilliseconds = 50 };
         try
         {
-            output.Init(provider.ToWaveProvider());
+            output.Init(provider);
             output.Play();
             _output = output;
             return provider.Info;
