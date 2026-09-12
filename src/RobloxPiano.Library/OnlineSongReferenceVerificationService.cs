@@ -8,9 +8,18 @@ public sealed record OnlineSongReferenceVerificationResult(
     ReferenceCandidateAssessment Assessment,
     string? ImportCompatibilitySummary);
 
+public sealed record OnlineSongReferenceVerificationFailure(
+    SongDiscoveryCandidate Candidate,
+    string Error);
+
+public sealed record OnlineSongReferenceVerificationBatchResult(
+    IReadOnlyList<ReferenceVerifiedSongCandidate> RankedVerifiedCandidates,
+    IReadOnlyList<OnlineSongReferenceVerificationFailure> Failures,
+    int AttemptedCount);
+
 /// <summary>
-/// Downloads a discovery candidate into an isolated temporary directory, parses it through
-/// the production canonical song loader, and scores it against immutable reference-audio
+/// Downloads discovery candidates into isolated temporary directories, parses them through
+/// the production canonical song loader, and scores them against immutable reference-audio
 /// evidence without adding anything to the Library.
 /// </summary>
 public sealed class OnlineSongReferenceVerificationService
@@ -25,6 +34,51 @@ public sealed class OnlineSongReferenceVerificationService
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _temporaryDirectory = Path.GetFullPath(
             temporaryDirectory ?? Path.Combine(Path.GetTempPath(), "RobloxPiano", "reference-verification"));
+    }
+
+    public async Task<OnlineSongReferenceVerificationBatchResult> VerifyBatchAsync(
+        IEnumerable<SongDiscoveryCandidate> candidates,
+        ReferenceAudioAnalysis reference,
+        int maxCandidates = 5,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        ArgumentNullException.ThrowIfNull(reference);
+        if (maxCandidates is <= 0 or > 10)
+            throw new ArgumentOutOfRangeException(nameof(maxCandidates), "Batch verification supports between 1 and 10 candidates.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var bounded = candidates
+            .Where(candidate => candidate is not null)
+            .GroupBy(CandidateIdentity, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .Take(maxCandidates)
+            .ToArray();
+
+        var verified = new List<ReferenceVerifiedSongCandidate>(bounded.Length);
+        var failures = new List<OnlineSongReferenceVerificationFailure>();
+        foreach (var candidate in bounded)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var result = await VerifyAsync(candidate, reference, cancellationToken).ConfigureAwait(false);
+                verified.Add(new ReferenceVerifiedSongCandidate(result.Candidate, result.Assessment));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (IsCandidateFailure(exception))
+            {
+                failures.Add(new OnlineSongReferenceVerificationFailure(candidate, exception.Message));
+            }
+        }
+
+        var ranked = verified.Count == 0
+            ? Array.Empty<ReferenceVerifiedSongCandidate>()
+            : ReferenceVerifiedSongRanker.Rank(verified, verified.Count);
+        return new OnlineSongReferenceVerificationBatchResult(ranked, failures, bounded.Length);
     }
 
     public async Task<OnlineSongReferenceVerificationResult> VerifyAsync(
@@ -77,6 +131,19 @@ public sealed class OnlineSongReferenceVerificationService
             TryDeleteDirectory(operationDirectory);
         }
     }
+
+    private static string CandidateIdentity(SongDiscoveryCandidate candidate)
+        => string.Join("|", candidate.ProviderId, candidate.ContentIdentity ?? string.Empty, candidate.DownloadUri.AbsoluteUri);
+
+    private static bool IsCandidateFailure(Exception exception)
+        => exception is HttpRequestException
+            or IOException
+            or UnauthorizedAccessException
+            or FormatException
+            or InvalidDataException
+            or InvalidOperationException
+            or NotSupportedException
+            or OverflowException;
 
     private static async Task DownloadBoundedAsync(
         HttpContent content,
