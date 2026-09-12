@@ -119,7 +119,7 @@ internal static class InputMatrixAssessmentRegression
             Cell("SENDINPUT_SCAN", "ROBLOX_NO_REACTION", false, session: new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 2_000), 0x1111))
         ]);
         Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, processRestart.Verdict, "process restart must invalidate matrix");
-        Equal("ROBLOX_SESSION_CHANGED", processRestart.FailureBoundary, "process restart boundary");
+        Equal("ROBLOX_SESSION_CHANGED_DURING_MATRIX", processRestart.FailureBoundary, "process restart boundary");
         if (processRestart.IsConclusive)
         {
             throw new InvalidOperationException("Evidence spanning two Roblox process lifetimes must never be conclusive.");
@@ -131,7 +131,7 @@ internal static class InputMatrixAssessmentRegression
             Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false, session: new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 1_000), 0x2222))
         ]);
         Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, windowReplacement.Verdict, "selected HWND change must invalidate matrix");
-        Equal("ROBLOX_SESSION_CHANGED", windowReplacement.FailureBoundary, "window replacement boundary");
+        Equal("ROBLOX_SESSION_CHANGED_DURING_MATRIX", windowReplacement.FailureBoundary, "window replacement boundary");
 
         var missingIdentity = Assess(
         [
@@ -183,14 +183,27 @@ internal static class InputMatrixAssessmentRegression
             throw new InvalidOperationException("A stale Yes/No answer must never prove a synthetic winner after Roblox changed session.");
         }
 
-        var latestCellWins = Assess(
+        var crossSessionRetry = Assess(
         [
             Cell("REAL_KEY", "ROBLOX_REACTED", true),
             Cell("SENDINPUT_VK", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, "old", new RobloxInputMatrixSessionIdentity(new RobloxProcessIdentity(100, 9_999), 0x9999)),
             Cell("SENDINPUT_VK", "ROBLOX_REACTED", true, "retry", SessionA)
         ]);
-        Equal(RobloxInputMatrixVerdict.SyntheticVariantWorks, latestCellWins.Verdict, "latest retry must replace stale cross-session cell evidence");
-        Contains(latestCellWins.WinningCells, "SENDINPUT_VK", "retry winner must be preserved");
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, crossSessionRetry.Verdict, "cross-session incomplete retry must fail closed");
+        Equal("ROBLOX_SESSION_CHANGED_DURING_MATRIX", crossSessionRetry.FailureBoundary, "cross-session retry boundary");
+        if (crossSessionRetry.IsConclusive)
+        {
+            throw new InvalidOperationException("An incomplete attempt from an older Roblox process/window must not be erased by a confirmed retry on a new surface.");
+        }
+
+        var sameSessionRetry = Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            Cell("SENDINPUT_VK", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, "same-session-old", SessionA),
+            Cell("SENDINPUT_VK", "ROBLOX_REACTED", true, "same-session-retry", SessionA)
+        ]);
+        Equal(RobloxInputMatrixVerdict.SyntheticVariantWorks, sameSessionRetry.Verdict, "same-session incomplete retry must remain valid");
+        Contains(sameSessionRetry.WinningCells, "SENDINPUT_VK", "same-session retry winner must be preserved");
     }
 
     private static RobloxInputMatrixAssessment Assess(RobloxInputMatrixCellEvidence[] evidence)

@@ -159,6 +159,19 @@ internal static class RobloxInputMatrixAssessmentPolicy
             .Select(item => item!.Cell)
             .ToArray();
 
+        var retainedHistoryContinuity = AssessRetainedHistorySessionContinuity(retained);
+        if (retainedHistoryContinuity is not null)
+        {
+            return new RobloxInputMatrixAssessment(
+                RobloxInputMatrixVerdict.SessionContinuityInvalid,
+                retainedHistoryContinuity.Value.Boundary,
+                retainedHistoryContinuity.Value.Summary,
+                retainedHistoryContinuity.Value.NextAction,
+                Array.Empty<string>(),
+                failures,
+                pending);
+        }
+
         var continuity = AssessSessionContinuity(cells.Values, currentSessionIdentity);
         if (continuity is not null)
         {
@@ -272,6 +285,28 @@ internal static class RobloxInputMatrixAssessmentPolicy
         // A retry is safe only when every earlier retained attempt was still incomplete
         // and exactly the latest attempt is the first one to reach the Windows boundary.
         return confirmedIndexes.Length != 1 || confirmedIndexes[0] != group.Length - 1;
+    }
+
+    private static (string Boundary, string Summary, string NextAction)? AssessRetainedHistorySessionContinuity(
+        IEnumerable<RobloxInputMatrixCellEvidence> evidence)
+    {
+        var knownSessions = evidence
+            .Where(item => item.SessionIdentity is not null)
+            .Select(item => item.SessionIdentity!.Value)
+            .Distinct()
+            .ToArray();
+
+        if (knownSessions.Length <= 1)
+        {
+            return null;
+        }
+
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_HISTORY_SESSION_CHANGED identities={knownSessions.Length} evidenceTrusted=false authorizesPlayback=false.");
+        return (
+            "ROBLOX_SESSION_CHANGED_DURING_MATRIX",
+            "Retained matrix history spans more than one known Roblox process lifetime or selected HWND, including incomplete attempts. A later retry cannot erase an observed target-session change.",
+            "Close and reopen Roblox Input Check after Roblox stabilizes, then rerun from Real-Key Baseline. Incomplete-to-confirmed retry remains valid only while every known retained attempt belongs to the same Roblox process/window identity.");
     }
 
     private static RobloxInputMatrixSessionIdentity? CaptureCurrentSessionIdentity()
