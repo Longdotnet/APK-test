@@ -19,6 +19,8 @@ internal sealed record RobloxSendInputScanProbeResult(
     ushort ScanCode,
     TimeSpan HoldDuration)
 {
+    public WindowsLowLevelKeyboardProvenanceSnapshot? LowLevelProvenance { get; init; }
+
     public bool NativeDeliveryObserved => ActivationConfirmed
         && StableForegroundConfirmed
         && DesktopParity != WindowsInputDesktopParity.Different
@@ -106,11 +108,15 @@ internal static class RobloxSendInputScanDiagnosticProbe
         var continuity = new RobloxProbeFocusContinuity();
         using var eventContinuity = new RobloxSyntheticProbeForegroundContinuity(target, probeId, "SendInputScanCodeDiagnostic");
         eventContinuity.Start();
+        using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "SendInputScanCodeDiagnostic", oracle.VirtualKey);
+        lowLevelProvenance.Start();
+        var lowLevelObservationEnded = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
             LogKeyState(probeId, "SENDINPUT_BEFORE_DOWN", target, oracle.VirtualKey, scanCode);
             eventContinuity.BeginHold();
+            lowLevelProvenance.BeginObservation();
             Emit(downEvent);
 
             var sampleIndex = 0;
@@ -163,6 +169,8 @@ internal static class RobloxSendInputScanDiagnosticProbe
             eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "SENDINPUT_AFTER_UP", target, oracle.VirtualKey, scanCode, heldDuration);
+            var lowLevelSnapshot = lowLevelProvenance.EndObservation();
+            lowLevelObservationEnded = true;
 
             var result = new RobloxSendInputScanProbeResult(
                 probeId,
@@ -173,7 +181,10 @@ internal static class RobloxSendInputScanDiagnosticProbe
                 continuity.ForegroundHeldContinuously && eventContinuity.ContinuityPreserved,
                 oracle.VirtualKey,
                 scanCode,
-                heldDuration);
+                heldDuration)
+            {
+                LowLevelProvenance = lowLevelSnapshot
+            };
             LogVerdict(result, null);
             return result;
         }
@@ -187,6 +198,11 @@ internal static class RobloxSendInputScanDiagnosticProbe
             catch (WindowsInputInjectionException)
             {
                 // Best-effort release for a diagnostic path. Preserve the original failure.
+            }
+
+            if (!lowLevelObservationEnded)
+            {
+                _ = lowLevelProvenance.EndObservation();
             }
         }
     }

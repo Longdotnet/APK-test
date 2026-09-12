@@ -51,6 +51,62 @@ internal static class LowLevelKeyboardProvenanceRegression
             0x0101);
         True(targetUp.IsTargetVirtualKey, "target W key-up must be recognized");
         True(!targetUp.IsDown && targetUp.IsUp, "WM_KEYUP must classify as up only");
+
+        var snapshot = new WindowsLowLevelKeyboardProvenanceSnapshot(
+            HookArmed: true,
+            TargetDownObserved: true,
+            TargetUpObserved: true,
+            DownFlags: WindowsLowLevelKeyboardProvenance.LlkhfInjected,
+            UpFlags: WindowsLowLevelKeyboardProvenance.LlkhfInjected,
+            DownScanCode: 0x11,
+            UpScanCode: 0x11,
+            DownProvenance: WindowsLowLevelKeyboardProvenanceKind.Injected,
+            UpProvenance: WindowsLowLevelKeyboardProvenanceKind.Injected);
+        True(snapshot.InjectedPairObserved, "complete injected W pair must be recognized");
+
+        var keybdScan = new RobloxPhysicalKeyProbeResult(
+            "probe-scan",
+            true,
+            true,
+            WindowsInputDesktopParity.Same,
+            true,
+            true,
+            0x57,
+            0x11,
+            TimeSpan.FromMilliseconds(80))
+        {
+            LowLevelProvenance = snapshot
+        };
+        Equal(snapshot, keybdScan.LowLevelProvenance!.Value, "keybd_event scan result must retain low-level provenance");
+
+        var sendInputVk = new RobloxSendInputVirtualKeyProbeResult(
+            "probe-sendinput-vk",
+            true,
+            true,
+            WindowsInputDesktopParity.Same,
+            true,
+            true,
+            0x57,
+            TimeSpan.FromMilliseconds(80))
+        {
+            LowLevelProvenance = snapshot
+        };
+        Equal(snapshot, sendInputVk.LowLevelProvenance!.Value, "SendInput VK result must retain low-level provenance");
+
+        var sendInputScan = new RobloxSendInputScanProbeResult(
+            "probe-sendinput-scan",
+            true,
+            true,
+            WindowsInputDesktopParity.Same,
+            true,
+            true,
+            0x57,
+            0x11,
+            TimeSpan.FromMilliseconds(80))
+        {
+            LowLevelProvenance = snapshot
+        };
+        Equal(snapshot, sendInputScan.LowLevelProvenance!.Value, "SendInput scan result must retain low-level provenance");
     }
 
     private static void True(bool value, string message)

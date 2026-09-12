@@ -19,6 +19,8 @@ internal sealed record RobloxPhysicalKeyProbeResult(
     byte ScanCode,
     TimeSpan HoldDuration)
 {
+    public WindowsLowLevelKeyboardProvenanceSnapshot? LowLevelProvenance { get; init; }
+
     public bool NativeDeliveryObserved => ActivationConfirmed
         && StableForegroundConfirmed
         && DesktopParity != WindowsInputDesktopParity.Different
@@ -97,11 +99,15 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
         var continuity = new RobloxProbeFocusContinuity();
         using var eventContinuity = new RobloxSyntheticProbeForegroundContinuity(target, probeId, "KeybdEventScanDiagnostic");
         eventContinuity.Start();
+        using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "KeybdEventScanDiagnostic", oracle.VirtualKey);
+        lowLevelProvenance.Start();
+        var lowLevelObservationEnded = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
             LogKeyState(probeId, "PHYSICAL_BEFORE_DOWN", target, oracle.VirtualKey, scanCode);
             eventContinuity.BeginHold();
+            lowLevelProvenance.BeginObservation();
             Emit(downEvent);
 
             var sampleIndex = 0;
@@ -154,6 +160,8 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
             eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "PHYSICAL_AFTER_UP", target, oracle.VirtualKey, scanCode, heldDuration);
+            var lowLevelSnapshot = lowLevelProvenance.EndObservation();
+            lowLevelObservationEnded = true;
 
             var result = new RobloxPhysicalKeyProbeResult(
                 probeId,
@@ -164,7 +172,10 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
                 continuity.ForegroundHeldContinuously && eventContinuity.ContinuityPreserved,
                 oracle.VirtualKey,
                 scanCode,
-                heldDuration);
+                heldDuration)
+            {
+                LowLevelProvenance = lowLevelSnapshot
+            };
             LogVerdict(result, null);
             return result;
         }
@@ -178,6 +189,11 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
             catch (WindowsInputInjectionException)
             {
                 // Best-effort release for a diagnostic path. Preserve the original failure.
+            }
+
+            if (!lowLevelObservationEnded)
+            {
+                _ = lowLevelProvenance.EndObservation();
             }
         }
     }

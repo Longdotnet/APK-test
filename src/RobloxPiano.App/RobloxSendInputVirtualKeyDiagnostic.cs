@@ -18,6 +18,8 @@ internal sealed record RobloxSendInputVirtualKeyProbeResult(
     ushort VirtualKey,
     TimeSpan HoldDuration)
 {
+    public WindowsLowLevelKeyboardProvenanceSnapshot? LowLevelProvenance { get; init; }
+
     public bool NativeDeliveryObserved => ActivationConfirmed
         && StableForegroundConfirmed
         && DesktopParity != WindowsInputDesktopParity.Different
@@ -100,11 +102,15 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
         var continuity = new RobloxProbeFocusContinuity();
         using var eventContinuity = new RobloxSyntheticProbeForegroundContinuity(target, probeId, "SendInputVirtualKeyDiagnostic");
         eventContinuity.Start();
+        using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "SendInputVirtualKeyDiagnostic", oracle.VirtualKey);
+        lowLevelProvenance.Start();
+        var lowLevelObservationEnded = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
             LogKeyState(probeId, "SENDINPUT_VK_BEFORE_DOWN", target, oracle.VirtualKey);
             eventContinuity.BeginHold();
+            lowLevelProvenance.BeginObservation();
             Emit(downEvent);
 
             var sampleIndex = 0;
@@ -151,6 +157,8 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
             eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "SENDINPUT_VK_AFTER_UP", target, oracle.VirtualKey, heldDuration);
+            var lowLevelSnapshot = lowLevelProvenance.EndObservation();
+            lowLevelObservationEnded = true;
 
             var result = new RobloxSendInputVirtualKeyProbeResult(
                 probeId,
@@ -160,7 +168,10 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
                 continuity.WindowsKeyDownObserved,
                 continuity.ForegroundHeldContinuously && eventContinuity.ContinuityPreserved,
                 oracle.VirtualKey,
-                heldDuration);
+                heldDuration)
+            {
+                LowLevelProvenance = lowLevelSnapshot
+            };
             LogVerdict(result, null);
             return result;
         }
@@ -174,6 +185,11 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
             catch (WindowsInputInjectionException)
             {
                 // Best-effort release. Preserve the original diagnostic failure.
+            }
+
+            if (!lowLevelObservationEnded)
+            {
+                _ = lowLevelProvenance.EndObservation();
             }
         }
     }
