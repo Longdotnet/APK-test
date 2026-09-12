@@ -15,7 +15,7 @@ SHA256: `{{SHA256}}`
 2. Existing Audio-to-Piano Phase 19 remains available: owned/local audio -> Create Piano Version -> Preview -> review -> explicit Add to Library.
 3. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without intentionally changing Roblox experience/session.
 4. Keep the selected Roblox surface foreground for the full physical W hold and through each synthetic probe/reaction assessment.
-5. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a Support Bundle.
+5. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**.
 
 ## Runtime Input P0 Phase 77 — event-driven real-key hold continuity
 
@@ -38,6 +38,7 @@ SHA256: `{{SHA256}}`
 ## Runtime Input invariants
 
 - `keybd_event`, SendInput diagnostics, the field-proven PowerShell oracle, scheduler truth, focus authorization, emergency release-all, held-key/pedal ownership and Legacy playback remain unchanged.
+- **Legacy x2** remains a protected regression/perceptual baseline alongside Legacy.
 - Loss of authorized Roblox focus still stops production input.
 - AI/network remain irrelevant to core Runtime Input truth.
 - CI success is not a Roblox field PASS. Visible movement or the expected W-bound piano reaction inside the real Roblox client is still required.
