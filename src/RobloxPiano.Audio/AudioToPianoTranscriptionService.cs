@@ -55,6 +55,7 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     TimeSpan ArrangeElapsed,
     TimeSpan QualityElapsed)
 {
+    public AudioTranscriptionQualityAssessment BaseQuality { get; init; } = Quality;
     public IReadOnlyList<AudioTranscriptionReviewRegion> ReviewRegions { get; init; } = Array.Empty<AudioTranscriptionReviewRegion>();
     public TimeSpan ReviewElapsed { get; init; }
     public bool RequiresReview => Quality.RequiresReview || ReviewRegions.Count != 0;
@@ -64,7 +65,10 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
 
 public sealed record AudioToPianoTranscriptionResult(
     RobloxPianoArrangementResult Arrangement,
-    AudioToPianoTranscriptionDiagnostics Diagnostics);
+    AudioToPianoTranscriptionDiagnostics Diagnostics)
+{
+    public IReadOnlyList<BasicPitchTranscribedNote> NoteEvidence { get; init; } = Array.Empty<BasicPitchTranscribedNote>();
+}
 
 /// <summary>
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
@@ -225,6 +229,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             arrangement.Track.TimelineDuration,
             suppression.Diagnostics,
             options.Quality);
+        var baseQuality = quality;
         var qualityElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -267,10 +272,19 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             arrangeElapsed,
             qualityElapsed)
         {
+            BaseQuality = baseQuality,
             ReviewRegions = reviewRegions,
             ReviewElapsed = reviewElapsed
         };
-        var result = new AudioToPianoTranscriptionResult(arrangement, diagnostics);
+        var result = new AudioToPianoTranscriptionResult(arrangement, diagnostics)
+        {
+            NoteEvidence = suppression.Notes
+                .OrderBy(note => note.Start)
+                .ThenBy(note => note.MidiNote)
+                .ThenBy(note => note.End)
+                .ThenByDescending(note => note.Amplitude)
+                .ToArray()
+        };
         Report(progress, AudioToPianoTranscriptionStage.Completed, 1d, "Piano version created.");
         return result;
     }
