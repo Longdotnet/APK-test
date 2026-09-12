@@ -5,7 +5,8 @@ public sealed record AudioToPianoTranscriptionOptions(
     BasicPitchNoteDecoderOptions? Decoder = null,
     BasicPitchHarmonicSuppressionOptions? HarmonicSuppression = null,
     RobloxPianoArrangementOptions? Arrangement = null,
-    AudioTranscriptionQualityOptions? Quality = null);
+    AudioTranscriptionQualityOptions? Quality = null,
+    AudioTranscriptionReviewRegionOptions? ReviewRegions = null);
 
 public enum AudioToPianoTranscriptionStage
 {
@@ -54,9 +55,11 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     TimeSpan ArrangeElapsed,
     TimeSpan QualityElapsed)
 {
-    public bool RequiresReview => Quality.RequiresReview;
+    public IReadOnlyList<AudioTranscriptionReviewRegion> ReviewRegions { get; init; } = Array.Empty<AudioTranscriptionReviewRegion>();
+    public TimeSpan ReviewElapsed { get; init; }
+    public bool RequiresReview => Quality.RequiresReview || ReviewRegions.Count != 0;
     public int NotesAfterSuppression => HarmonicSuppression.RetainedNotes;
-    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed;
+    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed + ReviewElapsed;
 }
 
 public sealed record AudioToPianoTranscriptionResult(
@@ -67,7 +70,7 @@ public sealed record AudioToPianoTranscriptionResult(
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
 /// The service composes deterministic ingest, Basic Pitch inference, note decoding, conservative harmonic suppression
 /// and arranger layers; it does not schedule input or mutate playback state. Quality classification and every
-/// suppression decision remain fail-visible in diagnostics.
+/// suppression/review decision remain fail-visible in diagnostics.
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
@@ -80,6 +83,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
     private readonly BasicPitchHarmonicSuppressor harmonicSuppressor = new();
     private readonly RobloxPianoArranger arranger = new();
     private readonly AudioTranscriptionQualityEvaluator qualityEvaluator = new();
+    private readonly AudioTranscriptionReviewRegionAnalyzer reviewRegionAnalyzer = new();
     private bool disposed;
 
     public AudioToPianoTranscriptionService(
@@ -213,7 +217,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         var arrangeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Quality, 0.94d, "Checking confidence and review requirements...");
+        Report(progress, AudioToPianoTranscriptionStage.Quality, 0.94d, "Checking confidence and review regions...");
         started = System.Diagnostics.Stopwatch.GetTimestamp();
         var quality = qualityEvaluator.Evaluate(
             audio.Duration,
@@ -222,6 +226,31 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             suppression.Diagnostics,
             options.Quality);
         var qualityElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var reviewRegions = reviewRegionAnalyzer.Analyze(
+            audio.Duration,
+            suppression.Notes,
+            arrangement.Track,
+            options.ReviewRegions,
+            cancellationToken);
+        var reviewElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+
+        if (reviewRegions.Count != 0)
+        {
+            var localReasons = reviewRegions.Select(FormatReviewRegionReason);
+            quality = quality with
+            {
+                Readiness = quality.Readiness == AudioTranscriptionReadiness.Ready
+                    ? AudioTranscriptionReadiness.NeedsReview
+                    : quality.Readiness,
+                Reasons = quality.Reasons
+                    .Concat(localReasons)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray()
+            };
+        }
 
         var diagnostics = new AudioToPianoTranscriptionDiagnostics(
             audio.Duration,
@@ -236,10 +265,27 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             decodeElapsed,
             suppressionElapsed,
             arrangeElapsed,
-            qualityElapsed);
+            qualityElapsed)
+        {
+            ReviewRegions = reviewRegions,
+            ReviewElapsed = reviewElapsed
+        };
         var result = new AudioToPianoTranscriptionResult(arrangement, diagnostics);
         Report(progress, AudioToPianoTranscriptionStage.Completed, 1d, "Piano version created.");
         return result;
+    }
+
+    private static string FormatReviewRegionReason(AudioTranscriptionReviewRegion region)
+    {
+        var range = $"{FormatReviewTime(region.Start)}-{FormatReviewTime(region.End)}";
+        return $"REVIEW_REGION_{range}_{string.Join('+', region.Reasons)}";
+    }
+
+    private static string FormatReviewTime(TimeSpan value)
+    {
+        var totalMinutes = checked((int)Math.Floor(value.TotalMinutes));
+        var seconds = value.Seconds;
+        return $"{totalMinutes:00}:{seconds:00}";
     }
 
     private static void ReportInferenceProgress(
