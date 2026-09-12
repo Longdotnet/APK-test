@@ -50,8 +50,10 @@ internal static class GeneratedPianoPreviewRegression
                 MaximumPreviewDuration: TimeSpan.FromSeconds(2)));
 
         True(provider.Info.IsTruncated, "Long previews must surface truncation.");
+        Equal(TimeSpan.Zero, provider.Info.PreviewStart);
         Equal(TimeSpan.FromMinutes(3), provider.Info.SourceDuration);
         Equal(TimeSpan.FromSeconds(2), provider.Info.PreviewDuration);
+        Equal(TimeSpan.FromSeconds(2), provider.Info.PreviewEnd);
         Equal(1, provider.Info.NoteVoices);
 
         var buffer = new float[64];
@@ -61,6 +63,80 @@ internal static class GeneratedPianoPreviewRegression
             total += read;
         Equal(16_000, total);
         Equal(0, provider.Read(buffer.AsSpan()));
+    }
+
+    public static void TimelineWindowClipsAndShiftsOverlappingEvents()
+    {
+        var track = new PerformanceTrack(
+            "window preview",
+            120d,
+            480,
+            TimeSpan.Zero,
+            [
+                new PerformanceEvent(TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), ['q']),
+                new PerformanceEvent(TimeSpan.FromMilliseconds(1250), TimeSpan.FromMilliseconds(500), ['w']),
+                new PerformanceEvent(TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(250), ['e'])
+            ],
+            TimeSpan.FromSeconds(4));
+        var options = new GeneratedPianoPreviewOptions(
+            SampleRate: 8_000,
+            MaximumPreviewDuration: TimeSpan.FromSeconds(1),
+            StartOffset: TimeSpan.FromSeconds(1));
+        var provider = new GeneratedPianoPreviewSampleProvider(track, options);
+
+        Equal(TimeSpan.FromSeconds(4), provider.Info.SourceDuration);
+        Equal(TimeSpan.FromSeconds(1), provider.Info.PreviewStart);
+        Equal(TimeSpan.FromSeconds(1), provider.Info.PreviewDuration);
+        Equal(TimeSpan.FromSeconds(2), provider.Info.PreviewEnd);
+        Equal(2, provider.Info.NoteVoices);
+        True(provider.Info.IsTruncated, "A middle timeline window must surface that source material remains after it.");
+
+        var samples = Render(track, options, 97);
+        Equal(8_000, samples.Length);
+        True(samples.Take(500).Any(sample => Math.Abs(sample) > 0.0001f), "An event already sounding at the window boundary must remain audible.");
+        True(samples.All(float.IsFinite), "Window preview must stay finite.");
+    }
+
+    public static void ReviewRegionPlanAddsBoundedContext()
+    {
+        var firstRegion = Region(TimeSpan.Zero, TimeSpan.FromSeconds(5));
+        var first = GeneratedPianoReviewPreviewPlan.Create(TimeSpan.FromSeconds(20), firstRegion);
+        Equal(TimeSpan.Zero, first.PreviewStart);
+        Equal(TimeSpan.FromSeconds(6.5), first.PreviewEnd);
+        Equal(TimeSpan.FromSeconds(6.5), first.PreviewDuration);
+
+        var middleRegion = Region(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15));
+        var middle = GeneratedPianoReviewPreviewPlan.Create(TimeSpan.FromSeconds(20), middleRegion);
+        Equal(TimeSpan.FromSeconds(8.5), middle.PreviewStart);
+        Equal(TimeSpan.FromSeconds(16.5), middle.PreviewEnd);
+        Equal(TimeSpan.FromSeconds(8), middle.PreviewDuration);
+
+        var finalRegion = Region(TimeSpan.FromSeconds(18), TimeSpan.FromSeconds(23));
+        var final = GeneratedPianoReviewPreviewPlan.Create(TimeSpan.FromSeconds(20), finalRegion);
+        Equal(TimeSpan.FromSeconds(16.5), final.PreviewStart);
+        Equal(TimeSpan.FromSeconds(20), final.PreviewEnd);
+        Equal(TimeSpan.FromSeconds(3.5), final.PreviewDuration);
+    }
+
+    public static void InvalidPreviewWindowFailsClosed()
+    {
+        var track = new PerformanceTrack(
+            "invalid window",
+            120d,
+            480,
+            TimeSpan.Zero,
+            [new PerformanceEvent(TimeSpan.Zero, TimeSpan.FromMilliseconds(100), ['q'])],
+            TimeSpan.FromSeconds(1));
+
+        Throws<ArgumentOutOfRangeException>(() => new GeneratedPianoPreviewSampleProvider(
+            track,
+            new GeneratedPianoPreviewOptions(StartOffset: TimeSpan.FromMilliseconds(-1))));
+        Throws<InvalidDataException>(() => new GeneratedPianoPreviewSampleProvider(
+            track,
+            new GeneratedPianoPreviewOptions(StartOffset: TimeSpan.FromSeconds(1))));
+        Throws<InvalidDataException>(() => GeneratedPianoReviewPreviewPlan.Create(
+            track.TimelineDuration,
+            Region(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3))));
     }
 
     public static void InvalidCanonicalKeyFailsClosed()
@@ -75,6 +151,18 @@ internal static class GeneratedPianoPreviewRegression
 
         Throws<InvalidDataException>(() => new GeneratedPianoPreviewSampleProvider(track));
     }
+
+    private static AudioTranscriptionReviewRegion Region(TimeSpan start, TimeSpan end)
+        => new(
+            start,
+            end,
+            2,
+            1,
+            0.2f,
+            0.5,
+            0.2,
+            1,
+            ["LOW_ACTIVATION_REGION"]);
 
     private static float[] Render(PerformanceTrack track, GeneratedPianoPreviewOptions options, int chunkSize)
     {
