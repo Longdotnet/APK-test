@@ -3,6 +3,7 @@ using RobloxPiano.Audio;
 var tests = new (string Name, Action Run)[]
 {
     ("real Basic Pitch model produces canonical arranged events", RealModelSineProducesCanonicalPerformance),
+    ("review regions promote local warnings into client-visible readiness", ReviewRegionsPromoteClientVisibleReadiness),
     ("pinned Basic Pitch model meets redistributable audio corpus baseline", RealModelCorpusMeetsQualityBaseline),
     ("pipeline rejects wrong normalized sample rate before inference", WrongNormalizedRateFailsBeforeInference),
     ("pipeline honors pre-cancellation before inference", PreCancelledPipelineStopsBeforeInference)
@@ -51,6 +52,35 @@ static void RealModelSineProducesCanonicalPerformance()
     True(result.Diagnostics.DecodedNotes > 0);
     True(result.Arrangement.Diagnostics.ArrangedEvents > 0);
     True(result.Diagnostics.TotalElapsed > TimeSpan.Zero);
+}
+
+static void ReviewRegionsPromoteClientVisibleReadiness()
+{
+    var modelPath = RequireModelPath();
+    var samples = BuildReferenceTone(seconds: 2.0, frequencyHz: 440.0);
+    using var service = new AudioToPianoTranscriptionService(
+        modelPath,
+        new BasicPitchInferenceOptions(MaxChunksPerBatch: 2));
+
+    var options = PipelineOptions() with
+    {
+        ReviewRegions = new AudioTranscriptionReviewRegionOptions(
+            WindowDuration: TimeSpan.FromSeconds(1),
+            LowActivationThreshold: 1.0f,
+            LowRetentionRatio: 0d,
+            HighEventsPerSecond: 1000d,
+            HighSimultaneousNotes: 16)
+    };
+    var result = service.TranscribeNormalized(
+        new NormalizedAudio(samples, BasicPitchInferenceService.RequiredSampleRate),
+        "Review region fixture",
+        options);
+
+    True(result.Diagnostics.ReviewRegions.Count > 0, "Forced low-activation fixture must surface at least one review region.");
+    True(result.Diagnostics.RequiresReview, "Local review evidence must make diagnostics require review.");
+    True(result.Diagnostics.Quality.Readiness != AudioTranscriptionReadiness.Ready, "Local review evidence must not remain client-visible Ready.");
+    True(result.Diagnostics.Quality.Reasons.Any(reason => reason.StartsWith("REVIEW_REGION_", StringComparison.Ordinal)), "Quality reasons must expose a deterministic timestamped review-region reason.");
+    True(result.Diagnostics.ReviewElapsed >= TimeSpan.Zero, "Review analysis duration must remain bounded and observable.");
 }
 
 static void RealModelCorpusMeetsQualityBaseline()

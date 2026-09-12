@@ -120,13 +120,15 @@ public sealed class AudioToPianoClientJob : IDisposable
                 CancellationToken.None).ConfigureAwait(false);
 
             linked.Token.ThrowIfCancellationRequested();
-            var quality = result.Diagnostics.Quality;
+            var diagnostics = result.Diagnostics;
+            var quality = diagnostics.Quality;
+            var reviewSummary = FormatReviewSummary(diagnostics.ReviewRegions);
             var completed = new AudioToPianoClientJobSnapshot(
                 AudioToPianoClientJobState.Completed,
                 AudioToPianoTranscriptionStage.Completed,
                 1d,
-                quality.RequiresReview
-                    ? $"Piano version created — {quality.Readiness}. Review flagged regions before adding it to your library."
+                diagnostics.RequiresReview
+                    ? $"Piano version created — {quality.Readiness}. {reviewSummary} Preview these regions before adding it to your library."
                     : "Piano version created — Ready for preview and library review.",
                 fullPath,
                 null);
@@ -212,6 +214,25 @@ public sealed class AudioToPianoClientJob : IDisposable
         }
         progress?.Report(terminal);
     }
+
+    private static string FormatReviewSummary(IReadOnlyList<AudioTranscriptionReviewRegion> regions)
+    {
+        if (regions.Count == 0)
+            return "Deterministic quality checks require review.";
+
+        const int maximumRanges = 3;
+        var ranges = regions
+            .Take(maximumRanges)
+            .Select(region => $"{FormatTime(region.Start)}–{FormatTime(region.End)}")
+            .ToArray();
+        var remainder = regions.Count - ranges.Length;
+        return remainder > 0
+            ? $"Review {regions.Count} flagged regions: {string.Join(", ", ranges)} (+{remainder} more)."
+            : $"Review {regions.Count} flagged region(s): {string.Join(", ", ranges)}.";
+    }
+
+    private static string FormatTime(TimeSpan value)
+        => value.TotalHours >= 1d ? value.ToString(@"hh\:mm\:ss") : value.ToString(@"mm\:ss");
 
     public void Dispose()
     {
