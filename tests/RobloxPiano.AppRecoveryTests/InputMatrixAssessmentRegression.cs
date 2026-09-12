@@ -12,6 +12,8 @@ internal static class InputMatrixAssessmentRegression
     [ModuleInitializer]
     internal static void Verify()
     {
+        RobloxInputMatrixProbeEvidenceRegistry.ResetForDiagnostics();
+
         var noEvidence = Assess(Array.Empty<RobloxInputMatrixCellEvidence>());
         Equal(RobloxInputMatrixVerdict.InsufficientEvidence, noEvidence.Verdict, "empty matrix verdict");
         Contains(noEvidence.PendingCells, "REAL_KEY", "empty matrix must request real baseline");
@@ -44,7 +46,7 @@ internal static class InputMatrixAssessmentRegression
         Contains(winner.WinningCells, "KEYBD_EVENT_SCAN", "winning semantics must be explicit");
         if (!winner.IsConclusive)
         {
-            throw new InvalidOperationException("A field-reacting synthetic variant must produce a conclusive matrix assessment.");
+            throw new InvalidOperationException("A field-reacting provenance-clean synthetic variant must produce a conclusive matrix assessment.");
         }
 
         var allSyntheticFail = Assess(
@@ -61,7 +63,50 @@ internal static class InputMatrixAssessmentRegression
         Equal(0, allSyntheticFail.PendingCells.Count, "conclusive matrix must have no pending cells");
         if (!allSyntheticFail.IsConclusive)
         {
-            throw new InvalidOperationException("A complete real-works/all-synthetic-fails matrix must be conclusive.");
+            throw new InvalidOperationException("A complete real-works/all-provenance-clean-synthetic-fails matrix must be conclusive.");
+        }
+
+        const string contaminatedWinnerProbe = "contaminated-winner";
+        RecordContaminated(contaminatedWinnerProbe);
+        var contaminatedWinner = Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            RawCell("KEYBD_EVENT_SCAN", "ROBLOX_REACTED", true, contaminatedWinnerProbe)
+        ]);
+        Equal(RobloxInputMatrixVerdict.InsufficientEvidence, contaminatedWinner.Verdict, "contaminated synthetic winner must fail closed");
+        Contains(contaminatedWinner.PendingCells, "KEYBD_EVENT_SCAN", "contaminated winner must be pending");
+        if (contaminatedWinner.IsConclusive || contaminatedWinner.WinningCells.Count != 0)
+        {
+            throw new InvalidOperationException("A physical-W-contaminated synthetic Yes answer must never prove a synthetic winner.");
+        }
+
+        const string contaminatedFailureProbe = "contaminated-failure";
+        RecordContaminated(contaminatedFailureProbe);
+        var contaminatedFailure = Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            Cell("POWERSHELL_ORACLE", "ROBLOX_NO_REACTION", false),
+            RawCell("KEYBD_EVENT_SCAN", "ROBLOX_NO_REACTION", false, contaminatedFailureProbe),
+            Cell("SENDINPUT_VK", "ROBLOX_NO_REACTION", false),
+            Cell("SENDINPUT_SCAN", "ROBLOX_NO_REACTION", false)
+        ]);
+        Equal(RobloxInputMatrixVerdict.InsufficientEvidence, contaminatedFailure.Verdict, "contaminated all-fail matrix must fail closed");
+        Contains(contaminatedFailure.PendingCells, "KEYBD_EVENT_SCAN", "contaminated no-reaction must remain pending");
+        if (contaminatedFailure.IsConclusive)
+        {
+            throw new InvalidOperationException("A contaminated synthetic No answer must never establish POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION.");
+        }
+
+        var missingProvenance = Assess(
+        [
+            Cell("REAL_KEY", "ROBLOX_REACTED", true),
+            RawCell("SENDINPUT_SCAN", "ROBLOX_REACTED", true, "missing-provenance")
+        ]);
+        Equal(RobloxInputMatrixVerdict.InsufficientEvidence, missingProvenance.Verdict, "missing synthetic provenance must fail closed");
+        Contains(missingProvenance.PendingCells, "SENDINPUT_SCAN", "missing provenance winner must be pending");
+        if (missingProvenance.IsConclusive)
+        {
+            throw new InvalidOperationException("A synthetic reaction without retained target-key provenance must never be conclusive.");
         }
 
         var processRestart = Assess(
@@ -156,7 +201,61 @@ internal static class InputMatrixAssessmentRegression
         bool? reacted,
         string probe = "probe",
         RobloxInputMatrixSessionIdentity? session = null)
+    {
+        if (!cell.Equals("REAL_KEY", StringComparison.Ordinal))
+        {
+            RecordClean(probe);
+        }
+
+        return RawCell(cell, verdict, reacted, probe, session);
+    }
+
+    private static RobloxInputMatrixCellEvidence RawCell(
+        string cell,
+        string verdict,
+        bool? reacted,
+        string probe,
+        RobloxInputMatrixSessionIdentity? session = null)
         => new(cell, probe, verdict, reacted, session ?? SessionA);
+
+    private static void RecordClean(string probe)
+        => RobloxInputMatrixProbeEvidenceRegistry.Record(
+            probe,
+            new WindowsLowLevelKeyboardProvenanceSnapshot(
+                true,
+                true,
+                true,
+                WindowsLowLevelKeyboardProvenance.LlkhfInjected,
+                WindowsLowLevelKeyboardProvenance.LlkhfInjected,
+                0x11,
+                0x11,
+                WindowsLowLevelKeyboardProvenanceKind.Injected,
+                WindowsLowLevelKeyboardProvenanceKind.Injected)
+            {
+                TargetEventCount = 2,
+                InjectedTargetEventCount = 2,
+                UnexpectedTargetTransitionObserved = false
+            });
+
+    private static void RecordContaminated(string probe)
+        => RobloxInputMatrixProbeEvidenceRegistry.Record(
+            probe,
+            new WindowsLowLevelKeyboardProvenanceSnapshot(
+                true,
+                true,
+                true,
+                WindowsLowLevelKeyboardProvenance.LlkhfInjected,
+                WindowsLowLevelKeyboardProvenance.LlkhfInjected,
+                0x11,
+                0x11,
+                WindowsLowLevelKeyboardProvenanceKind.Injected,
+                WindowsLowLevelKeyboardProvenanceKind.Injected)
+            {
+                TargetEventCount = 3,
+                NotInjectedTargetEventCount = 1,
+                InjectedTargetEventCount = 2,
+                UnexpectedTargetTransitionObserved = true
+            });
 
     private static void Equal<T>(T expected, T actual, string name)
     {

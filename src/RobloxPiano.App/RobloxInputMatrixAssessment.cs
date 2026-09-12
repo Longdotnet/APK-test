@@ -27,9 +27,24 @@ internal sealed record RobloxInputMatrixCellEvidence(
 
     public bool IsRealKey => Cell.Equals("REAL_KEY", StringComparison.Ordinal);
     public bool IsSynthetic => !IsRealKey;
-    public bool WindowsBoundaryConfirmed => Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION";
-    public bool Reacted => RobloxReaction == true && Verdict == "ROBLOX_REACTED";
-    public bool ExplicitNoReaction => RobloxReaction == false && Verdict == "ROBLOX_NO_REACTION";
+
+    public RobloxInputMatrixSyntheticProvenanceTrust SyntheticProvenanceTrust => IsRealKey
+        ? RobloxInputMatrixSyntheticProvenanceTrust.Clean
+        : RobloxInputMatrixProbeEvidenceRegistry.GetTrust(ProbeId);
+
+    public bool SyntheticProvenanceTrusted => !IsSynthetic
+        || SyntheticProvenanceTrust == RobloxInputMatrixSyntheticProvenanceTrust.Clean;
+
+    public bool WindowsBoundaryConfirmed => Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION"
+        && SyntheticProvenanceTrusted;
+
+    public bool Reacted => WindowsBoundaryConfirmed
+        && RobloxReaction == true
+        && Verdict == "ROBLOX_REACTED";
+
+    public bool ExplicitNoReaction => WindowsBoundaryConfirmed
+        && RobloxReaction == false
+        && Verdict == "ROBLOX_NO_REACTION";
 }
 
 internal sealed record RobloxInputMatrixAssessment(
@@ -82,6 +97,16 @@ internal static class RobloxInputMatrixAssessmentPolicy
         var pending = SyntheticCells
             .Where(cell => !cells.TryGetValue(cell, out var item) || !item.WindowsBoundaryConfirmed)
             .ToArray();
+        var contaminated = synthetic
+            .Where(item => item is not null
+                && item.SyntheticProvenanceTrust == RobloxInputMatrixSyntheticProvenanceTrust.Contaminated)
+            .Select(item => item!.Cell)
+            .ToArray();
+        var missingProvenance = synthetic
+            .Where(item => item is not null
+                && item.SyntheticProvenanceTrust == RobloxInputMatrixSyntheticProvenanceTrust.Missing)
+            .Select(item => item!.Cell)
+            .ToArray();
 
         var continuity = AssessSessionContinuity(cells.Values, currentSessionIdentity);
         if (continuity is not null)
@@ -101,7 +126,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
             return new RobloxInputMatrixAssessment(
                 RobloxInputMatrixVerdict.SyntheticVariantWorks,
                 "SYNTHETIC_VARIANT_REACHES_ROBLOX",
-                $"Roblox visibly reacted to synthetic variant(s): {string.Join(",", winners)}.",
+                $"Roblox visibly reacted to provenance-clean synthetic variant(s): {string.Join(",", winners)}.",
                 "Preserve this matrix ID and exact winning semantics. Do not change production playback until the winning path is regression-protected and reviewed against the PowerShell oracle and safety invariants.",
                 winners,
                 failures,
@@ -130,10 +155,26 @@ internal static class RobloxInputMatrixAssessmentPolicy
                 pending);
         }
 
+        if (contaminated.Length > 0)
+        {
+            return Incomplete(
+                $"Rerun contaminated synthetic cell(s): {string.Join(",", contaminated)}. Physical/non-injected W or malformed target-W transitions make the associated Yes/No Roblox reaction unsafe to attribute to synthetic input.",
+                failures,
+                pending);
+        }
+
+        if (missingProvenance.Length > 0)
+        {
+            return Incomplete(
+                $"Rerun synthetic cell(s) without retained low-level provenance: {string.Join(",", missingProvenance)}. A Roblox reaction answer cannot become matrix evidence unless the same probe ID has a clean bounded target-W provenance snapshot.",
+                failures,
+                pending);
+        }
+
         if (pending.Length > 0)
         {
             return Incomplete(
-                "Real W visibly reached Roblox. Complete every synthetic cell with confirmed Windows delivery on the same Roblox process lifetime and selected window.",
+                "Real W visibly reached Roblox. Complete every synthetic cell with confirmed Windows delivery and clean low-level provenance on the same Roblox process lifetime and selected window.",
                 failures,
                 pending);
         }
@@ -143,7 +184,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
             return new RobloxInputMatrixAssessment(
                 RobloxInputMatrixVerdict.RealKeyWorksSyntheticFails,
                 "POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION",
-                "Real W visibly reached Roblox while every synthetic variant reached the Windows boundary but produced no visible Roblox reaction in one trusted Roblox process/window session.",
+                "Real W visibly reached Roblox while every provenance-clean synthetic variant reached the Windows boundary but produced no visible Roblox reaction in one trusted Roblox process/window session.",
                 "Treat focus/basic target selection as a weak suspect. Preserve this matrix and investigate Roblox/device-origin consumption semantics before adding another synthetic backend.",
                 Array.Empty<string>(),
                 failures,

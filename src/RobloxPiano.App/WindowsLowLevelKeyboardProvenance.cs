@@ -134,6 +134,7 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
         {
             observationActive = false;
             var snapshot = SnapshotCore();
+            RobloxInputMatrixProbeEvidenceRegistry.Record(probeId, snapshot);
             ClientDiagnostics.Log(
                 $"INPUT_FORENSIC probe={probeId} stage=LOWLEVEL_PROVENANCE_SUMMARY path={path} " +
                 $"hookArmed={snapshot.HookArmed} downObserved={snapshot.TargetDownObserved} upObserved={snapshot.TargetUpObserved} " +
@@ -144,7 +145,7 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
                 $"injectedEvents={snapshot.InjectedTargetEventCount} lowerIntegrityInjectedEvents={snapshot.LowerIntegrityInjectedTargetEventCount} " +
                 $"unexpectedTransition={snapshot.UnexpectedTargetTransitionObserved} physicalTargetContamination={snapshot.PhysicalTargetContaminationObserved} " +
                 $"injectedPairObserved={snapshot.InjectedPairObserved} uncontaminatedInjectedPairObserved={snapshot.UncontaminatedInjectedPairObserved} " +
-                "productionChanged=false.");
+                "matrixEvidenceRecorded=true productionChanged=false.");
             return snapshot;
         }
     }
