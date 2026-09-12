@@ -14,23 +14,29 @@ internal sealed class AudioToPianoCreateForm : Form
     private readonly Button _choose = new() { Text = "Choose Audio...", AutoSize = true };
     private readonly Button _create = new() { Text = "Create Piano Version", AutoSize = true, Enabled = false };
     private readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, Enabled = false };
-    private readonly Button _preview = new() { Text = "Preview", AutoSize = true, Enabled = false };
+    private readonly Button _preview = new() { Text = "Preview Full", AutoSize = true, Enabled = false };
     private readonly Button _stopPreview = new() { Text = "Stop Preview", AutoSize = true, Enabled = false };
+    private readonly Button _previousReview = new() { Text = "Previous Review", AutoSize = true, Enabled = false };
+    private readonly Button _previewReview = new() { Text = "Preview Review Region", AutoSize = true, Enabled = false };
+    private readonly Button _nextReview = new() { Text = "Next Review", AutoSize = true, Enabled = false };
     private readonly Button _addToLibrary = new() { Text = "Add to Library", AutoSize = true, Enabled = false };
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100 };
     private readonly Label _status = CreateLabel("Choose an owned/local audio file. Nothing is uploaded.");
+    private readonly Label _reviewStatus = CreateLabel(string.Empty);
     private readonly Label _result = CreateLabel(string.Empty);
     private CancellationTokenSource? _runCancellation;
     private PerformanceTrack? _generatedTrack;
     private AudioTranscriptionReadiness? _generatedReadiness;
+    private IReadOnlyList<AudioTranscriptionReviewRegion> _reviewRegions = Array.Empty<AudioTranscriptionReviewRegion>();
+    private int _reviewRegionIndex;
     private bool _addedToLibrary;
 
     public AudioToPianoCreateForm(string? suggestedTitle = null, string? preselectedAudioPath = null)
     {
         Text = "Create Piano Version";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(680, 390);
-        Size = new Size(780, 490);
+        MinimumSize = new Size(720, 430);
+        Size = new Size(860, 560);
 
         var managedRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -57,6 +63,9 @@ internal sealed class AudioToPianoCreateForm : Form
         _cancel.Click += (_, _) => CancelCreation();
         _preview.Click += (_, _) => StartPreview();
         _stopPreview.Click += (_, _) => StopPreview();
+        _previousReview.Click += (_, _) => SelectReviewRegion(-1);
+        _previewReview.Click += (_, _) => StartReviewPreview();
+        _nextReview.Click += (_, _) => SelectReviewRegion(1);
         _addToLibrary.Click += (_, _) => AddToLibrary();
         FormClosing += (_, _) =>
         {
@@ -91,13 +100,18 @@ internal sealed class AudioToPianoCreateForm : Form
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         actions.Controls.AddRange([_create, _cancel, _preview, _stopPreview, _addToLibrary]);
 
+        var reviewActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        reviewActions.Controls.AddRange([_previousReview, _previewReview, _nextReview]);
+
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(18),
             ColumnCount = 1,
-            RowCount = 8
+            RowCount = 10
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -111,9 +125,11 @@ internal sealed class AudioToPianoCreateForm : Form
         root.Controls.Add(identityRow, 0, 2);
         root.Controls.Add(sourceRow, 0, 3);
         root.Controls.Add(actions, 0, 4);
-        root.Controls.Add(_progress, 0, 5);
-        root.Controls.Add(_status, 0, 6);
-        root.Controls.Add(_result, 0, 7);
+        root.Controls.Add(reviewActions, 0, 5);
+        root.Controls.Add(_progress, 0, 6);
+        root.Controls.Add(_status, 0, 7);
+        root.Controls.Add(_reviewStatus, 0, 8);
+        root.Controls.Add(_result, 0, 9);
         Controls.Add(root);
     }
 
@@ -192,22 +208,26 @@ internal sealed class AudioToPianoCreateForm : Form
 
             var transcription = jobResult.Transcription;
             var track = transcription.Arrangement.Track;
-            var quality = transcription.Diagnostics.Quality;
+            var diagnostics = transcription.Diagnostics;
+            var quality = diagnostics.Quality;
             _generatedTrack = track;
             _generatedReadiness = quality.Readiness;
+            _reviewRegions = diagnostics.ReviewRegions;
+            _reviewRegionIndex = 0;
             var reasons = quality.Reasons.Count == 0 ? "none" : string.Join(", ", quality.Reasons);
             _status.Text = quality.Readiness switch
             {
                 AudioTranscriptionReadiness.Ready => "Ready — deterministic quality checks passed. Preview locally, then Add to Library.",
-                AudioTranscriptionReadiness.NeedsReview => "Needs review — warnings must stay visible. Preview before deciding whether to Add to Library.",
+                AudioTranscriptionReadiness.NeedsReview => "Needs review — use the review-region controls to hear each flagged section with local context before deciding whether to Add to Library.",
                 _ => "Rejected — preview is available for diagnosis, but this result cannot be added to the Library until repaired."
             };
             _result.Text =
                 $"{track.Title} • {track.Events.Count} events • {track.Bpm:0.###} BPM • {FormatTime(track.TimelineDuration)}{Environment.NewLine}" +
                 $"Readiness: {quality.Readiness} • reasons: {reasons}{Environment.NewLine}" +
-                $"Decoded notes: {transcription.Diagnostics.DecodedNotes}; retained after suppression: {transcription.Diagnostics.NotesAfterSuppression}; " +
-                $"elapsed: {transcription.Diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
-                "Preview synthesizes the canonical generated piano locally and never sends Roblox keys. Add to Library writes a standards-compliant MIDI, then re-imports it through the production MIDI parser and refuses the commit if note/timing parity fails. Roblox playback still requires the separate Runtime Input field gate.";
+                $"Decoded notes: {diagnostics.DecodedNotes}; retained after suppression: {diagnostics.NotesAfterSuppression}; " +
+                $"elapsed: {diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
+                "Preview synthesizes the canonical generated piano locally and never sends Roblox keys. Review-region preview adds bounded context around the selected flagged range. Add to Library writes a standards-compliant MIDI, then re-imports it through the production MIDI parser and refuses the commit if note/timing parity fails. Roblox playback still requires the separate Runtime Input field gate.";
+            UpdateReviewControls();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
         {
@@ -233,17 +253,82 @@ internal sealed class AudioToPianoCreateForm : Form
             _preview.Enabled = false;
             _stopPreview.Enabled = true;
             _status.Text = info.IsTruncated
-                ? $"Previewing the first {FormatTime(info.PreviewDuration)} locally ({info.NoteVoices} note voices). The full generated track is {FormatTime(info.SourceDuration)}."
-                : $"Previewing {FormatTime(info.PreviewDuration)} locally ({info.NoteVoices} note voices). No Roblox input is sent.";
-            ClientDiagnostics.Log($"Generated piano local preview started: duration={info.PreviewDuration.TotalSeconds:0.###}s, sourceDuration={info.SourceDuration.TotalSeconds:0.###}s, voices={info.NoteVoices}, truncated={info.IsTruncated}.");
+                ? $"Previewing {FormatTime(info.PreviewStart)}–{FormatTime(info.PreviewEnd)} locally ({info.NoteVoices} note voices). The full generated track is {FormatTime(info.SourceDuration)}."
+                : $"Previewing {FormatTime(info.PreviewStart)}–{FormatTime(info.PreviewEnd)} locally ({info.NoteVoices} note voices). No Roblox input is sent.";
+            ClientDiagnostics.Log($"Generated piano local preview started: start={info.PreviewStart.TotalSeconds:0.###}s, duration={info.PreviewDuration.TotalSeconds:0.###}s, sourceDuration={info.SourceDuration.TotalSeconds:0.###}s, voices={info.NoteVoices}, truncated={info.IsTruncated}.");
+            UpdateReviewControls();
         }
         catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException or NAudio.MmException)
         {
-            ClientDiagnostics.Log($"Generated piano local preview failed safely: {exception}");
-            _status.Text = $"Could not preview this piano version on the current Windows audio device: {exception.Message}";
-            _preview.Enabled = _generatedTrack is not null;
-            _stopPreview.Enabled = false;
+            HandlePreviewFailure(exception);
         }
+    }
+
+    private void StartReviewPreview()
+    {
+        if (_generatedTrack is null || _job.IsRunning || _reviewRegions.Count == 0)
+            return;
+
+        var region = _reviewRegions[_reviewRegionIndex];
+        try
+        {
+            var plan = GeneratedPianoReviewPreviewPlan.Create(_generatedTrack.TimelineDuration, region);
+            var info = _previewPlayer.Play(
+                _generatedTrack,
+                new GeneratedPianoPreviewOptions(
+                    MaximumPreviewDuration: plan.PreviewDuration,
+                    StartOffset: plan.PreviewStart));
+            _preview.Enabled = false;
+            _stopPreview.Enabled = true;
+            _status.Text =
+                $"Review region {_reviewRegionIndex + 1}/{_reviewRegions.Count}: flagged {FormatTime(plan.RegionStart)}–{FormatTime(plan.RegionEnd)}; " +
+                $"previewing {FormatTime(info.PreviewStart)}–{FormatTime(info.PreviewEnd)} locally with context. No Roblox input is sent.";
+            ClientDiagnostics.Log(
+                $"Generated piano review-region preview started: region={_reviewRegionIndex + 1}/{_reviewRegions.Count}, flaggedStart={plan.RegionStart.TotalSeconds:0.###}s, flaggedEnd={plan.RegionEnd.TotalSeconds:0.###}s, previewStart={info.PreviewStart.TotalSeconds:0.###}s, previewEnd={info.PreviewEnd.TotalSeconds:0.###}s, reasons={string.Join('|', region.Reasons)}.");
+            UpdateReviewControls();
+        }
+        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException or NAudio.MmException)
+        {
+            HandlePreviewFailure(exception);
+        }
+    }
+
+    private void SelectReviewRegion(int delta)
+    {
+        if (_reviewRegions.Count == 0 || _job.IsRunning || _previewPlayer.IsPlaying)
+            return;
+
+        _reviewRegionIndex = Math.Clamp(_reviewRegionIndex + delta, 0, _reviewRegions.Count - 1);
+        UpdateReviewControls();
+    }
+
+    private void UpdateReviewControls()
+    {
+        var hasRegions = !_job.IsRunning && _generatedTrack is not null && _reviewRegions.Count != 0;
+        var idle = hasRegions && !_previewPlayer.IsPlaying;
+        _previousReview.Enabled = idle && _reviewRegionIndex > 0;
+        _previewReview.Enabled = idle;
+        _nextReview.Enabled = idle && _reviewRegionIndex < _reviewRegions.Count - 1;
+
+        if (!hasRegions)
+        {
+            _reviewStatus.Text = string.Empty;
+            return;
+        }
+
+        var region = _reviewRegions[_reviewRegionIndex];
+        _reviewStatus.Text =
+            $"Flagged region {_reviewRegionIndex + 1}/{_reviewRegions.Count}: {FormatTime(region.Start)}–{FormatTime(region.End)} • " +
+            $"{string.Join(", ", region.Reasons)} • activation {region.MeanActivation:0.00} • retention {region.RetentionRatio:P0}.";
+    }
+
+    private void HandlePreviewFailure(Exception exception)
+    {
+        ClientDiagnostics.Log($"Generated piano local preview failed safely: {exception}");
+        _status.Text = $"Could not preview this piano version on the current Windows audio device or selected timeline: {exception.Message}";
+        _preview.Enabled = _generatedTrack is not null;
+        _stopPreview.Enabled = false;
+        UpdateReviewControls();
     }
 
     private void StopPreview()
@@ -253,6 +338,7 @@ internal sealed class AudioToPianoCreateForm : Form
         _previewPlayer.Stop();
         _stopPreview.Enabled = false;
         _preview.Enabled = !_job.IsRunning && _generatedTrack is not null;
+        UpdateReviewControls();
     }
 
     private void AddToLibrary()
@@ -310,11 +396,14 @@ internal sealed class AudioToPianoCreateForm : Form
     {
         _generatedTrack = null;
         _generatedReadiness = null;
+        _reviewRegions = Array.Empty<AudioTranscriptionReviewRegion>();
+        _reviewRegionIndex = 0;
         _addedToLibrary = false;
         AddedLibraryPath = null;
         _preview.Enabled = false;
         _stopPreview.Enabled = false;
         _addToLibrary.Enabled = false;
+        UpdateReviewControls();
     }
 
     private void SetRunning(bool running)
@@ -330,6 +419,7 @@ internal sealed class AudioToPianoCreateForm : Form
             && _generatedTrack is not null
             && _generatedReadiness is not null
             && _generatedReadiness != AudioTranscriptionReadiness.Rejected;
+        UpdateReviewControls();
     }
 
     protected override void Dispose(bool disposing)
@@ -348,7 +438,7 @@ internal sealed class AudioToPianoCreateForm : Form
     {
         Text = text,
         AutoSize = true,
-        MaximumSize = new Size(720, 0),
+        MaximumSize = new Size(800, 0),
         Padding = new Padding(0, 5, 0, 5)
     };
 
