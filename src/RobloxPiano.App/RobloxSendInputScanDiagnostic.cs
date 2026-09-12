@@ -104,10 +104,13 @@ internal static class RobloxSendInputScanDiagnosticProbe
             $"inputSize={NativeInputSize} semantics=DIAGNOSTIC_SCANCODE_ONLY productionChanged=false.");
 
         var continuity = new RobloxProbeFocusContinuity();
+        using var eventContinuity = new RobloxSyntheticProbeForegroundContinuity(target, probeId, "SendInputScanCodeDiagnostic");
+        eventContinuity.Start();
         var started = Stopwatch.GetTimestamp();
         try
         {
             LogKeyState(probeId, "SENDINPUT_BEFORE_DOWN", target, oracle.VirtualKey, scanCode);
+            eventContinuity.BeginHold();
             Emit(downEvent);
 
             var sampleIndex = 0;
@@ -118,6 +121,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
                 var foregroundNow = target.IsForeground;
                 var keyDownNow = WindowsKeyboardInputSink.IsVirtualKeyDown(oracle.VirtualKey);
                 var held = continuity.Observe(foregroundNow, keyDownNow, elapsed);
+                var eventHeld = eventContinuity.ObservePollingFallback();
                 LogKeyState(
                     probeId,
                     $"SENDINPUT_HOLD_SAMPLE_{sampleIndex:000}",
@@ -126,12 +130,13 @@ internal static class RobloxSendInputScanDiagnosticProbe
                     scanCode,
                     elapsed);
 
-                if (!held)
+                if (!held || !eventHeld)
                 {
                     ClientDiagnostics.Log(
                         $"INPUT_FORENSIC probe={probeId} stage=SENDINPUT_FOCUS_LOST_DURING_HOLD verdict=FOCUS_LOST_BEFORE_UP " +
-                        $"firstLossMs={continuity.FirstFocusLossAt?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
-                        $"samples={continuity.SamplesObserved} action=RELEASE_IMMEDIATELY productionChanged=false.");
+                        $"firstLossMs={(eventContinuity.FirstContinuityLossAt ?? continuity.FirstFocusLossAt)?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
+                        $"source={eventContinuity.FirstContinuityLossSource ?? "POLL"} samples={continuity.SamplesObserved} " +
+                        "foregroundEvents=true action=RELEASE_IMMEDIATELY productionChanged=false.");
                     break;
                 }
 
@@ -144,9 +149,10 @@ internal static class RobloxSendInputScanDiagnosticProbe
                 var delay = remaining < RobloxFieldInputPolicy.ProbeContinuitySampleInterval
                     ? remaining
                     : RobloxFieldInputPolicy.ProbeContinuitySampleInterval;
-                if (delay > TimeSpan.Zero)
+                if (delay > TimeSpan.Zero
+                    && !await eventContinuity.WaitForDelayOrLossAsync(delay, cancellationToken).ConfigureAwait(false))
                 {
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
 
                 sampleIndex++;
@@ -154,6 +160,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
 
             LogKeyState(probeId, "SENDINPUT_BEFORE_UP", target, oracle.VirtualKey, scanCode, Stopwatch.GetElapsedTime(started));
             Emit(upEvent);
+            eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "SENDINPUT_AFTER_UP", target, oracle.VirtualKey, scanCode, heldDuration);
 
@@ -163,7 +170,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
                 true,
                 desktop.Parity,
                 continuity.WindowsKeyDownObserved,
-                continuity.ForegroundHeldContinuously,
+                continuity.ForegroundHeldContinuously && eventContinuity.ContinuityPreserved,
                 oracle.VirtualKey,
                 scanCode,
                 heldDuration);
@@ -172,6 +179,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
         }
         finally
         {
+            eventContinuity.EndHold();
             try
             {
                 Emit(upEvent);
@@ -296,7 +304,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={result.ProbeId} stage=SENDINPUT_VERDICT verdict={verdict} " +
             $"windowsPath={native} robloxReaction={reaction} vk=0x{result.VirtualKey:X2} scanCode=0x{result.ScanCode:X2} " +
-            $"continuousFocus={result.ForegroundHeldDuringProbe} productionChanged=false success=false.");
+            $"continuousFocus={result.ForegroundHeldDuringProbe} foregroundEvents=true productionChanged=false success=false.");
     }
 
     private static async Task<bool> WaitForStableForegroundAsync(
@@ -309,7 +317,8 @@ internal static class RobloxSendInputScanDiagnosticProbe
         while (Stopwatch.GetElapsedTime(timeoutStarted) < RobloxFieldInputPolicy.ProbeFocusTimeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (target.IsForeground)
+            var identity = WindowsRobloxWindowIdentity.Capture(target);
+            if (target.IsForeground && identity.IsTrustedProbeSurface)
             {
                 stableSince ??= Stopwatch.GetTimestamp();
                 if (Stopwatch.GetElapsedTime(stableSince.Value) >= RobloxFieldInputPolicy.StableFocusDuration)
