@@ -43,6 +43,9 @@ jobs:
           dotnet run --project tests/RobloxPiano.LibraryTests/RobloxPiano.LibraryTests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify owned-audio candidate verification and cleanup
+        run: dotnet run --project tests/RobloxPiano.ReferenceVerificationTests/RobloxPiano.ReferenceVerificationTests.csproj -c Release
+
       - name: Verify search-to-create client identity contract
         run: dotnet run --project tests/RobloxPiano.AudioUxTests/RobloxPiano.AudioUxTests.csproj -c Release
 
