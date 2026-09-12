@@ -41,7 +41,10 @@ var tests = new (string Name, Action Run)[]
     ("transcription quality rejects critically incomplete timelines", AudioTranscriptionQualityRegression.CriticalCoverageIsRejected),
     ("transcription quality rejects pathological event density", AudioTranscriptionQualityRegression.ExtremeEventDensityIsRejected),
     ("transcription quality thresholds fail closed", AudioTranscriptionQualityRegression.InvalidThresholdsFailClosed),
-    ("transcription suppression thresholds fail closed", AudioTranscriptionQualityRegression.InvalidSuppressionThresholdsFailClosed)
+    ("transcription suppression thresholds fail closed", AudioTranscriptionQualityRegression.InvalidSuppressionThresholdsFailClosed),
+    ("generated piano preview renders canonical track deterministically", GeneratedPianoPreviewRegression.CanonicalTrackRendersDeterministically),
+    ("generated piano preview bounds long tracks without eager rendering", GeneratedPianoPreviewRegression.LongTrackPreviewIsBoundedAndStreaming),
+    ("generated piano preview rejects invalid canonical keys", GeneratedPianoPreviewRegression.InvalidCanonicalKeyFailsClosed)
 };
 
 var failed = 0;
