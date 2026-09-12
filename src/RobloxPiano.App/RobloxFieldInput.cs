@@ -43,6 +43,7 @@ internal sealed record RobloxFieldInputProbeResult(
     TimeSpan HoldDuration)
 {
     public bool ProductionMappingEquivalentToOracle { get; init; } = true;
+    public WindowsLowLevelKeyboardProvenanceSnapshot? LowLevelProvenance { get; init; }
 
     internal RobloxFieldInputProbeResult(
         string probeId,
@@ -244,6 +245,9 @@ internal static class RobloxFieldInputProbe
         var continuity = new RobloxProbeFocusContinuity();
         using var eventContinuity = new RobloxSyntheticProbeForegroundContinuity(target, probeId, "PowerShellOracleKeybdEvent");
         eventContinuity.Start();
+        using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "PowerShellOracleKeybdEvent", virtualKey);
+        lowLevelProvenance.Start();
+        var lowLevelObservationEnded = false;
         var windowIdentityHeld = true;
         TimeSpan? firstWindowIdentityLossAt = null;
         var started = Stopwatch.GetTimestamp();
@@ -252,6 +256,7 @@ internal static class RobloxFieldInputProbe
         {
             RobloxInputForensics.LogKeyState(probeId, "BEFORE_DOWN", target, virtualKey);
             eventContinuity.BeginHold();
+            lowLevelProvenance.BeginObservation();
             await input.KeyDownAsync(keys, cancellationToken).ConfigureAwait(false);
 
             var sampleIndex = 0;
@@ -324,6 +329,8 @@ internal static class RobloxFieldInputProbe
 
             var holdDuration = Stopwatch.GetElapsedTime(started);
             RobloxInputForensics.LogKeyState(probeId, "AFTER_UP", target, virtualKey, holdDuration);
+            var lowLevelSnapshot = lowLevelProvenance.EndObservation();
+            lowLevelObservationEnded = true;
 
             var eventContinuityHeld = eventContinuity.ContinuityPreserved;
             var result = new RobloxFieldInputProbeResult(
@@ -337,7 +344,8 @@ internal static class RobloxFieldInputProbe
                 virtualKey,
                 holdDuration)
             {
-                ProductionMappingEquivalentToOracle = mappingEquivalent
+                ProductionMappingEquivalentToOracle = mappingEquivalent,
+                LowLevelProvenance = lowLevelSnapshot
             };
             RobloxInputForensics.LogVerdict(probeId, result.Assess(null), null);
             return result;
@@ -346,6 +354,10 @@ internal static class RobloxFieldInputProbe
         {
             eventContinuity.EndHold();
             await input.ReleaseAllAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!lowLevelObservationEnded)
+            {
+                _ = lowLevelProvenance.EndObservation();
+            }
         }
     }
 
