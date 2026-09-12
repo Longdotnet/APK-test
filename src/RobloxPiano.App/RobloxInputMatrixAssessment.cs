@@ -113,28 +113,31 @@ internal static class RobloxInputMatrixAssessmentPolicy
         ArgumentNullException.ThrowIfNull(evidence);
 
         var retained = evidence.ToArray();
-        var duplicateCells = retained
+        var groups = retained
             .GroupBy(item => item.Cell, StringComparer.Ordinal)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
+            .Select(group => group.ToArray())
+            .ToArray();
+        var replayedCells = groups
+            .Where(IsUnsafeReplay)
+            .Select(group => group[0].Cell)
             .OrderBy(cell => cell, StringComparer.Ordinal)
             .ToArray();
 
-        if (duplicateCells.Length > 0)
+        if (replayedCells.Length > 0)
         {
             ClientDiagnostics.Log(
-                $"INPUT_MATRIX_CELL_REPLAY cells={string.Join(",", duplicateCells)} evidenceTrusted=false authorizesPlayback=false.");
+                $"INPUT_MATRIX_CELL_REPLAY cells={string.Join(",", replayedCells)} evidenceTrusted=false authorizesPlayback=false.");
             return new RobloxInputMatrixAssessment(
                 RobloxInputMatrixVerdict.InsufficientEvidence,
                 "MATRIX_CELL_REPLAY",
-                $"The retained matrix contains more than one observation for cell(s): {string.Join(",", duplicateCells)}. Last-write-wins evidence is not safe for a field boundary decision.",
-                "Close and reopen Roblox Input Check, keep one stable Roblox surface, then rerun the matrix from Real-Key Baseline. Do not combine repeated attempts for the same cell in one matrix.",
+                $"The retained matrix contains repeated decision-eligible observation(s) for cell(s): {string.Join(",", replayedCells)}. Last-write-wins evidence is not safe for a field boundary decision.",
+                "Close and reopen Roblox Input Check, keep one stable Roblox surface, then rerun the matrix from Real-Key Baseline. A retry may replace stale/incomplete evidence only before that earlier attempt reached the Windows boundary.",
                 Array.Empty<string>(),
                 Array.Empty<string>(),
-                duplicateCells);
+                replayedCells);
         }
 
-        var cells = retained.ToDictionary(item => item.Cell, StringComparer.Ordinal);
+        var cells = groups.ToDictionary(group => group[0].Cell, group => group[^1], StringComparer.Ordinal);
 
         cells.TryGetValue("REAL_KEY", out var realKey);
         var synthetic = SyntheticCells
@@ -251,6 +254,24 @@ internal static class RobloxInputMatrixAssessmentPolicy
             "The matrix contains evidence that cannot yet produce a deterministic cross-cell verdict.",
             failures,
             pending);
+    }
+
+    private static bool IsUnsafeReplay(RobloxInputMatrixCellEvidence[] group)
+    {
+        if (group.Length <= 1)
+        {
+            return false;
+        }
+
+        var confirmedIndexes = group
+            .Select((item, index) => (item, index))
+            .Where(pair => pair.item.WindowsBoundaryConfirmed)
+            .Select(pair => pair.index)
+            .ToArray();
+
+        // A retry is safe only when every earlier retained attempt was still incomplete
+        // and exactly the latest attempt is the first one to reach the Windows boundary.
+        return confirmedIndexes.Length != 1 || confirmedIndexes[0] != group.Length - 1;
     }
 
     private static RobloxInputMatrixSessionIdentity? CaptureCurrentSessionIdentity()
