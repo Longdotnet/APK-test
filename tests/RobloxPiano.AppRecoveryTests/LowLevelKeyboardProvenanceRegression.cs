@@ -52,17 +52,36 @@ internal static class LowLevelKeyboardProvenanceRegression
         True(targetUp.IsTargetVirtualKey, "target W key-up must be recognized");
         True(!targetUp.IsDown && targetUp.IsUp, "WM_KEYUP must classify as up only");
 
-        var snapshot = new WindowsLowLevelKeyboardProvenanceSnapshot(
-            HookArmed: true,
-            TargetDownObserved: true,
-            TargetUpObserved: true,
-            DownFlags: WindowsLowLevelKeyboardProvenance.LlkhfInjected,
-            UpFlags: WindowsLowLevelKeyboardProvenance.LlkhfInjected,
-            DownScanCode: 0x11,
-            UpScanCode: 0x11,
-            DownProvenance: WindowsLowLevelKeyboardProvenanceKind.Injected,
-            UpProvenance: WindowsLowLevelKeyboardProvenanceKind.Injected);
-        True(snapshot.InjectedPairObserved, "complete injected W pair must be recognized");
+        var cleanSnapshot = WindowsLowLevelKeyboardProvenance.BuildSnapshotForDiagnostics(
+            hookArmed: true,
+            new[] { targetDown, targetUp });
+        True(cleanSnapshot.InjectedPairObserved, "complete injected W pair must be recognized");
+        True(cleanSnapshot.UncontaminatedInjectedPairObserved, "exact injected down/up pair must be uncontaminated");
+        Equal(2, cleanSnapshot.TargetEventCount, "clean pair target-event count");
+        Equal(0, cleanSnapshot.NotInjectedTargetEventCount, "clean pair must contain no physical target-key event");
+        True(!cleanSnapshot.UnexpectedTargetTransitionObserved, "clean pair must preserve DOWN->UP transition order");
+
+        var physicalDown = WindowsLowLevelKeyboardProvenance.ClassifyEvent(
+            0x57,
+            0x57,
+            0x11,
+            0,
+            0x0100);
+        var contaminated = WindowsLowLevelKeyboardProvenance.BuildSnapshotForDiagnostics(
+            hookArmed: true,
+            new[] { targetDown, physicalDown, targetUp });
+        True(contaminated.InjectedPairObserved, "legacy first-pair evidence remains visible under contamination");
+        True(contaminated.PhysicalTargetContaminationObserved, "physical W during synthetic attempt must be explicit contamination");
+        True(contaminated.UnexpectedTargetTransitionObserved, "duplicate DOWN must invalidate transition cleanliness");
+        True(!contaminated.UncontaminatedInjectedPairObserved, "contaminated target-key evidence must never be called a clean injected pair");
+        Equal(3, contaminated.TargetEventCount, "contaminated target-event count");
+        Equal(1, contaminated.NotInjectedTargetEventCount, "physical target-key event count");
+
+        var upBeforeDown = WindowsLowLevelKeyboardProvenance.BuildSnapshotForDiagnostics(
+            hookArmed: true,
+            new[] { targetUp, targetDown });
+        True(upBeforeDown.UnexpectedTargetTransitionObserved, "UP before DOWN must be flagged");
+        True(!upBeforeDown.UncontaminatedInjectedPairObserved, "reversed injected events are not a trustworthy pair");
 
         var keybdScan = new RobloxPhysicalKeyProbeResult(
             "probe-scan",
@@ -75,9 +94,9 @@ internal static class LowLevelKeyboardProvenanceRegression
             0x11,
             TimeSpan.FromMilliseconds(80))
         {
-            LowLevelProvenance = snapshot
+            LowLevelProvenance = cleanSnapshot
         };
-        Equal(snapshot, keybdScan.LowLevelProvenance!.Value, "keybd_event scan result must retain low-level provenance");
+        Equal(cleanSnapshot, keybdScan.LowLevelProvenance!.Value, "keybd_event scan result must retain low-level provenance");
 
         var sendInputVk = new RobloxSendInputVirtualKeyProbeResult(
             "probe-sendinput-vk",
@@ -89,9 +108,9 @@ internal static class LowLevelKeyboardProvenanceRegression
             0x57,
             TimeSpan.FromMilliseconds(80))
         {
-            LowLevelProvenance = snapshot
+            LowLevelProvenance = cleanSnapshot
         };
-        Equal(snapshot, sendInputVk.LowLevelProvenance!.Value, "SendInput VK result must retain low-level provenance");
+        Equal(cleanSnapshot, sendInputVk.LowLevelProvenance!.Value, "SendInput VK result must retain low-level provenance");
 
         var sendInputScan = new RobloxSendInputScanProbeResult(
             "probe-sendinput-scan",
@@ -104,9 +123,9 @@ internal static class LowLevelKeyboardProvenanceRegression
             0x11,
             TimeSpan.FromMilliseconds(80))
         {
-            LowLevelProvenance = snapshot
+            LowLevelProvenance = cleanSnapshot
         };
-        Equal(snapshot, sendInputScan.LowLevelProvenance!.Value, "SendInput scan result must retain low-level provenance");
+        Equal(cleanSnapshot, sendInputScan.LowLevelProvenance!.Value, "SendInput scan result must retain low-level provenance");
     }
 
     private static void True(bool value, string message)
