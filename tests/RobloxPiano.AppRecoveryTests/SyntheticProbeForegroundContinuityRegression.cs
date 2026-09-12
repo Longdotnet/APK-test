@@ -8,6 +8,51 @@ internal static class SyntheticProbeForegroundContinuityRegression
     [ModuleInitializer]
     internal static void Verify()
     {
+        PreKeyDownGateRequiresTrustedForeground();
+        HoldContinuityRemainsSticky();
+    }
+
+    private static void PreKeyDownGateRequiresTrustedForeground()
+    {
+        if (!RobloxSyntheticProbeForegroundContinuity.CanBeginHold(
+                continuityPreserved: true,
+                trustedTargetSurface: true,
+                targetForeground: true))
+        {
+            throw new InvalidOperationException(
+                "A clean selected Roblox foreground surface must be allowed to cross the synthetic pre-keydown gate.");
+        }
+
+        if (RobloxSyntheticProbeForegroundContinuity.CanBeginHold(
+                continuityPreserved: true,
+                trustedTargetSurface: false,
+                targetForeground: true))
+        {
+            throw new InvalidOperationException(
+                "A same-process but untrusted Roblox surface must abort before synthetic key down.");
+        }
+
+        if (RobloxSyntheticProbeForegroundContinuity.CanBeginHold(
+                continuityPreserved: true,
+                trustedTargetSurface: true,
+                targetForeground: false))
+        {
+            throw new InvalidOperationException(
+                "A trusted selected HWND that is no longer foreground must abort before synthetic key down.");
+        }
+
+        if (RobloxSyntheticProbeForegroundContinuity.CanBeginHold(
+                continuityPreserved: false,
+                trustedTargetSurface: true,
+                targetForeground: true))
+        {
+            throw new InvalidOperationException(
+                "A continuity object already marked lost must never be re-armed at the pre-keydown boundary.");
+        }
+    }
+
+    private static void HoldContinuityRemainsSticky()
+    {
         if (!RobloxSyntheticProbeForegroundContinuity.ShouldPreserveAfterObservation(
                 holdActive: false,
                 continuityPreserved: true,
