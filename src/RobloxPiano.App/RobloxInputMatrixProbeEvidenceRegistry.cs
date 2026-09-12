@@ -17,6 +17,7 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
 {
     private const int MaxRetainedSnapshots = 256;
     private static readonly ConcurrentDictionary<string, WindowsLowLevelKeyboardProvenanceSnapshot> Snapshots = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, byte> DuplicateProbeIds = new(StringComparer.Ordinal);
     private static readonly ConcurrentQueue<string> RetentionOrder = new();
 
     internal static void Record(string probeId, WindowsLowLevelKeyboardProvenanceSnapshot snapshot)
@@ -30,7 +31,12 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
             return;
         }
 
-        Snapshots[probeId] = snapshot;
+        // Probe IDs are intended to be unique and bind one human reaction to one bounded
+        // low-level observation. Never overwrite the first retained snapshot: a replayed ID
+        // could otherwise replace contaminated evidence with a later clean pair (or vice versa)
+        // and silently change the matrix verdict after the fact. Keep the original evidence and
+        // mark the ID permanently contaminated until the bounded registry entry is evicted/reset.
+        DuplicateProbeIds.TryAdd(probeId, 0);
     }
 
     internal static RobloxInputMatrixSyntheticProvenanceTrust GetTrust(string probeId)
@@ -38,6 +44,11 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
         if (string.IsNullOrWhiteSpace(probeId) || !Snapshots.TryGetValue(probeId, out var snapshot))
         {
             return RobloxInputMatrixSyntheticProvenanceTrust.Missing;
+        }
+
+        if (DuplicateProbeIds.ContainsKey(probeId))
+        {
+            return RobloxInputMatrixSyntheticProvenanceTrust.Contaminated;
         }
 
         // LLKHF_LOWER_IL_INJECTED is useful forensic evidence, but it means Windows observed
@@ -64,6 +75,7 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
     internal static void ResetForDiagnostics()
     {
         Snapshots.Clear();
+        DuplicateProbeIds.Clear();
         while (RetentionOrder.TryDequeue(out _))
         {
         }
@@ -74,6 +86,7 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
         while (Snapshots.Count > MaxRetainedSnapshots && RetentionOrder.TryDequeue(out var oldestProbeId))
         {
             Snapshots.TryRemove(oldestProbeId, out _);
+            DuplicateProbeIds.TryRemove(oldestProbeId, out _);
         }
     }
 }
