@@ -112,9 +112,29 @@ internal static class RobloxInputMatrixAssessmentPolicy
     {
         ArgumentNullException.ThrowIfNull(evidence);
 
-        var cells = evidence
+        var retained = evidence.ToArray();
+        var duplicateCells = retained
             .GroupBy(item => item.Cell, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .OrderBy(cell => cell, StringComparer.Ordinal)
+            .ToArray();
+
+        if (duplicateCells.Length > 0)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_MATRIX_CELL_REPLAY cells={string.Join(",", duplicateCells)} evidenceTrusted=false authorizesPlayback=false.");
+            return new RobloxInputMatrixAssessment(
+                RobloxInputMatrixVerdict.InsufficientEvidence,
+                "MATRIX_CELL_REPLAY",
+                $"The retained matrix contains more than one observation for cell(s): {string.Join(",", duplicateCells)}. Last-write-wins evidence is not safe for a field boundary decision.",
+                "Close and reopen Roblox Input Check, keep one stable Roblox surface, then rerun the matrix from Real-Key Baseline. Do not combine repeated attempts for the same cell in one matrix.",
+                Array.Empty<string>(),
+                Array.Empty<string>(),
+                duplicateCells);
+        }
+
+        var cells = retained.ToDictionary(item => item.Cell, StringComparer.Ordinal);
 
         cells.TryGetValue("REAL_KEY", out var realKey);
         var synthetic = SyntheticCells
