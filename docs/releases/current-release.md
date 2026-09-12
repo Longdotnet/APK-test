@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.24
+version: 0.40.25
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -12,10 +12,23 @@ SHA256: `{{SHA256}}`
 ## Client flow
 
 1. Download `RobloxPiano.exe` and double-click it; the **Sheet Library** remains the normal client starting point.
-2. Existing MIDI/MusicXML/VPS/TXT library and playback behavior remains unchanged.
-3. Open Roblox and run `Test Roblox Input`. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without changing Roblox experience/session.
-4. Keep the selected Roblox process/window continuously foreground from real W down through real W up, and keep the same Roblox process/window active through each synthetic probe and its Yes/No reaction assessment.
-5. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**. Matrix evidence remains diagnostic-only and never authorizes playback by itself.
+2. For owned/local audio, open **Create Piano Version**, choose the audio, wait for deterministic transcription/arrangement, review readiness/reasons, use **Preview** to hear the canonical generated piano locally, then explicitly **Add to Library** when acceptable.
+3. Preview never sends keyboard input to Roblox. It is a local diagnostic/review surface only; `Rejected` output remains non-persistable and `NeedsReview` still requires explicit confirmation before Library commit.
+4. Existing MIDI/MusicXML/VPS/TXT library and playback behavior remains unchanged.
+5. Open Roblox and run `Test Roblox Input`. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without changing Roblox experience/session.
+6. Keep the selected Roblox process/window continuously foreground from real W down through real W up, and keep the same Roblox process/window active through each synthetic probe and its Yes/No reaction assessment.
+7. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**. Matrix evidence remains diagnostic-only and never authorizes playback by itself.
+
+## Audio-to-Piano Phase 19 — local generated-piano preview
+
+- **Create Piano Version** now exposes **Preview** and **Stop Preview** before Library persistence, so a client can hear the generated canonical arrangement rather than decide from diagnostics alone.
+- Preview reads the authoritative `PerformanceTrack`; it does not parse a second song representation and it never enters the Roblox scheduler, focus guard, held-key/pedal ownership or Windows input path.
+- Existing NAudio is reused as the local Windows streaming/output boundary. Preview audio is generated on demand through the float `ISampleProvider` contract instead of allocating a full rendered waveform.
+- Canonical Roblox 61-key notes are mapped deterministically to their corresponding pitches. A short attack/release envelope and active-voice normalization keep review audio bounded without changing the canonical track.
+- Preview defaults to the first 60 seconds for long tracks and explicitly surfaces truncation/source duration. Source note metadata remains bounded by the generated track; full-song PCM is not buffered in memory.
+- Invalid canonical keys/timelines fail closed before playback. The audio regression harness verifies deterministic output independent of consumer buffer size, finite/bounded samples, explicit long-track truncation and invalid-key rejection.
+- A `Rejected` result may be previewed to understand what the transcriber produced but still cannot be added to the Library. `NeedsReview` persistence still requires an explicit client decision.
+- Preview is intentionally a lightweight deterministic review synth, not a claim of waveform-perfect piano rendering or Roblox field playback.
 
 ## Runtime Input P0 Phase 76
 
@@ -56,27 +69,31 @@ SHA256: `{{SHA256}}`
 
 - Audio Phase 17 adds the client-facing **Create Piano Version** flow for owned/local audio using bundled Spotify Basic Pitch + ONNX Runtime + NAudio with deterministic progress/cancellation and Ready/NeedsReview/Rejected quality policy.
 - Audio Phase 18 adds explicit generated-track persistence to the Library only after deterministic DryWetMIDI serialization and production `MidiFileImporter` round-trip/parity validation.
+- Audio Phase 19 adds local canonical generated-piano preview before persistence, using existing NAudio streaming/output infrastructure without adding another runtime or playback truth.
 - `Rejected` generated tracks are not persisted; `NeedsReview` requires explicit client confirmation.
-- Canonical `PerformanceTrack` remains authoritative; Audio import/transcription does not replace Runtime Input, focus guards, scheduler truth, held-key ownership or Legacy playback.
+- Canonical `PerformanceTrack` remains authoritative; Audio import/transcription/preview does not replace Runtime Input, focus guards, scheduler truth, held-key ownership or Legacy playback.
 - Audio-to-Piano does not claim end-to-end Play-in-Roblox success while Runtime Input P0 remains unproven in the field.
 
 ## OSS and attribution
 
 - Spotify Basic Pitch remains the pinned Automatic Music Transcription model/semantic reference under Apache-2.0, including upstream NOTICE attribution.
-- Microsoft ONNX Runtime remains the native .NET inference engine and NAudio remains the Windows audio decode/normalization boundary.
+- Microsoft ONNX Runtime remains the native .NET inference engine and NAudio remains the Windows audio decode/normalization plus local preview/output boundary.
 - Melanchall DryWetMIDI Nativeless is used for deterministic generated-MIDI serialization; its MIT attribution is bundled with third-party notices.
 - `RobloxPiano.exe --third-party-notices` exposes bundled third-party notices.
+- Phase 19 adds no dependency or license obligation: it reuses the already bundled NAudio package and its existing attribution.
 - No Python/PyTorch/Demucs/ffmpeg dependency is introduced.
 
 ## Production capability and reliability
 
 - Self-contained Windows x64 single EXE; no manual Python, Node, .NET SDK, Visual Studio or PowerShell-module dependency.
+- Generated preview is streamed and duration-bounded; it does not allocate an arbitrarily long PCM result before playback.
 - **Legacy** and **Legacy x2** remain protected regression/perceptual baselines.
 - Runtime focus/input authorization, emergency release-all and held-key/pedal ownership remain fail-closed.
 - AI/network are irrelevant to core Runtime Input truth.
 
 ## Current boundaries
 
+- Audio Phase 19 preview uses a deterministic synthesized review tone for the canonical pitches/timing; it is not a sampled-piano renderer and does not promise waveform identity to the source recording.
 - No client field evidence in this release proves synthetic W is consumed by Roblox. P0 remains `NOT YET PROVEN` until visible Roblox reaction is explicitly confirmed.
 - The 25 ms continuity sampler is intentionally aligned with the synthetic probe cadence; an interruption shorter than the sampling interval may not be observed, so endpoint identity checks remain in force as an additional guard.
 - PID/start-time/HWND continuity cannot prove an internal Roblox place/experience transition if Roblox reuses the same process/window; field runs must avoid intentionally changing experience/session between cells.
