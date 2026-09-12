@@ -16,6 +16,12 @@ internal static class AudioTranscriptionRepairEvidenceRegression
             modelPath,
             new BasicPitchInferenceOptions(MaxChunksPerBatch: 2));
 
+        var reviewOptions = new AudioTranscriptionReviewRegionOptions(
+            WindowDuration: TimeSpan.FromSeconds(1),
+            LowActivationThreshold: 1.0f,
+            LowRetentionRatio: 0d,
+            HighEventsPerSecond: 1000d,
+            HighSimultaneousNotes: 16);
         var options = new AudioToPianoTranscriptionOptions(
             Decoder: new BasicPitchNoteDecoderOptions(
                 OnsetThreshold: 0.20f,
@@ -28,12 +34,7 @@ internal static class AudioTranscriptionRepairEvidenceRegression
                 MaxSimultaneousNotes: 4,
                 MinimumDuration: TimeSpan.FromMilliseconds(20),
                 LowActivationThreshold: 0.15f),
-            ReviewRegions: new AudioTranscriptionReviewRegionOptions(
-                WindowDuration: TimeSpan.FromSeconds(1),
-                LowActivationThreshold: 1.0f,
-                LowRetentionRatio: 0d,
-                HighEventsPerSecond: 1000d,
-                HighSimultaneousNotes: 16));
+            ReviewRegions: reviewOptions);
 
         var result = service.TranscribeNormalized(
             new NormalizedAudio(samples, rate),
@@ -55,7 +56,8 @@ internal static class AudioTranscriptionRepairEvidenceRegression
         var session = new AudioTranscriptionReviewRepairSession(
             result.Diagnostics.SourceDuration,
             result.NoteEvidence,
-            result.Arrangement.Track);
+            result.Arrangement.Track,
+            new AudioTranscriptionReviewRepairSessionOptions(ReviewRegions: reviewOptions));
         if (session.ReviewRegions.Count == 0)
             throw new InvalidOperationException("Retained evidence must be sufficient to recreate deterministic repair review state without a second inference pass.");
 
