@@ -13,6 +13,11 @@ internal static class ReferenceAudioTimelineAlignmentRegression
         GlobalOffsetIsRecoveredWithoutMutatingTimeline();
         PlaybackSpeedParticipatesInEvidence();
         TamperedEvidenceFailsClosed();
+        StrongReferenceMatchIsHighConfidence();
+        SparseEvidenceRequiresReview();
+        LowCoverageIsMismatch();
+        HalfDoubleTempoAmbiguityIsNormalized();
+        TamperedAssessmentFailsClosed();
     }
 
     private static void PerfectPulseAlignmentIsDeterministic()
@@ -67,6 +72,74 @@ internal static class ReferenceAudioTimelineAlignmentRegression
 
         Require(!ReferenceAudioTimelineAligner.Verify(tampered),
             "changed metrics with the old evidence hash must fail closed");
+    }
+
+    private static void StrongReferenceMatchIsHighConfidence()
+    {
+        var reference = ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 5, 500));
+        var track = CreatePulseTrack(TimeSpan.FromMilliseconds(500), 9, TimeSpan.FromMilliseconds(500));
+        var alignment = ReferenceAudioTimelineAligner.Align(reference, track, 1d);
+        var first = ReferenceCandidateConfidencePolicy.Assess(alignment);
+        var second = ReferenceCandidateConfidencePolicy.Assess(alignment);
+
+        Require(first.Verdict == ReferenceCandidateVerdict.HighConfidence,
+            "strong repeated onset alignment should be high confidence");
+        Require(first.ConfidenceScore >= 75, "high-confidence match should meet score floor");
+        Require(first.ReasonCode == "HIGH_CONFIDENCE", "high-confidence reason code must be stable");
+        Require(first.EvidenceSha256 == second.EvidenceSha256, "assessment evidence must be deterministic");
+        Require(ReferenceCandidateConfidencePolicy.Verify(first), "generated assessment evidence must verify");
+    }
+
+    private static void SparseEvidenceRequiresReview()
+    {
+        var reference = ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 2, 500));
+        var track = CreatePulseTrack(TimeSpan.FromMilliseconds(500), 3, TimeSpan.FromMilliseconds(500));
+        var alignment = ReferenceAudioTimelineAligner.Align(reference, track, 1d);
+        var assessment = ReferenceCandidateConfidencePolicy.Assess(alignment);
+
+        Require(assessment.Verdict == ReferenceCandidateVerdict.Review,
+            "a short candidate should not be promoted from only a few matching events");
+        Require(assessment.ReasonCode == "INSUFFICIENT_EVIDENCE",
+            "sparse evidence should explain why review is required");
+    }
+
+    private static void LowCoverageIsMismatch()
+    {
+        var reference = ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 5, 500));
+        var track = CreatePulseTrack(TimeSpan.FromMilliseconds(100), 34, TimeSpan.FromMilliseconds(137));
+        var alignment = ReferenceAudioTimelineAligner.Align(reference, track, 1d);
+        var assessment = ReferenceCandidateConfidencePolicy.Assess(alignment);
+
+        Require(alignment.MatchCoverage < 0.35d, "regression fixture must remain a low-coverage timeline");
+        Require(assessment.Verdict == ReferenceCandidateVerdict.Mismatch,
+            "low onset coverage must reject same-title-style false positives");
+        Require(assessment.ReasonCode == "LOW_ONSET_COVERAGE", "coverage mismatch reason must be explicit");
+    }
+
+    private static void HalfDoubleTempoAmbiguityIsNormalized()
+    {
+        var reference = ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 5, 500));
+        var track = CreatePulseTrack(TimeSpan.FromMilliseconds(500), 9, TimeSpan.FromMilliseconds(500));
+        var alignment = ReferenceAudioTimelineAligner.Align(reference, track, 2d);
+        var assessment = ReferenceCandidateConfidencePolicy.Assess(alignment);
+
+        Require(Math.Abs(alignment.TempoRatio - 2d) < 0.001d, "fixture must expose raw 2x tempo ratio");
+        Require(Math.Abs(assessment.NormalizedTempoRatio - 1d) < 0.001d,
+            "one metrical octave should normalize before confidence scoring");
+        Require(assessment.Verdict != ReferenceCandidateVerdict.Mismatch || assessment.ReasonCode != "TEMPO_MISMATCH",
+            "half/double tempo ambiguity alone must not cause a tempo mismatch");
+    }
+
+    private static void TamperedAssessmentFailsClosed()
+    {
+        var reference = ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 4, 500));
+        var track = CreatePulseTrack(TimeSpan.FromMilliseconds(500), 7, TimeSpan.FromMilliseconds(500));
+        var assessment = ReferenceCandidateConfidencePolicy.Assess(
+            ReferenceAudioTimelineAligner.Align(reference, track, 1d));
+        var tampered = assessment with { ConfidenceScore = Math.Max(0, assessment.ConfidenceScore - 1) };
+
+        Require(!ReferenceCandidateConfidencePolicy.Verify(tampered),
+            "changed assessment metrics with old evidence hash must fail closed");
     }
 
     private static PerformanceTrack CreatePulseTrack(TimeSpan firstStart, int count, TimeSpan period)
