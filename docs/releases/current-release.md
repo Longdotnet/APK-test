@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.33
+version: 0.40.34
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -13,11 +13,22 @@ SHA256: `{{SHA256}}`
 
 1. Download `RobloxPiano.exe` and double-click it; **Sheet Library** remains the normal starting point.
 2. Search for the song. When several online MIDI matches appear, choose **Verify top matches with my audio...** once and select audio you own or are authorized to use. The audio is analyzed locally once; up to five top MIDI candidates are then verified and evidence-reranked as High confidence / Review / Mismatch.
-3. Use **Add Verified Match** when a High-confidence existing source is available. If no trustworthy source is found, use **Create Piano Version...** with owned/local audio, then preview/review and Add to Library.
+3. Use **Add Verified Match** when a High-confidence existing source is available. If no trustworthy source is found, choose **Create Piano Version from this audio**: the same local reference is handed into transcription without a second file picker, then preview/review and Add to Library.
 4. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and full synthetic matrix without intentionally changing Roblox experience/session.
 5. During each synthetic cell, do not intentionally press W yourself. Phase 81 records every W event in the bounded low-level observation window and marks physical/non-injected target-key contamination or unexpected DOWN/UP sequences explicitly.
 6. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**.
 7. Answer the visible Roblox reaction prompt for every matrix cell. Windows-side delivery, low-level injected provenance, CI success, or focus success alone is not a Roblox field PASS.
+
+## Audio-to-Piano Phase 24 — single-reference verify-or-create fallback
+
+- Phase 23 already analyzes one owned/local reference once and evidence-reranks up to five online MIDI candidates. Phase 24 removes the remaining duplicate file-picker step when that batch has no High-confidence match.
+- After successful verification with no High-confidence source, **Create Piano Version from this audio** becomes available on the same search surface.
+- The handoff retains only the absolute local path for the active search UI. It does not copy, upload, cache, or persist the reference audio.
+- The current search identity and reference path are normalized by the deterministic `AudioToPianoSongIdentity` / `AudioToPianoCreatePrefill` contract before the create dialog opens.
+- `AudioToPianoCreateForm` rechecks that the handed-off file still exists. A deleted/moved file fails closed and leaves **Choose Audio...** available rather than silently switching source.
+- Search changes, a new verification, cancellation/failure, or clearing results invalidates the old reference handoff so one query cannot reuse another query's audio accidentally.
+- Transcription still uses the existing local NAudio -> Spotify Basic Pitch ONNX -> deterministic arranger -> canonical `PerformanceTrack` -> readiness/review -> verified DryWetMIDI persistence path. Verification evidence never mutates playback truth.
+- This phase introduces no media downloader, YouTube access-control bypass, Python, PyTorch, ffmpeg, developer SDK requirement, second inference stack, or new third-party dependency.
 
 ## Runtime Input P0 Phase 81 — target-key provenance contamination guard
 
@@ -36,16 +47,16 @@ SHA256: `{{SHA256}}`
 - Candidate verification stays sequential and bounded. Each MIDI retains provider/redirect validation, the existing five-MiB maximum download, production `SongSourceLoader` parsing into canonical `PerformanceTrack`, deterministic reference timeline alignment, and hash-bound confidence assessment.
 - A malformed, unavailable, oversized, or otherwise invalid candidate fails independently and cannot discard valid evidence from the remaining candidates. Operation-wide cancellation still stops remaining work.
 - Successfully verified candidates are reranked with `ReferenceVerifiedSongRanker`: High confidence / Review / Mismatch evidence outranks provider metadata, while metadata score is only a tie-breaker after verified evidence.
-- The verified candidates are moved to the front of the discovery list in evidence order. **Add Verified Match** is enabled for a High-confidence selected candidate; Review/Mismatch candidates remain blocked from the verified-source fast path and point the client toward another source or **Create Piano Version...**.
+- The verified candidates are moved to the front of the discovery list in evidence order. **Add Verified Match** is enabled for a High-confidence selected candidate; Review/Mismatch candidates remain blocked from the verified-source fast path.
 - Verification itself never persists a candidate into Library. Candidate temporary files remain operation-scoped and are removed best-effort after each verification.
-- Reference audio remains local. This phase adds no media downloader, YouTube access-control bypass, Python, PyTorch, ffmpeg, developer SDK requirement, or second inference stack.
+- Reference audio remains local.
 
 ## Runtime Input P0 Phase 80 — full synthetic-matrix low-level provenance
 
 - Phase 79 added bounded `WH_KEYBOARD_LL` provenance to the PowerShell-oracle virtual-key `keybd_event` cell. Phase 80 extends the same target-key-only observer to all three remaining synthetic cells: non-zero-scan `keybd_event`, SendInput virtual-key, and SendInput scan-code.
-- Every explicit synthetic W attempt now emits the same `LOWLEVEL_PROVENANCE_ARMED`, `LOWLEVEL_PROVENANCE_EVENT`, and `LOWLEVEL_PROVENANCE_SUMMARY` contract under its stable probe ID.
+- Every explicit synthetic W attempt emits the same `LOWLEVEL_PROVENANCE_ARMED`, `LOWLEVEL_PROVENANCE_EVENT`, and `LOWLEVEL_PROVENANCE_SUMMARY` contract under its stable probe ID.
 - Down/up evidence records the Windows low-level scan code, flags, and provenance classification: `NotInjected`, `Injected`, or `LowerIntegrityInjected`. `LLKHF_LOWER_IL_INJECTED` remains distinct from generic `LLKHF_INJECTED` so integrity/UIPI differences stay visible.
-- Each diagnostic result retains its immutable low-level provenance snapshot. Regression coverage requires the non-zero-scan `keybd_event`, SendInput VK, and SendInput scan result contracts to retain that evidence.
+- Each diagnostic result retains its immutable low-level provenance snapshot.
 - The observer is armed after stable trusted Roblox focus and begins immediately before synthetic W-down. It ends immediately after W-up; exception/cancellation cleanup ends observation defensively and still performs the existing best-effort key release.
 - The observer filters to W only. It never records unrelated keyboard input, never blocks/re-writes input, and never injects additional input.
 - Existing event-driven foreground continuity, polling fallback, input-desktop/session/integrity checks, `GetAsyncKeyState`, mapping/scan evidence, and explicit human Roblox reaction remain independent signals.
@@ -71,18 +82,19 @@ SHA256: `{{SHA256}}`
 ## Audio-to-Piano production bundle
 
 - Audio Phase 17 remains the bundled Spotify Basic Pitch + ONNX Runtime + NAudio transcription/arrangement path for owned/local audio.
-- Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, and Phase 23 one-reference bounded multi-candidate verification/reranking.
+- Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, Phase 23 one-reference bounded multi-candidate verification/reranking, and Phase 24 single-reference verify-or-create handoff.
 - Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 81 and its field gate do not modify the Audio-to-Piano architecture.
 
 ## OSS and attribution
 
-- Phase 81 adds no third-party dependency, copied implementation, model, native binary, or new license obligation.
+- Audio Phase 24 adds no third-party dependency, copied implementation, model, native binary, or new license obligation.
 - Existing Spotify Basic Pitch, Microsoft ONNX Runtime, NAudio, and Melanchall DryWetMIDI attribution remains unchanged and is available through `RobloxPiano.exe --third-party-notices`.
 
 ## Current boundaries
 
 - High confidence means strong deterministic onset/tempo/timeline agreement with the supplied local reference; it is not a claim of waveform identity, copyright ownership, or recording provenance.
 - Batch verification is intentionally sequential and bounded to limit network concurrency, parsing memory, temporary disk use, and cancellation complexity. A five-candidate batch can take longer than one verification.
+- The reference-to-create handoff reuses the selected path, not the verification analysis or decoded PCM. Transcription deliberately re-reads the local file so its model input remains owned by the production transcription pipeline; if the local file changes, verification evidence is not silently treated as transcription truth.
 - Candidate-specific failures remain unverified; they are never silently converted into Review or High confidence.
 - `WH_KEYBOARD_LL`, `GetAsyncKeyState`, API return values, desktop parity and focus continuity are Windows-side forensic evidence, not visibility into Roblox's internal gameplay input pipeline.
 - `LLKHF_INJECTED` classification is useful diagnostic provenance, not cryptographic hardware provenance. Phase 81 can detect target-key contamination inside its observation window but cannot prove the physical origin of every possible Windows input source.

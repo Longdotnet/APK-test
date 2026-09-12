@@ -12,12 +12,13 @@ internal static class Program
         Run("identity whitespace and controls normalize deterministically", WhitespaceNormalizes, failures);
         Run("empty identity and path get safe generated title", EmptyFallback, failures);
         Run("long identity is bounded deterministically", LongIdentityBounded, failures);
+        Run("verified reference handoff preserves search identity", VerifiedReferencePreservesSearchIdentity, failures);
+        Run("verified reference handoff falls back to reference filename", VerifiedReferenceFallsBackToFilename, failures);
+        Run("verified reference handoff rejects blank path", VerifiedReferenceRejectsBlankPath, failures);
 
-        Console.WriteLine($"Audio UX regressions: {5 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Audio UX regressions: {8 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
-        {
             Console.Error.WriteLine(failure);
-        }
         return failures.Count == 0 ? 0 : 1;
     }
 
@@ -41,6 +42,32 @@ internal static class Program
         Equal(new string('A', AudioToPianoSongIdentity.MaxTitleLength), normalized);
     }
 
+    private static void VerifiedReferencePreservesSearchIdentity()
+    {
+        var handoff = AudioToPianoCreatePrefill.From(" Popular Song 2026 ", @"C:\owned\reference mix.wav");
+        Equal("Popular Song 2026", handoff.SongIdentity);
+        Equal(Path.GetFullPath(@"C:\owned\reference mix.wav"), handoff.AudioPath);
+    }
+
+    private static void VerifiedReferenceFallsBackToFilename()
+    {
+        var handoff = AudioToPianoCreatePrefill.From("  ", @"C:\owned\reference mix.wav");
+        Equal("reference mix", handoff.SongIdentity);
+        Equal(Path.GetFullPath(@"C:\owned\reference mix.wav"), handoff.AudioPath);
+    }
+
+    private static void VerifiedReferenceRejectsBlankPath()
+    {
+        try
+        {
+            _ = AudioToPianoCreatePrefill.From("Song", "  ");
+            throw new InvalidOperationException("blank path was accepted");
+        }
+        catch (ArgumentException)
+        {
+        }
+    }
+
     private static void Run(string name, Action test, ICollection<string> failures)
     {
         try
@@ -56,8 +83,6 @@ internal static class Program
     private static void Equal<T>(T expected, T actual)
     {
         if (!EqualityComparer<T>.Default.Equals(expected, actual))
-        {
             throw new InvalidOperationException($"expected '{expected}', got '{actual}'");
-        }
     }
 }

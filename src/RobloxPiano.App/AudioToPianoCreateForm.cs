@@ -25,7 +25,7 @@ internal sealed class AudioToPianoCreateForm : Form
     private AudioTranscriptionReadiness? _generatedReadiness;
     private bool _addedToLibrary;
 
-    public AudioToPianoCreateForm(string? suggestedTitle = null)
+    public AudioToPianoCreateForm(string? suggestedTitle = null, string? preselectedAudioPath = null)
     {
         Text = "Create Piano Version";
         StartPosition = FormStartPosition.CenterParent;
@@ -37,10 +37,18 @@ internal sealed class AudioToPianoCreateForm : Form
             "RobloxPiano",
             "sheets");
         _libraryWriter = new GeneratedTrackLibraryWriter(managedRoot);
-        _songIdentity.Text = AudioToPianoSongIdentity.Normalize(suggestedTitle, string.Empty);
-        if (_songIdentity.Text == "Generated Piano" && string.IsNullOrWhiteSpace(suggestedTitle))
+
+        AudioToPianoCreatePrefill? prefill = null;
+        if (!string.IsNullOrWhiteSpace(preselectedAudioPath))
         {
-            _songIdentity.Clear();
+            prefill = AudioToPianoCreatePrefill.From(suggestedTitle, preselectedAudioPath);
+            _songIdentity.Text = prefill.SongIdentity;
+        }
+        else
+        {
+            _songIdentity.Text = AudioToPianoSongIdentity.Normalize(suggestedTitle, string.Empty);
+            if (_songIdentity.Text == "Generated Piano" && string.IsNullOrWhiteSpace(suggestedTitle))
+                _songIdentity.Clear();
         }
 
         BuildLayout();
@@ -55,6 +63,9 @@ internal sealed class AudioToPianoCreateForm : Form
             CancelCreation();
             StopPreview();
         };
+
+        if (prefill is not null)
+            ApplyPreselectedAudio(prefill);
     }
 
     public string? AddedLibraryPath { get; private set; }
@@ -106,6 +117,25 @@ internal sealed class AudioToPianoCreateForm : Form
         Controls.Add(root);
     }
 
+    private void ApplyPreselectedAudio(AudioToPianoCreatePrefill prefill)
+    {
+        _path.Text = prefill.AudioPath;
+        _songIdentity.Text = prefill.SongIdentity;
+        ResetGeneratedResult();
+        _progress.Value = 0;
+
+        if (File.Exists(prefill.AudioPath))
+        {
+            _create.Enabled = true;
+            _status.Text = "Ready to create from the same owned/local audio already used to verify online matches. No second file selection is required.";
+        }
+        else
+        {
+            _create.Enabled = false;
+            _status.Text = "The previously selected reference audio is no longer available. Choose Audio to continue safely.";
+        }
+    }
+
     private void ChooseAudio()
     {
         using var dialog = new OpenFileDialog
@@ -122,9 +152,7 @@ internal sealed class AudioToPianoCreateForm : Form
         StopPreview();
         _path.Text = Path.GetFullPath(dialog.FileName);
         if (string.IsNullOrWhiteSpace(_songIdentity.Text))
-        {
             _songIdentity.Text = AudioToPianoSongIdentity.Normalize(null, _path.Text);
-        }
         ResetGeneratedResult();
         _create.Enabled = true;
         _progress.Value = 0;
