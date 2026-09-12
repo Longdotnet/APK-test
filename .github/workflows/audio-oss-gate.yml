@@ -35,6 +35,9 @@ jobs:
       - name: Run audio ingest, ONNX, decoder and arranger regression harness
         run: dotnet run --project tests/RobloxPiano.AudioTests/RobloxPiano.AudioTests.csproj -c Release
 
+      - name: Verify search-to-create client identity contract
+        run: dotnet run --project tests/RobloxPiano.AudioUxTests/RobloxPiano.AudioUxTests.csproj -c Release
+
       - name: Verify generated MIDI persistence and production-import parity
         run: dotnet run --project tests/RobloxPiano.GeneratedMidiTests/RobloxPiano.GeneratedMidiTests.csproj -c Release
 

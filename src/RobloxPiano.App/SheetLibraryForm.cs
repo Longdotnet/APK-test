@@ -6,7 +6,7 @@ internal sealed class SheetLibraryForm : Form
 {
     private readonly SheetLibraryService _library;
     private readonly OnlineSongDiscoveryController _onlineDiscovery;
-    private readonly TextBox _search = new() { PlaceholderText = "Search songs...", Dock = DockStyle.Fill };
+    private readonly TextBox _search = new() { PlaceholderText = "Search a song, then use an existing match or create a piano version...", Dock = DockStyle.Fill };
     private readonly DataGridView _grid = new()
     {
         Dock = DockStyle.Fill,
@@ -28,6 +28,7 @@ internal sealed class SheetLibraryForm : Form
         Font = new Font(SystemFonts.DefaultFont.FontFamily, 11f, FontStyle.Bold),
         Padding = new Padding(14, 5, 14, 5)
     };
+    private readonly Button _createPianoButton = new() { Text = "Create Piano Version...", AutoSize = true };
     private readonly Button _inputCheckButton = new() { Text = "Test Roblox Input", AutoSize = true };
     private readonly Button _supportButton = new() { Text = "Support Center", AutoSize = true };
     private readonly Button _importMidiButton = new() { Text = "Import MIDI...", AutoSize = true };
@@ -61,6 +62,7 @@ internal sealed class SheetLibraryForm : Form
 
         _search.TextChanged += (_, _) => ApplyFilter();
         _refreshButton.Click += (_, _) => RefreshLibrary();
+        _createPianoButton.Click += (_, _) => ShowCreatePianoVersion();
         _inputCheckButton.Click += (_, _) => ShowInputCheck();
         _supportButton.Click += (_, _) => ShowSupportCenter();
         _importMidiButton.Click += (_, _) => ImportMidiWithPicker();
@@ -105,12 +107,12 @@ internal sealed class SheetLibraryForm : Form
         var title = new Label { Text = "Roblox Piano", AutoSize = true, Font = new Font(Font.FontFamily, 20f, FontStyle.Bold) };
         var subtitle = new Label
         {
-            Text = "Import MIDI collections into the Library. Playback now verifies the current Roblox process accepts the production input path before the first play in that Roblox session.",
+            Text = "Search your Library and verified online MIDI candidates first. If no suitable source exists, Create Piano Version uses owned/local audio and keeps the searched song identity through review and Library persistence.",
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 4)
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange([_playButton, _inputCheckButton, _supportButton, _importMidiButton, _importMidiFolderButton, _importButton, _refreshButton]);
+        buttons.Controls.AddRange([_playButton, _createPianoButton, _inputCheckButton, _supportButton, _importMidiButton, _importMidiFolderButton, _importButton, _refreshButton]);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 8 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -253,6 +255,19 @@ internal sealed class SheetLibraryForm : Form
         if (selected?.HasCompatibilityAdjustment == true)
         {
             _status.Text = $"Compatibility adjustment for {selected.Title}: {selected.Compatibility}. Playback uses this deterministic imported interpretation.";
+        }
+    }
+
+    private void ShowCreatePianoVersion()
+    {
+        var suggestedTitle = _search.Text.Trim();
+        using var dialog = new AudioToPianoCreateForm(suggestedTitle);
+        dialog.ShowDialog(this);
+        if (!string.IsNullOrWhiteSpace(dialog.AddedLibraryPath))
+        {
+            RefreshLibrary(
+                dialog.AddedLibraryPath,
+                "Generated piano version added after deterministic quality review and verified MIDI round-trip. It is now selected in your Library.");
         }
     }
 
