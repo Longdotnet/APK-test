@@ -32,11 +32,24 @@ internal readonly record struct WindowsLowLevelKeyboardProvenanceSnapshot(
     WindowsLowLevelKeyboardProvenanceKind DownProvenance,
     WindowsLowLevelKeyboardProvenanceKind UpProvenance)
 {
+    public int TargetEventCount { get; init; }
+    public int NotInjectedTargetEventCount { get; init; }
+    public int InjectedTargetEventCount { get; init; }
+    public int LowerIntegrityInjectedTargetEventCount { get; init; }
+    public bool UnexpectedTargetTransitionObserved { get; init; }
+
     internal bool InjectedPairObserved => HookArmed
         && TargetDownObserved
         && TargetUpObserved
         && DownProvenance is WindowsLowLevelKeyboardProvenanceKind.Injected or WindowsLowLevelKeyboardProvenanceKind.LowerIntegrityInjected
         && UpProvenance is WindowsLowLevelKeyboardProvenanceKind.Injected or WindowsLowLevelKeyboardProvenanceKind.LowerIntegrityInjected;
+
+    internal bool PhysicalTargetContaminationObserved => NotInjectedTargetEventCount > 0;
+
+    internal bool UncontaminatedInjectedPairObserved => InjectedPairObserved
+        && TargetEventCount == 2
+        && !UnexpectedTargetTransitionObserved
+        && !PhysicalTargetContaminationObserved;
 }
 
 /// <summary>
@@ -69,6 +82,11 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
     private uint upScanCode;
     private WindowsLowLevelKeyboardProvenanceKind downProvenance;
     private WindowsLowLevelKeyboardProvenanceKind upProvenance;
+    private int targetEventCount;
+    private int notInjectedTargetEventCount;
+    private int injectedTargetEventCount;
+    private int lowerIntegrityInjectedTargetEventCount;
+    private bool unexpectedTargetTransitionObserved;
 
     internal WindowsLowLevelKeyboardProvenance(string probeId, string path, ushort virtualKey)
     {
@@ -122,7 +140,11 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
                 $"downFlags=0x{snapshot.DownFlags:X} upFlags=0x{snapshot.UpFlags:X} " +
                 $"downScan=0x{snapshot.DownScanCode:X} upScan=0x{snapshot.UpScanCode:X} " +
                 $"downProvenance={snapshot.DownProvenance} upProvenance={snapshot.UpProvenance} " +
-                $"injectedPairObserved={snapshot.InjectedPairObserved} productionChanged=false.");
+                $"targetEvents={snapshot.TargetEventCount} nonInjectedEvents={snapshot.NotInjectedTargetEventCount} " +
+                $"injectedEvents={snapshot.InjectedTargetEventCount} lowerIntegrityInjectedEvents={snapshot.LowerIntegrityInjectedTargetEventCount} " +
+                $"unexpectedTransition={snapshot.UnexpectedTargetTransitionObserved} physicalTargetContamination={snapshot.PhysicalTargetContaminationObserved} " +
+                $"injectedPairObserved={snapshot.InjectedPairObserved} uncontaminatedInjectedPairObserved={snapshot.UncontaminatedInjectedPairObserved} " +
+                "productionChanged=false.");
             return snapshot;
         }
     }
@@ -169,6 +191,72 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
             Classify(flags));
     }
 
+    internal static WindowsLowLevelKeyboardProvenanceSnapshot BuildSnapshotForDiagnostics(
+        bool hookArmed,
+        IReadOnlyList<WindowsLowLevelKeyboardEventEvidence> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+
+        var targetEvents = events
+            .Where(evidence => evidence.IsTargetVirtualKey && (evidence.IsDown || evidence.IsUp))
+            .ToArray();
+
+        var firstDown = targetEvents.FirstOrDefault(evidence => evidence.IsDown);
+        var firstUp = targetEvents.FirstOrDefault(evidence => evidence.IsUp);
+        var targetDownObserved = targetEvents.Any(evidence => evidence.IsDown);
+        var targetUpObserved = targetEvents.Any(evidence => evidence.IsUp);
+        var expectedDown = true;
+        var unexpectedTransition = false;
+        foreach (var evidence in targetEvents)
+        {
+            if (expectedDown)
+            {
+                if (!evidence.IsDown)
+                {
+                    unexpectedTransition = true;
+                }
+                else
+                {
+                    expectedDown = false;
+                }
+            }
+            else
+            {
+                if (!evidence.IsUp)
+                {
+                    unexpectedTransition = true;
+                }
+                else
+                {
+                    expectedDown = true;
+                }
+            }
+        }
+
+        if (targetEvents.Length != 2 || expectedDown is false)
+        {
+            unexpectedTransition = true;
+        }
+
+        return new WindowsLowLevelKeyboardProvenanceSnapshot(
+            hookArmed,
+            targetDownObserved,
+            targetUpObserved,
+            targetDownObserved ? firstDown.Flags : 0,
+            targetUpObserved ? firstUp.Flags : 0,
+            targetDownObserved ? firstDown.ScanCode : 0,
+            targetUpObserved ? firstUp.ScanCode : 0,
+            targetDownObserved ? firstDown.Provenance : WindowsLowLevelKeyboardProvenanceKind.Unknown,
+            targetUpObserved ? firstUp.Provenance : WindowsLowLevelKeyboardProvenanceKind.Unknown)
+        {
+            TargetEventCount = targetEvents.Length,
+            NotInjectedTargetEventCount = targetEvents.Count(evidence => evidence.Provenance == WindowsLowLevelKeyboardProvenanceKind.NotInjected),
+            InjectedTargetEventCount = targetEvents.Count(evidence => evidence.Provenance == WindowsLowLevelKeyboardProvenanceKind.Injected),
+            LowerIntegrityInjectedTargetEventCount = targetEvents.Count(evidence => evidence.Provenance == WindowsLowLevelKeyboardProvenanceKind.LowerIntegrityInjected),
+            UnexpectedTargetTransitionObserved = unexpectedTransition
+        };
+    }
+
     public void Dispose()
     {
         lock (stateGate)
@@ -193,7 +281,14 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
             downScanCode,
             upScanCode,
             downProvenance,
-            upProvenance);
+            upProvenance)
+        {
+            TargetEventCount = targetEventCount,
+            NotInjectedTargetEventCount = notInjectedTargetEventCount,
+            InjectedTargetEventCount = injectedTargetEventCount,
+            LowerIntegrityInjectedTargetEventCount = lowerIntegrityInjectedTargetEventCount,
+            UnexpectedTargetTransitionObserved = unexpectedTargetTransitionObserved
+        };
 
     private IntPtr OnKeyboard(int code, IntPtr wParam, IntPtr lParam)
     {
@@ -207,29 +302,60 @@ internal sealed class WindowsLowLevelKeyboardProvenance : IDisposable
                 {
                     if (observationActive)
                     {
+                        targetEventCount++;
+                        switch (evidence.Provenance)
+                        {
+                            case WindowsLowLevelKeyboardProvenanceKind.NotInjected:
+                                notInjectedTargetEventCount++;
+                                break;
+                            case WindowsLowLevelKeyboardProvenanceKind.Injected:
+                                injectedTargetEventCount++;
+                                break;
+                            case WindowsLowLevelKeyboardProvenanceKind.LowerIntegrityInjected:
+                                lowerIntegrityInjectedTargetEventCount++;
+                                break;
+                        }
+
+                        if (evidence.IsDown)
+                        {
+                            if (targetDownObserved || targetUpObserved)
+                            {
+                                unexpectedTargetTransitionObserved = true;
+                            }
+
+                            if (!targetDownObserved)
+                            {
+                                targetDownObserved = true;
+                                downFlags = evidence.Flags;
+                                downScanCode = evidence.ScanCode;
+                                downProvenance = evidence.Provenance;
+                            }
+                        }
+                        else if (evidence.IsUp)
+                        {
+                            if (!targetDownObserved || targetUpObserved)
+                            {
+                                unexpectedTargetTransitionObserved = true;
+                            }
+
+                            if (!targetUpObserved)
+                            {
+                                targetUpObserved = true;
+                                upFlags = evidence.Flags;
+                                upScanCode = evidence.ScanCode;
+                                upProvenance = evidence.Provenance;
+                            }
+                        }
+
                         var elapsed = observationStartedAt is null
                             ? TimeSpan.Zero
                             : Stopwatch.GetElapsedTime(observationStartedAt.Value);
 
-                        if (evidence.IsDown && !targetDownObserved)
-                        {
-                            targetDownObserved = true;
-                            downFlags = evidence.Flags;
-                            downScanCode = evidence.ScanCode;
-                            downProvenance = evidence.Provenance;
-                        }
-                        else if (evidence.IsUp && !targetUpObserved)
-                        {
-                            targetUpObserved = true;
-                            upFlags = evidence.Flags;
-                            upScanCode = evidence.ScanCode;
-                            upProvenance = evidence.Provenance;
-                        }
-
                         ClientDiagnostics.Log(
                             $"INPUT_FORENSIC probe={probeId} stage=LOWLEVEL_PROVENANCE_EVENT path={path} " +
                             $"event={(evidence.IsDown ? "DOWN" : "UP")} vk=0x{evidence.VirtualKey:X2} scanCode=0x{evidence.ScanCode:X2} " +
-                            $"flags=0x{evidence.Flags:X} provenance={evidence.Provenance} " +
+                            $"flags=0x{evidence.Flags:X} provenance={evidence.Provenance} targetEventIndex={targetEventCount} " +
+                            $"unexpectedTransition={unexpectedTargetTransitionObserved} " +
                             $"elapsedMs={elapsed.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)} " +
                             "privacy=TARGET_KEY_ONLY productionChanged=false.");
                     }
