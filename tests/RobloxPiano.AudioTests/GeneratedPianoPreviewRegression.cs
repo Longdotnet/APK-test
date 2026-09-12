@@ -32,6 +32,10 @@ internal static class GeneratedPianoPreviewRegression
         True(first.Any(sample => Math.Abs(sample) > 0.0001f), "Preview must contain audible samples.");
         True(first.All(float.IsFinite), "Preview must contain only finite samples.");
         True(first.All(sample => sample is >= -1f and <= 1f), "Preview samples must remain bounded.");
+
+        TimelineWindowClipsAndShiftsOverlappingEvents();
+        ReviewRegionPlanAddsBoundedContext();
+        InvalidPreviewWindowFailsClosed();
     }
 
     public static void LongTrackPreviewIsBoundedAndStreaming()
