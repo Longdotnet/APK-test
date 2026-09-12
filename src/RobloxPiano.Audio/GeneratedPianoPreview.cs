@@ -8,11 +8,13 @@ public sealed record GeneratedPianoPreviewOptions(
     TimeSpan? MaximumPreviewDuration = null,
     float MasterGain = 0.22f,
     TimeSpan? Attack = null,
-    TimeSpan? Release = null)
+    TimeSpan? Release = null,
+    TimeSpan? StartOffset = null)
 {
     public TimeSpan EffectiveMaximumPreviewDuration => MaximumPreviewDuration ?? TimeSpan.FromSeconds(60);
     public TimeSpan EffectiveAttack => Attack ?? TimeSpan.FromMilliseconds(5);
     public TimeSpan EffectiveRelease => Release ?? TimeSpan.FromMilliseconds(20);
+    public TimeSpan EffectiveStartOffset => StartOffset ?? TimeSpan.Zero;
 
     internal void Validate()
     {
@@ -26,6 +28,8 @@ public sealed record GeneratedPianoPreviewOptions(
             throw new ArgumentOutOfRangeException(nameof(Attack));
         if (EffectiveRelease < TimeSpan.Zero || EffectiveRelease > TimeSpan.FromMilliseconds(250))
             throw new ArgumentOutOfRangeException(nameof(Release));
+        if (EffectiveStartOffset < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(StartOffset));
     }
 }
 
@@ -33,7 +37,44 @@ public sealed record GeneratedPianoPreviewInfo(
     TimeSpan SourceDuration,
     TimeSpan PreviewDuration,
     int NoteVoices,
-    bool IsTruncated);
+    bool IsTruncated)
+{
+    public TimeSpan PreviewStart { get; init; }
+    public TimeSpan PreviewEnd => PreviewStart + PreviewDuration;
+}
+
+public sealed record GeneratedPianoReviewPreviewPlan(
+    TimeSpan RegionStart,
+    TimeSpan RegionEnd,
+    TimeSpan PreviewStart,
+    TimeSpan PreviewEnd)
+{
+    public TimeSpan PreviewDuration => PreviewEnd - PreviewStart;
+
+    public static GeneratedPianoReviewPreviewPlan Create(
+        TimeSpan sourceDuration,
+        AudioTranscriptionReviewRegion region,
+        TimeSpan? context = null)
+    {
+        if (sourceDuration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(sourceDuration));
+        ArgumentNullException.ThrowIfNull(region);
+        var padding = context ?? TimeSpan.FromSeconds(1.5);
+        if (padding < TimeSpan.Zero || padding > TimeSpan.FromSeconds(10))
+            throw new ArgumentOutOfRangeException(nameof(context));
+        if (region.Start < TimeSpan.Zero || region.End <= region.Start || region.Start >= sourceDuration)
+            throw new InvalidDataException("Review region is outside the canonical generated track timeline.");
+
+        var regionEnd = region.End > sourceDuration ? sourceDuration : region.End;
+        var previewStart = region.Start > padding ? region.Start - padding : TimeSpan.Zero;
+        var paddedEnd = regionEnd + padding;
+        var previewEnd = paddedEnd < sourceDuration ? paddedEnd : sourceDuration;
+        if (previewEnd <= previewStart)
+            throw new InvalidDataException("Review region produced an empty preview window.");
+
+        return new GeneratedPianoReviewPreviewPlan(region.Start, regionEnd, previewStart, previewEnd);
+    }
+}
 
 /// <summary>
 /// Streams an audible local review of a canonical PerformanceTrack. This is intentionally
@@ -67,9 +108,14 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
         if (sourceDuration <= TimeSpan.Zero)
             throw new InvalidDataException("Generated piano preview requires a positive canonical timeline duration.");
 
-        var previewDuration = sourceDuration <= options.EffectiveMaximumPreviewDuration
-            ? sourceDuration
+        var previewStart = options.EffectiveStartOffset;
+        if (previewStart >= sourceDuration)
+            throw new InvalidDataException("Generated piano preview start must be inside the canonical timeline.");
+        var remainingDuration = sourceDuration - previewStart;
+        var previewDuration = remainingDuration <= options.EffectiveMaximumPreviewDuration
+            ? remainingDuration
             : options.EffectiveMaximumPreviewDuration;
+        var previewEnd = previewStart + previewDuration;
         _totalSamples = Math.Max(1, ToSamples(previewDuration, options.SampleRate));
 
         var profile = MidiKeyboardProfile.RobloxClassic61;
@@ -79,13 +125,16 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
             if (performanceEvent.Start < TimeSpan.Zero || performanceEvent.Duration <= TimeSpan.Zero)
                 throw new InvalidDataException("Generated piano preview received an invalid canonical event timeline.");
 
-            var startSample = ToSamples(performanceEvent.Start, options.SampleRate);
-            if (startSample >= _totalSamples)
+            var eventEnd = performanceEvent.Start + performanceEvent.Duration;
+            if (eventEnd <= previewStart || performanceEvent.Start >= previewEnd)
                 continue;
 
+            var clippedStart = performanceEvent.Start < previewStart ? previewStart : performanceEvent.Start;
+            var clippedEnd = eventEnd > previewEnd ? previewEnd : eventEnd;
+            var startSample = ToSamples(clippedStart - previewStart, options.SampleRate);
             var endSample = Math.Min(
                 _totalSamples,
-                Math.Max(startSample + 1, ToSamples(performanceEvent.Start + performanceEvent.Duration, options.SampleRate)));
+                Math.Max(startSample + 1, ToSamples(clippedEnd - previewStart, options.SampleRate)));
 
             foreach (var key in performanceEvent.Keys.Distinct())
             {
@@ -100,7 +149,7 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
         }
 
         if (voices.Count == 0)
-            throw new InvalidDataException("Generated piano preview contains no audible note voices.");
+            throw new InvalidDataException("Generated piano preview contains no audible note voices in the selected timeline window.");
 
         _voices = voices
             .OrderBy(voice => voice.StartSample)
@@ -110,7 +159,10 @@ public sealed class GeneratedPianoPreviewSampleProvider : ISampleProvider
             sourceDuration,
             previewDuration,
             _voices.Length,
-            previewDuration < sourceDuration);
+            previewStart + previewDuration < sourceDuration)
+        {
+            PreviewStart = previewStart
+        };
     }
 
     public WaveFormat WaveFormat { get; }
