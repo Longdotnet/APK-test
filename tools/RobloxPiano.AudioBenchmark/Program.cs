@@ -62,7 +62,7 @@ static Dictionary<string, string> ParseArguments(string[] values)
         var value = values[index + 1];
         if (!name.StartsWith("--", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(value))
             throw new ArgumentException($"Invalid benchmark argument pair at position {index}.");
-        if (!KnownOptions.Contains(name))
+        if (!IsKnownOption(name))
             throw new ArgumentException($"Unknown benchmark option '{name}'.");
         if (!parsed.TryAdd(name, value))
             throw new ArgumentException($"Benchmark option '{name}' was supplied more than once.");
@@ -70,6 +70,13 @@ static Dictionary<string, string> ParseArguments(string[] values)
 
     return parsed;
 }
+
+static bool IsKnownOption(string name) => name is
+    "--manifest" or
+    "--report" or
+    "--basic-pitch-model" or
+    "--basic-pitch-sha256" or
+    "--basic-pitch-commit";
 
 static string Require(IReadOnlyDictionary<string, string> values, string name) =>
     values.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
@@ -84,12 +91,3 @@ static void PrintUsage()
     Console.WriteLine();
     Console.WriteLine("The command never downloads tools, models, or media and never mutates production playback state.");
 }
-
-static readonly HashSet<string> KnownOptions = new(StringComparer.Ordinal)
-{
-    "--manifest",
-    "--report",
-    "--basic-pitch-model",
-    "--basic-pitch-sha256",
-    "--basic-pitch-commit"
-};
