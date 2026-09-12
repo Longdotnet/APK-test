@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.29
+version: 0.40.30
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -12,12 +12,25 @@ SHA256: `{{SHA256}}`
 ## Client flow
 
 1. Download `RobloxPiano.exe` and double-click it; **Sheet Library** remains the normal starting point.
-2. Search for the song identity first. Existing local/validated online MIDI remains the fast path; if no suitable source exists, use **Create Piano Version...** directly from Sheet Library and choose owned/local audio. The searched identity is preserved through Create -> Preview -> review -> explicit Add to Library.
-3. Existing Audio-to-Piano Phase 19 preview/review and Phase 18 verified Library persistence remain unchanged: low-confidence output stays visible, `Rejected` cannot persist, and generated MIDI must survive production-import parity before commit.
-4. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without intentionally changing Roblox experience/session.
-5. Keep the selected Roblox surface foreground for the full physical W hold and through each synthetic probe/reaction assessment. Phase 78 invalidates a synthetic cell even when a short foreground hop occurs between polling ticks.
-6. For the PowerShell-oracle cell, preserve the new `LOWLEVEL_PROVENANCE_*` lines with the rest of the probe evidence. They show whether Windows' low-level keyboard stream observed the synthetic W as injected or lower-integrity injected.
-7. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**.
+2. Search for the song identity first. Online MIDI results are discovery leads, not recording truth. Select a candidate and use **Verify with my audio...** to compare it deterministically with owned/local reference audio; only `High confidence` is promoted as the verified fast path. `Review` or `Mismatch` directs you to another candidate or **Create Piano Version...**.
+3. If no verified source is suitable, use **Create Piano Version...** directly from Sheet Library and choose owned/local audio. The searched identity is preserved through Create -> Preview -> review -> explicit Add to Library.
+4. Existing Audio-to-Piano Phase 19 preview/review and Phase 18 verified Library persistence remain unchanged: low-confidence output stays visible, `Rejected` cannot persist, and generated MIDI must survive production-import parity before commit.
+5. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and synthetic matrix without intentionally changing Roblox experience/session.
+6. Keep the selected Roblox surface foreground for the full physical W hold and through each synthetic probe/reaction assessment. Phase 78 invalidates a synthetic cell even when a short foreground hop occurs between polling ticks.
+7. For the PowerShell-oracle cell, preserve the `LOWLEVEL_PROVENANCE_*` lines with the rest of the probe evidence. They show whether Windows' low-level keyboard stream observed the synthetic W as injected or lower-integrity injected.
+8. Preserve `INPUT_MATRIX_SESSION`, `INPUT_MATRIX_REACTION_CONTEXT`, `INPUT_MATRIX_SUMMARY`, `INPUT_MATRIX` and `INPUT_FORENSIC` lines together, or export a **Support Bundle**.
+
+## Audio-to-Piano OSS Phase 22 — owned-audio verification for online candidates
+
+- Sheet Library online discovery now exposes **Verify with my audio...** for the selected MIDI candidate.
+- The client explicitly chooses owned/local WAV, MP3, AIFF or AIF audio. Existing NAudio decode/downmix/resampling runs locally and is bounded to five minutes; reference audio is not uploaded.
+- Reference audio is normalized to mono 22,050 Hz and converted to deterministic PCM16 evidence for the existing reference-audio analyzer.
+- The selected online MIDI is downloaded only from the existing provider allow-list, is bounded to five MiB, lives in an operation-scoped temporary directory, and is parsed through production `SongSourceLoader` into canonical `PerformanceTrack`.
+- Existing Phase 21 alignment/confidence produces hash-bound `High confidence`, `Review` or `Mismatch` evidence. Metadata/title similarity never replaces that evidence.
+- `High confidence` changes the action to **Add Verified Match**. Once a candidate verifies as `Review` or `Mismatch`, that candidate is blocked from the discovery fast path and the UI directs the client to another result or **Create Piano Version...**.
+- Verification itself never writes to the Library. Temporary candidate bytes are deleted best-effort on success, failure or cancellation.
+- This phase adds no Python, PyTorch, ffmpeg, ML developer tooling, media downloader, or new third-party runtime dependency.
+- Runtime Input, scheduler truth, focus guard, authorization, held-key/pedal ownership, Legacy and Legacy x2 are unchanged.
 
 ## Runtime Input P0 Phase 79 — PowerShell-oracle low-level provenance
 
@@ -57,7 +70,7 @@ SHA256: `{{SHA256}}`
 - Song identity is normalized by trimming/collapsing whitespace/control characters and bounding the title to 120 characters; blank identity falls back to the selected local-audio basename and finally `Generated Piano`.
 - The normalized identity is passed into the existing Audio-to-Piano job and canonical `PerformanceTrack`, so a local capture filename no longer silently replaces the song the client actually searched for.
 - After verified Add to Library, Sheet Library refreshes and selects the exact committed path while keeping normal Library validation in force.
-- Online MIDI remains a convenience fast path, not product truth. Same-title candidates are not treated as equivalent to the desired recording without the existing deterministic validation.
+- Online MIDI remains a convenience fast path, not product truth. Same-title candidates are not treated as equivalent to the desired recording without deterministic validation.
 - No Runtime Input implementation, scheduler, focus guard, authorization, held-key/pedal ownership or playback truth changes are included in that audio phase.
 
 ## Runtime Input P0 Phase 77 — event-driven real-key hold continuity
@@ -95,22 +108,24 @@ SHA256: `{{SHA256}}`
 - Audio Phase 19: bounded local canonical piano Preview before persistence using existing NAudio streaming/output.
 - Audio Phase 20: one Sheet Library search-or-create path that preserves searched song identity into local transcription, review and verified Library persistence.
 - Audio Phase 21: deterministic reference-audio candidate confidence/ranking from verified immutable alignment evidence.
+- Audio Phase 22: local owned-audio verification of discovered MIDI candidates before promoting them as a verified existing-source fast path.
 - Canonical `PerformanceTrack` remains authoritative; Audio features do not replace Runtime Input or scheduler truth.
 
 ## OSS and attribution
 
 - Spotify Basic Pitch remains the pinned AMT model/semantic reference under Apache-2.0 with upstream NOTICE attribution.
 - Microsoft ONNX Runtime remains the native .NET inference engine.
-- NAudio remains the Windows decode/normalization and local preview/output boundary.
+- NAudio remains the Windows decode/normalization and local preview/output boundary; Phase 22 reuses it for bounded reference normalization.
 - Melanchall DryWetMIDI Nativeless remains the deterministic generated-MIDI serializer under MIT.
 - `RobloxPiano.exe --third-party-notices` exposes bundled third-party notices.
-- Phase 79 adds no third-party dependency or license obligation.
+- Phase 22 and Phase 79 add no third-party dependency or new license obligation.
 
 ## Current boundaries
 
 - P0 remains `NOT YET PROVEN`: no field evidence in this release proves synthetic W is consumed by Roblox.
-- Search/song identity is descriptive metadata and does not prove an online MIDI candidate matches the exact desired recording.
-- Audio transcription continues to operate only on local audio the client explicitly chooses and is authorized to use; this release adds no media-downloader or access-control bypass.
+- `High confidence` is deterministic onset/tempo/timeline evidence, not waveform identity. `Review` remains explicit when evidence is insufficient.
+- Search/song identity is descriptive metadata and does not prove an online MIDI candidate matches the exact desired recording unless reference verification supports it.
+- Audio transcription/reference verification operates only on local audio the client explicitly chooses and is authorized to use; this release adds no media-downloader or access-control bypass.
 - Foreground WinEvents close the sub-25-ms foreground-hop blind spot for both the physical control and all explicit synthetic matrix cells, but Windows still cannot directly attest another process's internal gameplay consumption.
 - Low-level hook provenance tells us how Windows classified the explicit synthetic W event; it still does not prove Roblox consumed that event.
 - PID/start-time/HWND continuity cannot prove an internal Roblox place/experience transition if Roblox reuses the same process/window; field runs must avoid intentionally changing experience/session between cells.
