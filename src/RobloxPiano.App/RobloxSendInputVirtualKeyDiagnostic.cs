@@ -105,6 +105,7 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
         using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "SendInputVirtualKeyDiagnostic", oracle.VirtualKey);
         lowLevelProvenance.Start();
         var lowLevelObservationEnded = false;
+        var downEmitted = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
@@ -112,6 +113,7 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
             eventContinuity.BeginHold();
             lowLevelProvenance.BeginObservation();
             Emit(downEvent);
+            downEmitted = true;
 
             var sampleIndex = 0;
             while (true)
@@ -178,13 +180,23 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
         finally
         {
             eventContinuity.EndHold();
-            try
+            if (ShouldEmitBestEffortRelease(downEmitted))
             {
-                Emit(upEvent);
+                try
+                {
+                    Emit(upEvent);
+                }
+                catch (WindowsInputInjectionException)
+                {
+                    // Best-effort release. Preserve the original diagnostic failure.
+                }
             }
-            catch (WindowsInputInjectionException)
+            else
             {
-                // Best-effort release. Preserve the original diagnostic failure.
+                ClientDiagnostics.Log(
+                    $"INPUT_FORENSIC probe={probeId} stage=SENDINPUT_VK_RELEASE_SKIPPED backend=SendInput " +
+                    "probePath=SendInputVirtualKeyDiagnostic keyDownEmitted=false nativeEventsAfterAbort=0 " +
+                    "verdict=ABORT_BEFORE_DOWN authorizesPlayback=false productionChanged=false.");
             }
 
             if (!lowLevelObservationEnded)
@@ -193,6 +205,9 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
             }
         }
     }
+
+    internal static bool ShouldEmitBestEffortRelease(bool keyDownEmitted)
+        => keyDownEmitted;
 
     internal static SendInputVirtualKeyDiagnosticEvent BuildEvent(ushort virtualKey, bool keyUp)
     {
