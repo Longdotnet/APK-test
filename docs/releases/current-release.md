@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.40
+version: 0.40.41
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,25 +15,27 @@ SHA256: `{{SHA256}}`
 - **Support Bundle** remains the preferred way to preserve correlated `INPUT_MATRIX_*`, `INPUT_MATRIX_PROVENANCE`, `LOWLEVEL_PROVENANCE_*`, and `INPUT_FORENSIC` evidence for a field run.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Runtime Input P0 Phase 87 — physical-control-gated synthetic winner
+## Runtime Input P0 Phase 88 — decision-eligible matrix-cell replay fail-closed
 
-- The real-vs-synthetic matrix now requires a trusted, visibly reacting physical `REAL_KEY` W control before any provenance-clean synthetic `ROBLOX_REACTED` cell can become the conclusive `SYNTHETIC_VARIANT_REACHES_ROBLOX` verdict.
-- A synthetic Yes without a physical control stays `MATRIX_INCOMPLETE` and explicitly requests **Run Real-Key Baseline**.
-- A synthetic Yes paired with a real-key Windows observation but no visible Roblox reaction stays `REAL_KEY_BASELINE` invalid; the synthetic reaction cannot outrank an invalid control surface.
-- A clean synthetic Yes remains conclusive when the same matrix also contains a same-session, same-selected-HWND physical W that visibly reacted.
-- This closes a false-positive field-evidence path. A selected Roblox surface must first prove that W has an observable effect before synthetic semantics are interpreted as a matrix winner.
-- Phase 86 reaction-bound provenance remains immutable; Phase 84–85 single-assignment/reason-coded provenance remains in force.
-- Production `keybd_event`, SendInput diagnostics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release, Legacy, and **Legacy x2** are unchanged.
+- The real-vs-synthetic matrix no longer lets repeated decision-eligible evidence collapse through last-write-wins semantics.
+- A stale/incomplete cell that never reached the Windows boundary may still be retried once and replaced by the first later confirmed attempt; this preserves the existing recovery path.
+- Once a logical cell has decision-eligible Windows-boundary evidence, any retained replay that could rewrite that evidence makes the matrix non-conclusive with `MATRIX_CELL_REPLAY`.
+- A synthetic No followed by Yes can no longer manufacture a winner, and a Yes followed by No cannot erase a prior reaction or contribute to a false all-synthetic-failure boundary.
+- Repeated confirmed physical `REAL_KEY` evidence cannot rewrite the control baseline either.
+- `INPUT_MATRIX_CELL_REPLAY` logs the affected cells and explicitly remains diagnostic-only; unsafe replay requires a fresh matrix from Real-Key Baseline.
+- Phase 87 physical-control gating and Phase 84–86 single-assignment/reaction-bound provenance remain in force.
+- Production `keybd_event`, SendInput diagnostics, PowerShell oracle semantics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release, Legacy, and **Legacy x2** are unchanged.
 - P0 remains `NOT YET PROVEN`. Explicit visible Roblox movement or the expected piano reaction from production `RobloxPiano.exe` remains mandatory.
 
 ## Field procedure
 
 1. Open Roblox on the exact surface to test and open **Test Roblox Input**.
 2. Run **Real-Key Baseline** first. Physically press and release W once while Roblox is foreground and confirm only what was visibly observed.
-3. Without intentionally changing Roblox experience/process/window, run PowerShell Oracle, keybd_event Scan, SendInput VK, and SendInput Scan cells.
+3. Without intentionally changing Roblox experience/process/window, run PowerShell Oracle, keybd_event Scan, SendInput VK, and SendInput Scan cells once each.
 4. Do not physically press W during synthetic cells. Preserve each unique probe ID and its reaction-bound `INPUT_MATRIX_PROVENANCE` trust/reason.
-5. Loss of focus, Roblox process/HWND replacement, missing provenance, duplicate probe identity, lower-integrity injection, physical-W contamination, malformed transitions, or incomplete injected pairs keep the affected evidence fail-closed.
-6. Windows delivery, CI success, focus success, or a synthetic result without a passing physical control is not a field PASS.
+5. If a cell never reached the Windows boundary, a later confirmed retry may replace that incomplete attempt. If a confirmed result was already retained, do not combine another attempt into the same matrix; start a fresh matrix instead.
+6. Loss of focus, Roblox process/HWND replacement, missing provenance, duplicate probe identity, lower-integrity injection, physical-W contamination, malformed transitions, incomplete injected pairs, or decision-eligible cell replay keep evidence fail-closed.
+7. Windows delivery, CI success, focus success, or a synthetic result without a passing physical control is not a field PASS.
 
 ## Runtime Input invariants
 
@@ -46,4 +48,4 @@ SHA256: `{{SHA256}}`
 ## Audio-to-Piano boundary
 
 - Existing Spotify Basic Pitch + ONNX Runtime + NAudio transcription/arrangement, DryWetMIDI persistence, preview/review, discovery verification, and deterministic `PerformanceTrack` ownership remain unchanged.
-- Runtime Input Phase 87 does not modify Audio-to-Piano architecture or source-separation engineering work.
+- Runtime Input Phase 88 does not modify Audio-to-Piano architecture or source-separation engineering work.
