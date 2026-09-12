@@ -17,6 +17,9 @@ internal sealed record RobloxHardwareKeyBaselineResult(
     ushort VirtualKey,
     TimeSpan ObservationDuration)
 {
+    public bool HoldContinuityPreserved { get; init; }
+    public TimeSpan? FirstHoldContinuityLossAt { get; init; }
+
     public bool PhysicalBaselineObserved => ActivationConfirmed
         && StableForegroundConfirmed
         && NonInjectedKeyDownObserved
@@ -24,7 +27,8 @@ internal sealed record RobloxHardwareKeyBaselineResult(
         && ForegroundHeldAtDown
         && ForegroundHeldAtUp
         && TrustedWindowSurfaceAtDown
-        && TrustedWindowSurfaceAtUp;
+        && TrustedWindowSurfaceAtUp
+        && HoldContinuityPreserved;
 }
 
 /// <summary>
@@ -43,6 +47,7 @@ internal static class RobloxHardwareKeyBaselineProbe
     private const int WmSysKeyUp = 0x0105;
     private const uint LlkhfInjected = 0x10;
     private static readonly TimeSpan ObservationTimeout = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan HoldContinuitySampleInterval = TimeSpan.FromMilliseconds(25);
 
     public static async Task<RobloxHardwareKeyBaselineResult> RunAsync(
         RobloxWindowTarget target,
@@ -77,6 +82,7 @@ internal static class RobloxHardwareKeyBaselineProbe
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_ARMED backend=NONE " +
             $"vk=0x{oracle.VirtualKey:X2} timeoutMs={ObservationTimeout.TotalMilliseconds:0} " +
+            $"holdContinuitySampleMs={HoldContinuitySampleInterval.TotalMilliseconds:0} " +
             "injection=false provenance=LLKHF_INJECTED_FILTER windowPolicy=TRUSTED_SELECTED_TREE privacy=TARGET_KEY_ONLY productionChanged=false.");
 
         var started = Stopwatch.GetTimestamp();
@@ -87,7 +93,14 @@ internal static class RobloxHardwareKeyBaselineProbe
         timeout.CancelAfter(ObservationTimeout);
         try
         {
-            await listener.Completion.Task.WaitAsync(timeout.Token).ConfigureAwait(true);
+            while (!listener.Completion.Task.IsCompleted)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                listener.ObserveHoldContinuity();
+                await Task.Delay(HoldContinuitySampleInterval, timeout.Token).ConfigureAwait(true);
+            }
+
+            await listener.Completion.Task.ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -95,6 +108,7 @@ internal static class RobloxHardwareKeyBaselineProbe
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        listener.ObserveHoldContinuity();
         var result = new RobloxHardwareKeyBaselineResult(
             probeId,
             true,
@@ -106,7 +120,11 @@ internal static class RobloxHardwareKeyBaselineProbe
             listener.TrustedWindowSurfaceAtDown,
             listener.TrustedWindowSurfaceAtUp,
             oracle.VirtualKey,
-            Stopwatch.GetElapsedTime(started));
+            Stopwatch.GetElapsedTime(started))
+        {
+            HoldContinuityPreserved = listener.HoldContinuityPreserved,
+            FirstHoldContinuityLossAt = listener.FirstHoldContinuityLossAt
+        };
         LogVerdict(result, null, result.PhysicalBaselineObserved ? "AWAITING_ROBLOX_OBSERVATION" : "REAL_KEY_NOT_CONFIRMED");
         return result;
     }
@@ -116,6 +134,12 @@ internal static class RobloxHardwareKeyBaselineProbe
 
     internal static bool IsTrustedBaselineSurface(WindowsRobloxWindowIdentitySnapshot snapshot)
         => snapshot.IsTrustedProbeSurface;
+
+    internal static bool IsHoldContinuityTrusted(
+        bool keyDownObserved,
+        bool keyUpObserved,
+        bool continuityPreserved)
+        => keyDownObserved && keyUpObserved && continuityPreserved;
 
     internal static void LogHumanVerdict(RobloxHardwareKeyBaselineResult result, bool reacted)
         => LogVerdict(result, reacted, reacted ? "REAL_KEY_ROBLOX_REACTED" : "REAL_KEY_ROBLOX_NO_REACTION");
@@ -132,7 +156,10 @@ internal static class RobloxHardwareKeyBaselineProbe
             false,
             false,
             0,
-            TimeSpan.Zero);
+            TimeSpan.Zero)
+        {
+            HoldContinuityPreserved = false
+        };
 
     private static void LogVerdict(RobloxHardwareKeyBaselineResult result, bool? reacted, string verdict)
     {
@@ -141,7 +168,9 @@ internal static class RobloxHardwareKeyBaselineProbe
             $"vk=0x{result.VirtualKey:X2} nonInjectedDown={result.NonInjectedKeyDownObserved} " +
             $"nonInjectedUp={result.NonInjectedKeyUpObserved} foregroundAtDown={result.ForegroundHeldAtDown} " +
             $"foregroundAtUp={result.ForegroundHeldAtUp} trustedSurfaceAtDown={result.TrustedWindowSurfaceAtDown} " +
-            $"trustedSurfaceAtUp={result.TrustedWindowSurfaceAtUp} baselineObserved={result.PhysicalBaselineObserved} " +
+            $"trustedSurfaceAtUp={result.TrustedWindowSurfaceAtUp} holdContinuityPreserved={result.HoldContinuityPreserved} " +
+            $"firstHoldContinuityLossMs={result.FirstHoldContinuityLossAt?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
+            $"baselineObserved={result.PhysicalBaselineObserved} " +
             $"robloxReaction={(reacted is null ? "UNKNOWN" : reacted.Value ? "YES" : "NO")} " +
             "injection=false authorizesPlayback=false success=false.");
     }
@@ -180,6 +209,8 @@ internal static class RobloxHardwareKeyBaselineProbe
         private readonly ushort virtualKey;
         private readonly HookProc callback;
         private IntPtr hook;
+        private long? holdStartedAt;
+        private bool holdContinuityLossLogged;
 
         public LowLevelKeyboardListener(RobloxWindowTarget target, string probeId, ushort virtualKey)
         {
@@ -196,6 +227,8 @@ internal static class RobloxHardwareKeyBaselineProbe
         public bool ForegroundAtUp { get; private set; }
         public bool TrustedWindowSurfaceAtDown { get; private set; }
         public bool TrustedWindowSurfaceAtUp { get; private set; }
+        public bool HoldContinuityPreserved { get; private set; }
+        public TimeSpan? FirstHoldContinuityLossAt { get; private set; }
 
         public void Start()
         {
@@ -204,6 +237,38 @@ internal static class RobloxHardwareKeyBaselineProbe
             if (hook == IntPtr.Zero)
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not arm bounded real-key baseline hook.");
+            }
+        }
+
+        public void ObserveHoldContinuity()
+        {
+            if (!NonInjectedDownObserved || NonInjectedUpObserved || !HoldContinuityPreserved)
+            {
+                return;
+            }
+
+            var identity = WindowsRobloxWindowIdentity.Capture(target);
+            var trustedSurface = IsTrustedBaselineSurface(identity);
+            var targetForeground = target.IsForeground;
+            if (trustedSurface && targetForeground)
+            {
+                return;
+            }
+
+            HoldContinuityPreserved = false;
+            FirstHoldContinuityLossAt = holdStartedAt is null
+                ? TimeSpan.Zero
+                : Stopwatch.GetElapsedTime(holdStartedAt.Value);
+
+            if (!holdContinuityLossLogged)
+            {
+                holdContinuityLossLogged = true;
+                ClientDiagnostics.Log(
+                    $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_HOLD_CONTINUITY_LOST verdict=REAL_KEY_HOLD_NOT_CONTINUOUS " +
+                    $"lossMs={FirstHoldContinuityLossAt.Value.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)} " +
+                    $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
+                    $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
+                    "baselineTrusted=false authorizesPlayback=false.");
             }
         }
 
@@ -236,16 +301,19 @@ internal static class RobloxHardwareKeyBaselineProbe
                         $"event={(isDown ? "DOWN" : isUp ? "UP" : "OTHER")} osMarkedInjected={injected} " +
                         $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
                         $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
-                        $"acceptedPhysicalCandidate={candidate} productionChanged=false.");
+                        $"acceptedPhysicalCandidate={candidate} holdContinuityPreserved={HoldContinuityPreserved} productionChanged=false.");
 
-                    if (candidate && isDown)
+                    if (candidate && isDown && !NonInjectedDownObserved)
                     {
                         NonInjectedDownObserved = true;
                         ForegroundAtDown = targetForeground;
                         TrustedWindowSurfaceAtDown = true;
+                        HoldContinuityPreserved = targetForeground;
+                        holdStartedAt = Stopwatch.GetTimestamp();
                     }
                     else if (candidate && isUp && NonInjectedDownObserved)
                     {
+                        ObserveHoldContinuity();
                         NonInjectedUpObserved = true;
                         ForegroundAtUp = targetForeground;
                         TrustedWindowSurfaceAtUp = true;
