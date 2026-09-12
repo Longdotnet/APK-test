@@ -76,10 +76,24 @@ public sealed class DemucsCppBasicPitchBenchmarkRunner
             evaluationOptions,
             cancellationToken).ConfigureAwait(false);
 
-        cancellationToken.ThrowIfCancellationRequested();
-        var after = VerifyBasicPitch(basicPitch, cancellationToken);
-        if (!Equals(before, after))
-            throw new InvalidDataException("Pinned Basic Pitch model provenance changed during benchmark measurement; evidence is rejected.");
+        BasicPitchBenchmarkVerifiedProvenance after;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            after = VerifyBasicPitch(basicPitch, cancellationToken);
+            if (!Equals(before, after))
+                throw new InvalidDataException("Pinned Basic Pitch model provenance changed during benchmark measurement; evidence is rejected.");
+        }
+        catch
+        {
+            // Phase 33 has already materialized the report by this point. Never leave a report that could
+            // be mistaken for Phase 34 evidence when the transcriber provenance failed its post-run gate.
+            TryDelete(benchmark.ReportPath);
+            TryDelete(benchmark.Sha256Path);
+            TryDelete(benchmark.ReportPath + ".evidence.json");
+            TryDelete(benchmark.ReportPath + ".evidence.json.sha256");
+            throw;
+        }
 
         var evidence = WriteEvidence(benchmark, after);
         return new DemucsCppBasicPitchBenchmarkRunResult(
@@ -98,9 +112,9 @@ public sealed class DemucsCppBasicPitchBenchmarkRunner
         cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(pin.ModelPath) || !Path.IsPathFullyQualified(pin.ModelPath))
             throw new ArgumentException("Basic Pitch benchmark model path must be an explicit absolute path.", nameof(pin));
-        if (pin.ModelSha256.Length != 64 || pin.ModelSha256.Any(ch => !Uri.IsHexDigit(ch)))
+        if (string.IsNullOrWhiteSpace(pin.ModelSha256) || pin.ModelSha256.Length != 64 || pin.ModelSha256.Any(ch => !Uri.IsHexDigit(ch)))
             throw new ArgumentException("Basic Pitch benchmark model SHA-256 must be 64 hexadecimal characters.", nameof(pin));
-        if (pin.UpstreamCommitSha.Length != 40 || pin.UpstreamCommitSha.Any(ch => !Uri.IsHexDigit(ch)))
+        if (string.IsNullOrWhiteSpace(pin.UpstreamCommitSha) || pin.UpstreamCommitSha.Length != 40 || pin.UpstreamCommitSha.Any(ch => !Uri.IsHexDigit(ch)))
             throw new ArgumentException("Basic Pitch upstream commit must be a full 40-character hexadecimal SHA.", nameof(pin));
 
         var path = Path.GetFullPath(pin.ModelPath);
