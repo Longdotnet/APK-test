@@ -92,6 +92,56 @@ internal static class HardwareKeyBaselineRegression
             throw new InvalidOperationException("A real-key baseline cannot be trusted before the matching non-injected key-up is observed.");
         }
 
+        if (!RobloxHardwareKeyBaselineProbe.ShouldPreserveHoldContinuityAfterForegroundEvent(
+                keyDownObserved: false,
+                keyUpObserved: false,
+                continuityPreserved: false,
+                trustedTargetSurface: false,
+                targetForeground: false))
+        {
+            throw new InvalidOperationException("Foreground changes before the accepted physical W-down must not create a false hold-continuity failure.");
+        }
+
+        if (!RobloxHardwareKeyBaselineProbe.ShouldPreserveHoldContinuityAfterForegroundEvent(
+                keyDownObserved: true,
+                keyUpObserved: false,
+                continuityPreserved: true,
+                trustedTargetSurface: true,
+                targetForeground: true))
+        {
+            throw new InvalidOperationException("Foreground events that remain on the trusted selected Roblox tree must preserve an active real-key hold.");
+        }
+
+        if (RobloxHardwareKeyBaselineProbe.ShouldPreserveHoldContinuityAfterForegroundEvent(
+                keyDownObserved: true,
+                keyUpObserved: false,
+                continuityPreserved: true,
+                trustedTargetSurface: false,
+                targetForeground: false))
+        {
+            throw new InvalidOperationException("An event-driven foreground hop away from Roblox during an active W hold must fail closed even when the hop could be shorter than the polling interval.");
+        }
+
+        if (RobloxHardwareKeyBaselineProbe.ShouldPreserveHoldContinuityAfterForegroundEvent(
+                keyDownObserved: true,
+                keyUpObserved: false,
+                continuityPreserved: true,
+                trustedTargetSurface: true,
+                targetForeground: false))
+        {
+            throw new InvalidOperationException("The hold must fail closed when target.IsForeground is false even if a stale identity snapshot still appears trusted.");
+        }
+
+        if (!RobloxHardwareKeyBaselineProbe.ShouldPreserveHoldContinuityAfterForegroundEvent(
+                keyDownObserved: true,
+                keyUpObserved: true,
+                continuityPreserved: true,
+                trustedTargetSurface: false,
+                targetForeground: false))
+        {
+            throw new InvalidOperationException("Foreground events after the accepted W-up must not retroactively alter the completed hold result.");
+        }
+
         var complete = new RobloxHardwareKeyBaselineResult(
             "test",
             ActivationConfirmed: true,
@@ -116,7 +166,7 @@ internal static class HardwareKeyBaselineRegression
             || (complete with { ForegroundHeldAtUp = false }).PhysicalBaselineObserved
             || (complete with { TrustedWindowSurfaceAtDown = false }).PhysicalBaselineObserved
             || (complete with { TrustedWindowSurfaceAtUp = false }).PhysicalBaselineObserved
-            || (complete with { HoldContinuityPreserved = false, FirstHoldContinuityLossAt = TimeSpan.FromMilliseconds(75) }).PhysicalBaselineObserved
+            || (complete with { HoldContinuityPreserved = false, FirstHoldContinuityLossAt = TimeSpan.FromMilliseconds(5) }).PhysicalBaselineObserved
             || (complete with { StableForegroundConfirmed = false }).PhysicalBaselineObserved)
         {
             throw new InvalidOperationException("Real-key baseline assessment must fail closed when release, continuous foreground/window ownership, selected-window identity, or stable activation evidence is incomplete.");
@@ -124,7 +174,7 @@ internal static class HardwareKeyBaselineRegression
 
         if (RobloxHardwareKeyBaselineProbe.HoldContinuitySampleInterval > TimeSpan.FromMilliseconds(25))
         {
-            throw new InvalidOperationException("Real-key hold continuity must be sampled at least as frequently as the synthetic P0 probe continuity contract.");
+            throw new InvalidOperationException("Polling must remain as a bounded fallback even though foreground ownership is now monitored event-by-event.");
         }
     }
 

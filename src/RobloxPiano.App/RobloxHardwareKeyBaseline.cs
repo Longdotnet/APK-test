@@ -46,6 +46,8 @@ internal static class RobloxHardwareKeyBaselineProbe
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
     private const uint LlkhfInjected = 0x10;
+    private const uint EventSystemForeground = 0x0003;
+    private const uint WinEventOutOfContext = 0x0000;
     private static readonly TimeSpan ObservationTimeout = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan HoldContinuitySampleInterval = TimeSpan.FromMilliseconds(25);
 
@@ -83,7 +85,8 @@ internal static class RobloxHardwareKeyBaselineProbe
             $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_ARMED backend=NONE " +
             $"vk=0x{oracle.VirtualKey:X2} timeoutMs={ObservationTimeout.TotalMilliseconds:0} " +
             $"holdContinuitySampleMs={HoldContinuitySampleInterval.TotalMilliseconds:0} " +
-            "injection=false provenance=LLKHF_INJECTED_FILTER windowPolicy=TRUSTED_SELECTED_TREE privacy=TARGET_KEY_ONLY productionChanged=false.");
+            "holdContinuityForegroundEvents=true injection=false provenance=LLKHF_INJECTED_FILTER " +
+            "windowPolicy=TRUSTED_SELECTED_TREE privacy=TARGET_KEY_ONLY productionChanged=false.");
 
         var started = Stopwatch.GetTimestamp();
         using var listener = new LowLevelKeyboardListener(target, probeId, oracle.VirtualKey);
@@ -96,7 +99,7 @@ internal static class RobloxHardwareKeyBaselineProbe
             while (!listener.Completion.Task.IsCompleted)
             {
                 timeout.Token.ThrowIfCancellationRequested();
-                listener.ObserveHoldContinuity();
+                listener.ObserveHoldContinuity("POLL");
                 await Task.Delay(HoldContinuitySampleInterval, timeout.Token).ConfigureAwait(true);
             }
 
@@ -108,7 +111,7 @@ internal static class RobloxHardwareKeyBaselineProbe
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        listener.ObserveHoldContinuity();
+        listener.ObserveHoldContinuity("FINAL");
         var result = new RobloxHardwareKeyBaselineResult(
             probeId,
             true,
@@ -140,6 +143,17 @@ internal static class RobloxHardwareKeyBaselineProbe
         bool keyUpObserved,
         bool continuityPreserved)
         => keyDownObserved && keyUpObserved && continuityPreserved;
+
+    internal static bool ShouldPreserveHoldContinuityAfterForegroundEvent(
+        bool keyDownObserved,
+        bool keyUpObserved,
+        bool continuityPreserved,
+        bool trustedTargetSurface,
+        bool targetForeground)
+        => !keyDownObserved
+            || keyUpObserved
+            || !continuityPreserved
+            || (trustedTargetSurface && targetForeground);
 
     internal static void LogHumanVerdict(RobloxHardwareKeyBaselineResult result, bool reacted)
         => LogVerdict(result, reacted, reacted ? "REAL_KEY_ROBLOX_REACTED" : "REAL_KEY_ROBLOX_NO_REACTION");
@@ -207,8 +221,11 @@ internal static class RobloxHardwareKeyBaselineProbe
         private readonly RobloxWindowTarget target;
         private readonly string probeId;
         private readonly ushort virtualKey;
-        private readonly HookProc callback;
-        private IntPtr hook;
+        private readonly HookProc keyboardCallback;
+        private readonly WinEventProc foregroundCallback;
+        private readonly object stateGate = new();
+        private IntPtr keyboardHook;
+        private IntPtr foregroundHook;
         private long? holdStartedAt;
         private bool holdContinuityLossLogged;
 
@@ -217,7 +234,8 @@ internal static class RobloxHardwareKeyBaselineProbe
             this.target = target;
             this.probeId = probeId;
             this.virtualKey = virtualKey;
-            callback = OnKeyboard;
+            keyboardCallback = OnKeyboard;
+            foregroundCallback = OnForegroundChanged;
         }
 
         public TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -233,51 +251,110 @@ internal static class RobloxHardwareKeyBaselineProbe
         public void Start()
         {
             var module = GetModuleHandleW(null);
-            hook = SetWindowsHookExW(WhKeyboardLl, callback, module, 0);
-            if (hook == IntPtr.Zero)
+            keyboardHook = SetWindowsHookExW(WhKeyboardLl, keyboardCallback, module, 0);
+            if (keyboardHook == IntPtr.Zero)
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not arm bounded real-key baseline hook.");
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not arm bounded real-key baseline keyboard hook.");
+            }
+
+            foregroundHook = SetWinEventHook(
+                EventSystemForeground,
+                EventSystemForeground,
+                IntPtr.Zero,
+                foregroundCallback,
+                0,
+                0,
+                WinEventOutOfContext);
+            if (foregroundHook == IntPtr.Zero)
+            {
+                var error = Marshal.GetLastWin32Error();
+                _ = UnhookWindowsHookEx(keyboardHook);
+                keyboardHook = IntPtr.Zero;
+                throw new Win32Exception(error, "Could not arm real-key foreground continuity hook.");
             }
         }
 
-        public void ObserveHoldContinuity()
+        public void ObserveHoldContinuity(string source)
         {
-            if (!NonInjectedDownObserved || NonInjectedUpObserved || !HoldContinuityPreserved)
+            lock (stateGate)
             {
-                return;
-            }
+                if (!NonInjectedDownObserved || NonInjectedUpObserved || !HoldContinuityPreserved)
+                {
+                    return;
+                }
 
-            var identity = WindowsRobloxWindowIdentity.Capture(target);
-            var trustedSurface = IsTrustedBaselineSurface(identity);
-            var targetForeground = target.IsForeground;
-            if (trustedSurface && targetForeground)
-            {
-                return;
-            }
+                var identity = WindowsRobloxWindowIdentity.Capture(target);
+                var trustedSurface = IsTrustedBaselineSurface(identity);
+                var targetForeground = target.IsForeground;
+                if (trustedSurface && targetForeground)
+                {
+                    return;
+                }
 
-            HoldContinuityPreserved = false;
-            FirstHoldContinuityLossAt = holdStartedAt is null
-                ? TimeSpan.Zero
-                : Stopwatch.GetElapsedTime(holdStartedAt.Value);
-
-            if (!holdContinuityLossLogged)
-            {
-                holdContinuityLossLogged = true;
-                ClientDiagnostics.Log(
-                    $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_HOLD_CONTINUITY_LOST verdict=REAL_KEY_HOLD_NOT_CONTINUOUS " +
-                    $"lossMs={FirstHoldContinuityLossAt.Value.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)} " +
-                    $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
-                    $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
-                    "baselineTrusted=false authorizesPlayback=false.");
+                InvalidateHoldContinuity(identity, targetForeground, trustedSurface, source);
             }
         }
 
         public void Dispose()
         {
-            if (hook != IntPtr.Zero)
+            if (foregroundHook != IntPtr.Zero)
             {
-                _ = UnhookWindowsHookEx(hook);
-                hook = IntPtr.Zero;
+                _ = UnhookWinEvent(foregroundHook);
+                foregroundHook = IntPtr.Zero;
+            }
+
+            if (keyboardHook != IntPtr.Zero)
+            {
+                _ = UnhookWindowsHookEx(keyboardHook);
+                keyboardHook = IntPtr.Zero;
+            }
+        }
+
+        private void OnForegroundChanged(
+            IntPtr winEventHook,
+            uint eventType,
+            IntPtr hwnd,
+            int idObject,
+            int idChild,
+            uint eventThread,
+            uint eventTime)
+        {
+            _ = winEventHook;
+            _ = idObject;
+            _ = idChild;
+            _ = eventThread;
+            _ = eventTime;
+
+            if (eventType != EventSystemForeground)
+            {
+                return;
+            }
+
+            lock (stateGate)
+            {
+                if (!NonInjectedDownObserved || NonInjectedUpObserved || !HoldContinuityPreserved)
+                {
+                    return;
+                }
+
+                var identity = WindowsRobloxWindowIdentity.Capture(target);
+                var trustedSurface = IsTrustedBaselineSurface(identity);
+                var targetForeground = target.IsForeground;
+                if (ShouldPreserveHoldContinuityAfterForegroundEvent(
+                        NonInjectedDownObserved,
+                        NonInjectedUpObserved,
+                        HoldContinuityPreserved,
+                        trustedSurface,
+                        targetForeground))
+                {
+                    return;
+                }
+
+                ClientDiagnostics.Log(
+                    $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_FOREGROUND_EVENT eventHwnd=0x{hwnd.ToInt64():X} " +
+                    $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
+                    "holdActive=true verdict=FOREGROUND_EVENT_OUTSIDE_TRUSTED_SURFACE.");
+                InvalidateHoldContinuity(identity, targetForeground, trustedSurface, "WINEVENT_FOREGROUND");
             }
         }
 
@@ -289,40 +366,72 @@ internal static class RobloxHardwareKeyBaselineProbe
                 var isTarget = data.VirtualKey == virtualKey;
                 if (isTarget)
                 {
-                    var identity = WindowsRobloxWindowIdentity.Capture(target);
-                    var trustedSurface = IsTrustedBaselineSurface(identity);
-                    var targetForeground = target.IsForeground;
-                    var candidate = IsPhysicalBaselineCandidate(data.Flags, true, trustedSurface);
-                    var injected = (data.Flags & LlkhfInjected) != 0;
-                    var isDown = wParam == (IntPtr)WmKeyDown || wParam == (IntPtr)WmSysKeyDown;
-                    var isUp = wParam == (IntPtr)WmKeyUp || wParam == (IntPtr)WmSysKeyUp;
-                    ClientDiagnostics.Log(
-                        $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_EVENT vk=0x{data.VirtualKey:X2} scanCode=0x{data.ScanCode:X2} " +
-                        $"event={(isDown ? "DOWN" : isUp ? "UP" : "OTHER")} osMarkedInjected={injected} " +
-                        $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
-                        $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
-                        $"acceptedPhysicalCandidate={candidate} holdContinuityPreserved={HoldContinuityPreserved} productionChanged=false.");
+                    lock (stateGate)
+                    {
+                        var identity = WindowsRobloxWindowIdentity.Capture(target);
+                        var trustedSurface = IsTrustedBaselineSurface(identity);
+                        var targetForeground = target.IsForeground;
+                        var candidate = IsPhysicalBaselineCandidate(data.Flags, true, trustedSurface);
+                        var injected = (data.Flags & LlkhfInjected) != 0;
+                        var isDown = wParam == (IntPtr)WmKeyDown || wParam == (IntPtr)WmSysKeyDown;
+                        var isUp = wParam == (IntPtr)WmKeyUp || wParam == (IntPtr)WmSysKeyUp;
+                        ClientDiagnostics.Log(
+                            $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_EVENT vk=0x{data.VirtualKey:X2} scanCode=0x{data.ScanCode:X2} " +
+                            $"event={(isDown ? "DOWN" : isUp ? "UP" : "OTHER")} osMarkedInjected={injected} " +
+                            $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
+                            $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
+                            $"acceptedPhysicalCandidate={candidate} holdContinuityPreserved={HoldContinuityPreserved} productionChanged=false.");
 
-                    if (candidate && isDown && !NonInjectedDownObserved)
-                    {
-                        NonInjectedDownObserved = true;
-                        ForegroundAtDown = targetForeground;
-                        TrustedWindowSurfaceAtDown = true;
-                        HoldContinuityPreserved = targetForeground;
-                        holdStartedAt = Stopwatch.GetTimestamp();
-                    }
-                    else if (candidate && isUp && NonInjectedDownObserved)
-                    {
-                        ObserveHoldContinuity();
-                        NonInjectedUpObserved = true;
-                        ForegroundAtUp = targetForeground;
-                        TrustedWindowSurfaceAtUp = true;
-                        Completion.TrySetResult(true);
+                        if (candidate && isDown && !NonInjectedDownObserved)
+                        {
+                            NonInjectedDownObserved = true;
+                            ForegroundAtDown = targetForeground;
+                            TrustedWindowSurfaceAtDown = true;
+                            HoldContinuityPreserved = targetForeground;
+                            holdStartedAt = Stopwatch.GetTimestamp();
+                        }
+                        else if (candidate && isUp && NonInjectedDownObserved)
+                        {
+                            if (!(trustedSurface && targetForeground) && HoldContinuityPreserved)
+                            {
+                                InvalidateHoldContinuity(identity, targetForeground, trustedSurface, "KEY_UP");
+                            }
+
+                            NonInjectedUpObserved = true;
+                            ForegroundAtUp = targetForeground;
+                            TrustedWindowSurfaceAtUp = true;
+                            Completion.TrySetResult(true);
+                        }
                     }
                 }
             }
 
-            return CallNextHookEx(hook, code, wParam, lParam);
+            return CallNextHookEx(keyboardHook, code, wParam, lParam);
+        }
+
+        private void InvalidateHoldContinuity(
+            WindowsRobloxWindowIdentitySnapshot identity,
+            bool targetForeground,
+            bool trustedSurface,
+            string source)
+        {
+            HoldContinuityPreserved = false;
+            FirstHoldContinuityLossAt ??= holdStartedAt is null
+                ? TimeSpan.Zero
+                : Stopwatch.GetElapsedTime(holdStartedAt.Value);
+
+            if (holdContinuityLossLogged)
+            {
+                return;
+            }
+
+            holdContinuityLossLogged = true;
+            ClientDiagnostics.Log(
+                $"INPUT_FORENSIC probe={probeId} stage=REAL_KEY_HOLD_CONTINUITY_LOST verdict=REAL_KEY_HOLD_NOT_CONTINUOUS " +
+                $"source={source} lossMs={FirstHoldContinuityLossAt.Value.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)} " +
+                $"targetForeground={targetForeground} trustedSurface={trustedSurface} windowRelation={identity.Relation} " +
+                $"targetMainReplaced={identity.TargetMainWindowReplaced} foregroundHwnd=0x{identity.ForegroundWindowHandle.ToInt64():X} " +
+                "baselineTrusted=false authorizesPlayback=false.");
         }
     }
 
@@ -337,6 +446,14 @@ internal static class RobloxHardwareKeyBaselineProbe
     }
 
     private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+    private delegate void WinEventProc(
+        IntPtr winEventHook,
+        uint eventType,
+        IntPtr hwnd,
+        int idObject,
+        int idChild,
+        uint eventThread,
+        uint eventTime);
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr SetWindowsHookExW(int hookId, HookProc callback, IntPtr module, uint threadId);
@@ -347,6 +464,20 @@ internal static class RobloxHardwareKeyBaselineProbe
 
     [DllImport("user32.dll")]
     private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        IntPtr module,
+        WinEventProc callback,
+        uint processId,
+        uint threadId,
+        uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWinEvent(IntPtr winEventHook);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandleW(string? moduleName);
