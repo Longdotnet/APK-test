@@ -45,7 +45,10 @@ internal static class ReferenceVerifiedSongRankingRegression
     {
         var reference = ReferenceAudioAnalyzer.AnalyzeWav(CreatePulseWav(8000, 5, 500));
         var assessment = Assess(reference, CreatePulseTrack(TimeSpan.FromMilliseconds(500), 9, TimeSpan.FromMilliseconds(500)));
-        var tampered = assessment with { Verdict = ReferenceCandidateVerdict.HighConfidence, ConfidenceScore = 100 };
+        var tampered = assessment with
+        {
+            ConfidenceScore = assessment.ConfidenceScore == 100 ? 99 : assessment.ConfidenceScore + 1
+        };
 
         var threw = false;
         try
