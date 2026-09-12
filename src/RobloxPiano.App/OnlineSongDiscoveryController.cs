@@ -38,11 +38,20 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
     };
     private readonly Button _addButton = new() { Text = "Add to Library", AutoSize = true, Enabled = false };
     private readonly Button _verifyButton = new() { Text = "Verify top matches with my audio...", AutoSize = true, Enabled = false };
+    private readonly Button _createFromReferenceButton = new()
+    {
+        Text = "Create Piano Version from this audio",
+        AutoSize = true,
+        Enabled = false,
+        Visible = false
+    };
     private readonly Button _sourceButton = new() { Text = "View Source", AutoSize = true, Enabled = false };
 
     private CancellationTokenSource? _searchCancellation;
     private CancellationTokenSource? _importCancellation;
     private CancellationTokenSource? _verificationCancellation;
+    private string? _verifiedReferenceAudioPath;
+    private bool _referenceFallbackRecommended;
     private bool _disposed;
 
     public OnlineSongDiscoveryController(
@@ -65,7 +74,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _referenceVerifier = new OnlineSongReferenceVerificationService(_httpClient);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        actions.Controls.AddRange([_addButton, _verifyButton, _sourceButton]);
+        actions.Controls.AddRange([_addButton, _verifyButton, _createFromReferenceButton, _sourceButton]);
         _panel.Controls.Add(_status, 0, 0);
         _panel.Controls.Add(_results, 0, 1);
         _panel.Controls.Add(actions, 0, 2);
@@ -77,6 +86,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _results.DoubleClick += async (_, _) => await ImportSelectedAsync().ConfigureAwait(true);
         _addButton.Click += async (_, _) => await ImportSelectedAsync().ConfigureAwait(true);
         _verifyButton.Click += async (_, _) => await VerifyTopCandidatesAsync().ConfigureAwait(true);
+        _createFromReferenceButton.Click += (_, _) => CreateFromVerifiedReference();
         _sourceButton.Click += (_, _) => OpenSelectedSource();
     }
 
@@ -87,6 +97,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _debounce.Stop();
         CancelSearch();
         CancelVerification();
+        ResetReferenceHandoff();
         _referenceAssessments.Clear();
         var query = _searchBox.Text.Trim();
         if (query.Length < 2)
@@ -132,6 +143,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
 
         CancelSearch();
         CancelVerification();
+        ResetReferenceHandoff();
         _referenceAssessments.Clear();
         var cancellation = new CancellationTokenSource();
         _searchCancellation = cancellation;
@@ -205,7 +217,9 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         if (dialog.ShowDialog(_panel.FindForm()) != DialogResult.OK)
             return;
 
+        var referenceAudioPath = Path.GetFullPath(dialog.FileName);
         CancelVerification();
+        ResetReferenceHandoff();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         _verificationCancellation = cancellation;
         _referenceAssessments.Clear();
@@ -215,7 +229,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         try
         {
             var reference = await Task.Run(
-                () => _referenceAnalyzer.AnalyzeFile(dialog.FileName, cancellation.Token),
+                () => _referenceAnalyzer.AnalyzeFile(referenceAudioPath, cancellation.Token),
                 cancellation.Token).ConfigureAwait(true);
             var batch = await _referenceVerifier.VerifyBatchAsync(
                 candidates,
@@ -252,12 +266,16 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
             var high = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.HighConfidence);
             var review = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.Review);
             var mismatch = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.Mismatch);
+            _verifiedReferenceAudioPath = referenceAudioPath;
+            _referenceFallbackRecommended = high == 0;
             _status.Text = high > 0
                 ? $"Verified {batch.AttemptedCount} top match(es) from one local reference: {high} High confidence, {review} Review, {mismatch} Mismatch, {batch.Failures.Count} failed safely. Highest evidence-backed matches are now first; Add Verified Match is enabled only for High confidence."
-                : $"Verified {batch.AttemptedCount} top match(es) from one local reference: no High-confidence source ({review} Review, {mismatch} Mismatch, {batch.Failures.Count} failed safely). Use Create Piano Version or try another source.";
+                : $"Verified {batch.AttemptedCount} top match(es) from one local reference: no High-confidence source ({review} Review, {mismatch} Mismatch, {batch.Failures.Count} failed safely). Create Piano Version from this audio reuses the same local file without asking you to choose it again.";
+            UpdateActions();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
+            ResetReferenceHandoff();
             if (!_disposed)
                 _status.Text = "Reference batch verification was cancelled or timed out. Nothing was added to your Library.";
         }
@@ -272,6 +290,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
             or OverflowException
             or NAudio.MmException)
         {
+            ResetReferenceHandoff();
             ClientDiagnostics.Log($"Reference batch verification failed safely: {exception}");
             if (!_disposed)
                 _status.Text = $"Could not verify the top matches safely: {exception.Message} Nothing was added; use Create Piano Version or try again.";
@@ -283,6 +302,37 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
             cancellation.Dispose();
             UpdateActions();
         }
+    }
+
+    private void CreateFromVerifiedReference()
+    {
+        if (_disposed || !_referenceFallbackRecommended || string.IsNullOrWhiteSpace(_verifiedReferenceAudioPath))
+            return;
+
+        var audioPath = _verifiedReferenceAudioPath;
+        if (!File.Exists(audioPath))
+        {
+            ResetReferenceHandoff();
+            _status.Text = "The audio used for verification is no longer available. Verify again or use Create Piano Version to choose another local file.";
+            UpdateActions();
+            return;
+        }
+
+        var suggestedTitle = _searchBox.Text.Trim();
+        using var create = new AudioToPianoCreateForm(suggestedTitle, audioPath);
+        create.ShowDialog(_panel.FindForm());
+        if (!string.IsNullOrWhiteSpace(create.AddedLibraryPath))
+        {
+            ClientDiagnostics.Log(
+                $"Reference-to-create handoff committed generated piano without a second file picker: source='{Path.GetFileName(audioPath)}', managed='{create.AddedLibraryPath}'.");
+            _status.Text = "Generated piano version added from the same owned/local audio used for candidate verification.";
+            _onImported(create.AddedLibraryPath);
+        }
+        else
+        {
+            _status.Text = "Create Piano Version closed without changing the Library. The verified local reference remains available for this search.";
+        }
+        UpdateActions();
     }
 
     private async Task ImportSelectedAsync()
@@ -374,6 +424,11 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _addButton.Enabled = selected && _importCancellation is null && _verificationCancellation is null && referenceAllowsFastPath;
         _addButton.Text = assessment?.Verdict == ReferenceCandidateVerdict.HighConfidence ? "Add Verified Match" : "Add to Library";
         _verifyButton.Enabled = _results.Items.Count > 0 && _verificationCancellation is null && _importCancellation is null;
+        _createFromReferenceButton.Visible = _referenceFallbackRecommended;
+        _createFromReferenceButton.Enabled = _referenceFallbackRecommended
+            && !string.IsNullOrWhiteSpace(_verifiedReferenceAudioPath)
+            && _verificationCancellation is null
+            && _importCancellation is null;
         _sourceButton.Enabled = selected;
     }
 
@@ -383,7 +438,16 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _results.DataSource = null;
         _status.Text = string.Empty;
         _referenceAssessments.Clear();
+        ResetReferenceHandoff();
         UpdateActions();
+    }
+
+    private void ResetReferenceHandoff()
+    {
+        _verifiedReferenceAudioPath = null;
+        _referenceFallbackRecommended = false;
+        _createFromReferenceButton.Enabled = false;
+        _createFromReferenceButton.Visible = false;
     }
 
     private void CancelSearch()
