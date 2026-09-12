@@ -134,7 +134,6 @@ internal static class InputMatrixReactionBoundProvenanceRegression
                 TargetEventCount = 3,
                 NotInjectedTargetEventCount = 1,
                 InjectedTargetEventCount = 2,
-                PhysicalTargetContaminationObserved = true,
                 UnexpectedTargetTransitionObserved = false
             });
 
