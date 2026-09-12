@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.32
+version: 0.40.33
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,8 +15,20 @@ SHA256: `{{SHA256}}`
 2. Search for the song. When several online MIDI matches appear, choose **Verify top matches with my audio...** once and select audio you own or are authorized to use. The audio is analyzed locally once; up to five top MIDI candidates are then verified and evidence-reranked as High confidence / Review / Mismatch.
 3. Use **Add Verified Match** when a High-confidence existing source is available. If no trustworthy source is found, use **Create Piano Version...** with owned/local audio, then preview/review and Add to Library.
 4. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and full synthetic matrix without intentionally changing Roblox experience/session.
-5. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**.
-6. Answer the visible Roblox reaction prompt for every matrix cell. Windows-side delivery, low-level injected provenance, CI success, or focus success alone is not a Roblox field PASS.
+5. During each synthetic cell, do not intentionally press W yourself. Phase 81 records every W event in the bounded low-level observation window and marks physical/non-injected target-key contamination or unexpected DOWN/UP sequences explicitly.
+6. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**.
+7. Answer the visible Roblox reaction prompt for every matrix cell. Windows-side delivery, low-level injected provenance, CI success, or focus success alone is not a Roblox field PASS.
+
+## Runtime Input P0 Phase 81 — target-key provenance contamination guard
+
+- Phase 80 made all four synthetic W cells comparable through the same bounded `WH_KEYBOARD_LL` provenance contract. Phase 81 closes a remaining evidence-integrity gap: a physical W press during a synthetic attempt can no longer hide behind the first captured injected W-down/W-up pair.
+- The observer now counts every target-W low-level event inside the bounded observation window and separately counts `NotInjected`, `Injected`, and `LowerIntegrityInjected` provenance.
+- `PhysicalTargetContaminationObserved` becomes true when any target-W event is not injected. `UnexpectedTargetTransitionObserved` becomes true for duplicate/reordered/incomplete target-key transitions such as DOWN/DOWN/UP or UP-before-DOWN.
+- `UncontaminatedInjectedPairObserved` is true only for exactly two target events in clean DOWN-then-UP order, both injected or lower-integrity injected, with no physical target-key contamination.
+- Existing `InjectedPairObserved` is intentionally retained as backward-compatible raw evidence. Phase 81 adds a stricter forensic interpretation rather than silently rewriting historical meaning.
+- Per-event logs now include stable target-event indexes and transition cleanliness; the summary records total target events, provenance-class counts, physical contamination, transition anomalies, legacy injected-pair evidence, and uncontaminated-pair evidence.
+- The observer still ignores unrelated keys, never blocks/re-writes keyboard input, never injects extra input, and never logs unrelated personal keyboard activity.
+- Production `keybd_event`, SendInput diagnostics, focus authorization, input-desktop checks, scheduler truth, held-key/pedal ownership and emergency release are unchanged.
 
 ## Audio-to-Piano Phase 23 — one-reference batch verification and reranking
 
@@ -44,7 +56,8 @@ SHA256: `{{SHA256}}`
 - Physical W remains the control and must visibly react in the selected Roblox experience before a synthetic-failure matrix is considered conclusive.
 - The four synthetic cells are PowerShell-oracle virtual-key `keybd_event`, non-zero-scan `keybd_event`, SendInput virtual-key, and SendInput scan-code.
 - Any focus/window continuity loss invalidates that exact attempt even if focus later returns.
-- A Windows-observed injected down/up pair plus stable trusted focus and explicit Roblox `NO` reaction strengthens boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`; it does not prove why Roblox rejected the event.
+- Any physical/non-injected W event or malformed target-W transition sequence during a synthetic cell contaminates that exact low-level provenance attempt; it must be rerun instead of being used as clean synthetic evidence.
+- A Windows-observed uncontaminated injected down/up pair plus stable trusted focus and explicit Roblox `NO` reaction strengthens boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`; it does not prove why Roblox rejected the event.
 - `FIELD_CONFIRMED_PASS` still requires explicit visible Roblox movement/piano reaction from the production executable. No CI or Windows-only signal can manufacture that verdict.
 
 ## Runtime Input invariants
@@ -59,11 +72,11 @@ SHA256: `{{SHA256}}`
 
 - Audio Phase 17 remains the bundled Spotify Basic Pitch + ONNX Runtime + NAudio transcription/arrangement path for owned/local audio.
 - Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, and Phase 23 one-reference bounded multi-candidate verification/reranking.
-- Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 80 and its field gate are not modified by Audio Phase 23.
+- Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 81 and its field gate do not modify the Audio-to-Piano architecture.
 
 ## OSS and attribution
 
-- Phase 23 adds no third-party dependency, copied implementation, model, native binary, or new license obligation.
+- Phase 81 adds no third-party dependency, copied implementation, model, native binary, or new license obligation.
 - Existing Spotify Basic Pitch, Microsoft ONNX Runtime, NAudio, and Melanchall DryWetMIDI attribution remains unchanged and is available through `RobloxPiano.exe --third-party-notices`.
 
 ## Current boundaries
@@ -72,7 +85,7 @@ SHA256: `{{SHA256}}`
 - Batch verification is intentionally sequential and bounded to limit network concurrency, parsing memory, temporary disk use, and cancellation complexity. A five-candidate batch can take longer than one verification.
 - Candidate-specific failures remain unverified; they are never silently converted into Review or High confidence.
 - `WH_KEYBOARD_LL`, `GetAsyncKeyState`, API return values, desktop parity and focus continuity are Windows-side forensic evidence, not visibility into Roblox's internal gameplay input pipeline.
-- `LLKHF_INJECTED` classification is useful diagnostic provenance, not cryptographic hardware provenance.
+- `LLKHF_INJECTED` classification is useful diagnostic provenance, not cryptographic hardware provenance. Phase 81 can detect target-key contamination inside its observation window but cannot prove the physical origin of every possible Windows input source.
 - PID/start-time/HWND continuity cannot prove an internal Roblox place transition if the same process/window is reused; field runs must stay in one experience/session.
 - No source code in this phase attempts to bypass Roblox, Windows UIPI, integrity boundaries, anti-cheat, platform security, or media access controls.
 - The executable remains unsigned, so Windows SmartScreen may show a reputation warning.
