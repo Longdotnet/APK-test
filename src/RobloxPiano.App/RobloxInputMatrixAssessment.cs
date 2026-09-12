@@ -290,8 +290,25 @@ internal static class RobloxInputMatrixAssessmentPolicy
     private static (string Boundary, string Summary, string NextAction)? AssessRetainedHistorySessionContinuity(
         IEnumerable<RobloxInputMatrixCellEvidence> evidence)
     {
-        var knownSessions = evidence
-            .Where(item => item.SessionIdentity is not null)
+        var items = evidence.ToArray();
+        var unknownIdentityCells = items
+            .Where(item => item.SessionIdentity is null)
+            .Select(item => item.Cell)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(cell => cell, StringComparer.Ordinal)
+            .ToArray();
+
+        if (unknownIdentityCells.Length > 0)
+        {
+            ClientDiagnostics.Log(
+                $"INPUT_MATRIX_HISTORY_SESSION_IDENTITY_UNAVAILABLE cells={string.Join(",", unknownIdentityCells)} evidenceTrusted=false authorizesPlayback=false.");
+            return (
+                "MATRIX_HISTORY_SESSION_IDENTITY_UNAVAILABLE",
+                $"Retained matrix history contains attempt(s) without probe-bound Roblox PID/start-time/window identity for cell(s): {string.Join(",", unknownIdentityCells)}. A later retry cannot make those earlier observations attributable to the current Roblox surface.",
+                "Close and reopen Roblox Input Check after Roblox stabilizes, then rerun from Real-Key Baseline. Do not retain or combine any attempt that could not capture its Roblox process/window identity.");
+        }
+
+        var knownSessions = items
             .Select(item => item.SessionIdentity!.Value)
             .Distinct()
             .ToArray();
@@ -306,7 +323,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
         return (
             "ROBLOX_SESSION_CHANGED_DURING_MATRIX",
             "Retained matrix history spans more than one known Roblox process lifetime or selected HWND, including incomplete attempts. A later retry cannot erase an observed target-session change.",
-            "Close and reopen Roblox Input Check after Roblox stabilizes, then rerun from Real-Key Baseline. Incomplete-to-confirmed retry remains valid only while every known retained attempt belongs to the same Roblox process/window identity.");
+            "Close and reopen Roblox Input Check after Roblox stabilizes, then rerun from Real-Key Baseline. Incomplete-to-confirmed retry remains valid only while every retained attempt has a known identity and belongs to the same Roblox process/window identity.");
     }
 
     private static RobloxInputMatrixSessionIdentity? CaptureCurrentSessionIdentity()
