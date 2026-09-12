@@ -149,22 +149,13 @@ internal static class RobloxInputMatrixAssessmentPolicy
                 pending);
         }
 
-        if (winners.Length > 0)
-        {
-            return new RobloxInputMatrixAssessment(
-                RobloxInputMatrixVerdict.SyntheticVariantWorks,
-                "SYNTHETIC_VARIANT_REACHES_ROBLOX",
-                $"Roblox visibly reacted to provenance-clean synthetic variant(s): {string.Join(",", winners)}.",
-                "Preserve this matrix ID and exact winning semantics. Do not change production playback until the winning path is regression-protected and reviewed against the PowerShell oracle and safety invariants.",
-                winners,
-                failures,
-                pending);
-        }
-
+        // A synthetic Yes is only meaningful as a matrix winner after the same selected
+        // Roblox surface has proven that a real W visibly reacts. Without that control,
+        // the UI can accidentally promote a synthetic variant from an unvalidated surface.
         if (realKey is null)
         {
             return Incomplete(
-                "Run Real-Key Baseline first on the same selected Roblox surface.",
+                "Run Real-Key Baseline first on the same selected Roblox surface before interpreting any synthetic reaction as a winner.",
                 failures,
                 pending.Prepend("REAL_KEY").ToArray());
         }
@@ -177,8 +168,20 @@ internal static class RobloxInputMatrixAssessmentPolicy
                 realKey.Verdict == "ROBLOX_NO_REACTION"
                     ? "Windows observed the real-key baseline, but Roblox did not visibly react."
                     : "The real-key baseline is incomplete or untrusted.",
-                "Establish a trusted real W down/up on the selected Roblox surface and confirm visible Roblox reaction before comparing synthetic paths.",
+                "Establish a trusted real W down/up on the selected Roblox surface and confirm visible Roblox reaction before interpreting synthetic reactions or failures.",
                 Array.Empty<string>(),
+                failures,
+                pending);
+        }
+
+        if (winners.Length > 0)
+        {
+            return new RobloxInputMatrixAssessment(
+                RobloxInputMatrixVerdict.SyntheticVariantWorks,
+                "SYNTHETIC_VARIANT_REACHES_ROBLOX",
+                $"Real W visibly reached Roblox and Roblox visibly reacted to provenance-clean synthetic variant(s): {string.Join(",", winners)}.",
+                "Preserve this matrix ID and exact winning semantics. Do not change production playback until the winning path is regression-protected and reviewed against the PowerShell oracle and safety invariants.",
+                winners,
                 failures,
                 pending);
         }
