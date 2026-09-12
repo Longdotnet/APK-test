@@ -1,9 +1,18 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using RobloxPiano.Audio;
 
 internal static class DemucsCppBasicPitchBenchmarkRunnerRegression
 {
-    public static void ExactBasicPitchBytesVerify()
+    [ModuleInitializer]
+    internal static void RunPhase34Regressions()
+    {
+        Run("pinned Basic Pitch exact bytes verify", ExactBasicPitchBytesVerify);
+        Run("pinned Basic Pitch byte drift fails closed", BasicPitchByteDriftFailsClosed);
+        Run("pinned Basic Pitch requires absolute path and full commit", BasicPitchPinRequiresAbsolutePathAndFullCommit);
+    }
+
+    private static void ExactBasicPitchBytesVerify()
     {
         using var fixture = ModelFixture.Create();
         var provenance = DemucsCppBasicPitchBenchmarkRunner.VerifyBasicPitch(
@@ -17,7 +26,7 @@ internal static class DemucsCppBasicPitchBenchmarkRunnerRegression
         Equal("fa5997af0a8210982619003269994a1be25eddf3", provenance.UpstreamCommitSha);
     }
 
-    public static void BasicPitchByteDriftFailsClosed()
+    private static void BasicPitchByteDriftFailsClosed()
     {
         using var fixture = ModelFixture.Create();
         var pin = new BasicPitchBenchmarkModelPin(
@@ -29,7 +38,7 @@ internal static class DemucsCppBasicPitchBenchmarkRunnerRegression
         Throws<InvalidDataException>(() => DemucsCppBasicPitchBenchmarkRunner.VerifyBasicPitch(pin));
     }
 
-    public static void BasicPitchPinRequiresAbsolutePathAndFullCommit()
+    private static void BasicPitchPinRequiresAbsolutePathAndFullCommit()
     {
         using var fixture = ModelFixture.Create();
         Throws<ArgumentException>(() => DemucsCppBasicPitchBenchmarkRunner.VerifyBasicPitch(
@@ -42,6 +51,20 @@ internal static class DemucsCppBasicPitchBenchmarkRunnerRegression
                 fixture.Path,
                 fixture.Sha256,
                 "fa5997af")));
+    }
+
+    private static void Run(string name, Action action)
+    {
+        try
+        {
+            action();
+            Console.WriteLine($"PASS {name}");
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"FAIL {name}: {exception}");
+            Environment.ExitCode = 1;
+        }
     }
 
     private static void Equal<T>(T expected, T actual)
