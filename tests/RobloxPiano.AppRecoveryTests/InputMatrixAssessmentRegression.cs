@@ -8,6 +8,7 @@ internal static class InputMatrixAssessmentRegression
     private static readonly RobloxInputMatrixSessionIdentity SessionA = new(
         new RobloxProcessIdentity(100, 1_000),
         0x1111);
+    private static int ProbeSequence;
 
     [ModuleInitializer]
     internal static void Verify()
@@ -199,15 +200,17 @@ internal static class InputMatrixAssessmentRegression
         string cell,
         string verdict,
         bool? reacted,
-        string probe = "probe",
+        string? probe = null,
         RobloxInputMatrixSessionIdentity? session = null)
     {
+        var effectiveProbe = probe ?? $"auto-{cell}-{++ProbeSequence:D3}";
+
         if (!cell.Equals("REAL_KEY", StringComparison.Ordinal))
         {
-            RecordClean(probe);
+            RecordClean(effectiveProbe);
         }
 
-        return RawCell(cell, verdict, reacted, probe, session);
+        return RawCell(cell, verdict, reacted, effectiveProbe, session);
     }
 
     private static RobloxInputMatrixCellEvidence RawCell(
