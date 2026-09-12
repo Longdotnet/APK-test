@@ -45,7 +45,7 @@ internal static class DemucsCppBenchmarkProvenanceRegression
     private static void ExecutableDriftFailsClosed()
     {
         using var fixture = new Fixture("exe-drift");
-        File.AppendAllBytes(fixture.ExecutablePath, new byte[] { 99 });
+        AppendByte(fixture.ExecutablePath, 99);
 
         Throws<InvalidDataException>(() => Verify(fixture, fixture.CorpusPins));
     }
@@ -53,7 +53,7 @@ internal static class DemucsCppBenchmarkProvenanceRegression
     private static void ModelDriftFailsClosed()
     {
         using var fixture = new Fixture("model-drift");
-        File.AppendAllBytes(fixture.ModelPath, new byte[] { 88 });
+        AppendByte(fixture.ModelPath, 88);
 
         Throws<InvalidDataException>(() => Verify(fixture, fixture.CorpusPins));
     }
@@ -61,7 +61,7 @@ internal static class DemucsCppBenchmarkProvenanceRegression
     private static void CorpusDriftFailsClosed()
     {
         using var fixture = new Fixture("corpus-drift");
-        File.AppendAllBytes(fixture.InputAPath, new byte[] { 77 });
+        AppendByte(fixture.InputAPath, 77);
 
         Throws<InvalidDataException>(() => Verify(fixture, fixture.CorpusPins));
     }
@@ -102,6 +102,12 @@ internal static class DemucsCppBenchmarkProvenanceRegression
             fixture.ExecutableHash,
             fixture.ModelHash,
             corpus);
+
+    private static void AppendByte(string path, byte value)
+    {
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
+        stream.WriteByte(value);
+    }
 
     private sealed class Fixture : IDisposable
     {
