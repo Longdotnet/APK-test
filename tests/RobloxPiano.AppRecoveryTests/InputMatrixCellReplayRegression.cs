@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using RobloxPiano.App;
 
@@ -15,9 +16,11 @@ internal static class InputMatrixCellReplayRegression
         RobloxInputMatrixProbeEvidenceRegistry.ResetForDiagnostics();
         try
         {
+            ClientDialogRetainsAttemptHistory();
             SyntheticNoThenYesCannotBecomeWinner();
             SyntheticYesThenNoCannotBecomeAllSyntheticFailure();
             DuplicateRealKeyCannotRewriteControl();
+            IncompleteThenConfirmedRetryStillWorks();
         }
         finally
         {
@@ -25,10 +28,24 @@ internal static class InputMatrixCellReplayRegression
         }
     }
 
+    private static void ClientDialogRetainsAttemptHistory()
+    {
+        var field = typeof(RobloxInputCheckDialog).GetField("_matrixCells", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field is null)
+        {
+            throw new InvalidOperationException("client matrix retention field was not found.");
+        }
+
+        Equal(
+            typeof(List<RobloxInputMatrixCellEvidence>),
+            field.FieldType,
+            "client matrix retention must preserve repeated attempts instead of overwriting by cell");
+    }
+
     private static void SyntheticNoThenYesCannotBecomeWinner()
     {
-        const string first = "phase88-sendinput-vk-no";
-        const string second = "phase88-sendinput-vk-yes";
+        const string first = "phase89-sendinput-vk-no";
+        const string second = "phase89-sendinput-vk-yes";
         RecordClean(first);
         RecordClean(second);
 
@@ -45,8 +62,8 @@ internal static class InputMatrixCellReplayRegression
 
     private static void SyntheticYesThenNoCannotBecomeAllSyntheticFailure()
     {
-        const string first = "phase88-sendinput-scan-yes";
-        const string second = "phase88-sendinput-scan-no";
+        const string first = "phase89-sendinput-scan-yes";
+        const string second = "phase89-sendinput-scan-no";
         RecordClean(first);
         RecordClean(second);
 
@@ -65,16 +82,35 @@ internal static class InputMatrixCellReplayRegression
     {
         var assessment = RobloxInputMatrixAssessmentPolicy.Assess(
         [
-            new RobloxInputMatrixCellEvidence("REAL_KEY", "phase88-real-no", "ROBLOX_NO_REACTION", false, Session),
-            new RobloxInputMatrixCellEvidence("REAL_KEY", "phase88-real-yes", "ROBLOX_REACTED", true, Session)
+            new RobloxInputMatrixCellEvidence("REAL_KEY", "phase89-real-no", "ROBLOX_NO_REACTION", false, Session),
+            new RobloxInputMatrixCellEvidence("REAL_KEY", "phase89-real-yes", "ROBLOX_REACTED", true, Session)
         ],
         Session);
 
         Replay(assessment, "REAL_KEY", "real-key replay");
     }
 
+    private static void IncompleteThenConfirmedRetryStillWorks()
+    {
+        const string confirmed = "phase89-retry-confirmed";
+        RecordClean(confirmed);
+
+        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            PassingRealKey(),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_VK", "phase89-retry-incomplete", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, Session),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_VK", confirmed, "ROBLOX_NO_REACTION", false, Session)
+        ],
+        Session);
+
+        if (assessment.FailureBoundary == "MATRIX_CELL_REPLAY")
+        {
+            throw new InvalidOperationException("incomplete-to-first-confirmed retry must remain valid after client history retention.");
+        }
+    }
+
     private static RobloxInputMatrixCellEvidence PassingRealKey()
-        => new("REAL_KEY", "phase88-real-control", "ROBLOX_REACTED", true, Session);
+        => new("REAL_KEY", "phase89-real-control", "ROBLOX_REACTED", true, Session);
 
     private static void Replay(RobloxInputMatrixAssessment assessment, string cell, string name)
     {
