@@ -22,6 +22,8 @@ internal static class InputMatrixCellReplayRegression
             DuplicateRealKeyCannotRewriteControl();
             IncompleteThenConfirmedRetryStillWorks();
             UnknownSessionIncompleteThenConfirmedRetryFailsClosed();
+            MissingProvenanceReactionThenCleanRetryFailsClosed();
+            ContaminatedReactionThenCleanRetryFailsClosed();
         }
         finally
         {
@@ -129,6 +131,54 @@ internal static class InputMatrixCellReplayRegression
         {
             throw new InvalidOperationException("a later retry must not erase an earlier retained attempt whose Roblox session identity was unavailable.");
         }
+    }
+
+    private static void MissingProvenanceReactionThenCleanRetryFailsClosed()
+    {
+        const string cleanRetry = "phase92-missing-provenance-retry-clean";
+        RecordClean(cleanRetry);
+
+        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            PassingRealKey(),
+            new RobloxInputMatrixCellEvidence(
+                "SENDINPUT_VK",
+                "phase92-missing-provenance-reaction",
+                "ROBLOX_REACTED",
+                true,
+                Session,
+                new RobloxInputMatrixSyntheticProvenanceAssessment(
+                    RobloxInputMatrixSyntheticProvenanceTrust.Missing,
+                    RobloxInputMatrixSyntheticProvenanceReason.MissingSnapshot)),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_VK", cleanRetry, "ROBLOX_REACTED", true, Session)
+        ],
+        Session);
+
+        Replay(assessment, "SENDINPUT_VK", "missing-provenance reaction->clean retry");
+    }
+
+    private static void ContaminatedReactionThenCleanRetryFailsClosed()
+    {
+        const string cleanRetry = "phase92-contaminated-retry-clean";
+        RecordClean(cleanRetry);
+
+        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            PassingRealKey(),
+            new RobloxInputMatrixCellEvidence(
+                "SENDINPUT_SCAN",
+                "phase92-contaminated-reaction",
+                "ROBLOX_NO_REACTION",
+                false,
+                Session,
+                new RobloxInputMatrixSyntheticProvenanceAssessment(
+                    RobloxInputMatrixSyntheticProvenanceTrust.Contaminated,
+                    RobloxInputMatrixSyntheticProvenanceReason.PhysicalTargetContamination)),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_SCAN", cleanRetry, "ROBLOX_NO_REACTION", false, Session)
+        ],
+        Session);
+
+        Replay(assessment, "SENDINPUT_SCAN", "contaminated reaction->clean retry");
     }
 
     private static RobloxInputMatrixCellEvidence PassingRealKey()
