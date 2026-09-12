@@ -43,6 +43,7 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
         {
             RetentionOrder.Enqueue(probeId);
             Trim();
+            LogAssessment(probeId, GetAssessment(probeId));
             return;
         }
 
@@ -52,6 +53,7 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
         // and silently change the matrix verdict after the fact. Keep the original evidence and
         // mark the ID permanently contaminated until the bounded registry entry is evicted/reset.
         DuplicateProbeIds.TryAdd(probeId, 0);
+        LogAssessment(probeId, GetAssessment(probeId));
     }
 
     internal static RobloxInputMatrixSyntheticProvenanceTrust GetTrust(string probeId)
@@ -124,6 +126,15 @@ internal static class RobloxInputMatrixProbeEvidenceRegistry
         while (RetentionOrder.TryDequeue(out _))
         {
         }
+    }
+
+    private static void LogAssessment(
+        string probeId,
+        RobloxInputMatrixSyntheticProvenanceAssessment assessment)
+    {
+        ClientDiagnostics.Log(
+            $"INPUT_MATRIX_PROVENANCE probe={probeId} trust={assessment.Trust} reason={assessment.Reason} " +
+            "fieldPass=false authorizesPlayback=false.");
     }
 
     private static void Trim()
