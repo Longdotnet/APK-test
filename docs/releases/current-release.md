@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.36
+version: 0.40.37
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -16,8 +16,18 @@ SHA256: `{{SHA256}}`
 3. The client searches public MIDI discovery, locally analyzes the chosen audio once, and verifies/reranks up to five candidate MIDI files. If a `High confidence` existing source is found, use **Add Verified Match**. If none is trustworthy, the same local audio opens **Create Piano Version** automatically without a second picker.
 4. Preview/review generated piano before **Add to Library**. Existing-source verification and generated transcription never silently mutate canonical playback truth.
 5. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and full synthetic matrix without intentionally changing Roblox experience/session.
-6. During each synthetic cell, do not intentionally press W yourself. Phase 82 binds the matrix verdict to the exact probe's bounded low-level provenance. Any physical/non-injected W, malformed target-W sequence, or missing retained provenance leaves that cell pending and requires a retry.
+6. During each synthetic cell, do not intentionally press W yourself. Phase 83 additionally fails closed if Windows marks any target-W event `LLKHF_LOWER_IL_INJECTED`; an integrity/UIPI mismatch must not be used to prove either a synthetic winner or a Roblox-consumption failure.
 7. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**. Windows-side delivery, CI success, or focus success alone is not a Roblox field PASS.
+
+## Runtime Input P0 Phase 83 — lower-integrity provenance fail-closed
+
+- Phase 82 bound matrix decisions to exact-probe low-level provenance, but `UncontaminatedInjectedPairObserved` still accepted `LLKHF_LOWER_IL_INJECTED` down/up pairs.
+- Phase 83 treats lower-integrity injected target-W evidence as an unresolved integrity/UIPI boundary rather than clean matrix provenance.
+- If any retained target-W event is lower-integrity injected, or either retained down/up provenance is `LowerIntegrityInjected`, matrix trust becomes contaminated and that cell remains pending.
+- This rule is symmetric: a lower-integrity `YES` cannot prove `SYNTHETIC_VARIANT_REACHES_ROBLOX`, and a lower-integrity `NO` cannot contribute to `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`.
+- Ordinary same-integrity injected pairs remain eligible only when all existing sequence, focus, desktop, session, Windows-delivery and explicit Roblox-reaction requirements also pass.
+- Production `keybd_event`, SendInput diagnostics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release, Legacy, and **Legacy x2** are unchanged.
+- P0 remains `NOT YET PROVEN`. No Windows-only evidence or CI result is `FIELD_CONFIRMED_PASS` without explicit visible Roblox movement or piano reaction from production `RobloxPiano.exe`.
 
 ## Audio-to-Piano Phase 25 — single-selection Find or Create
 
@@ -38,8 +48,6 @@ SHA256: `{{SHA256}}`
 - Missing provenance and contaminated/malformed provenance fail closed: the synthetic cell remains pending and the client must rerun that cell.
 - The rule is symmetric. A contaminated `YES` cannot prove `SYNTHETIC_VARIANT_REACHES_ROBLOX`; a contaminated `NO` cannot contribute to `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`.
 - Provenance trust is additional to, not a replacement for, same-process/start-time/HWND identity, current reaction-context freshness, focus/window continuity, input-desktop parity, Windows key-state evidence, and explicit visible Roblox reaction.
-- Production `keybd_event`, SendInput diagnostics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release, Legacy, and **Legacy x2** remain unchanged.
-- P0 remains `NOT YET PROVEN`. No matrix or CI result is `FIELD_CONFIRMED_PASS` without explicit client-visible Roblox movement or piano reaction from the production executable.
 
 ## Audio-to-Piano Phase 24 — single-reference verify-or-create fallback
 
@@ -49,41 +57,27 @@ SHA256: `{{SHA256}}`
 - The current search identity and reference path are normalized by the deterministic `AudioToPianoSongIdentity` / `AudioToPianoCreatePrefill` contract before the create dialog opens.
 - `AudioToPianoCreateForm` rechecks that the handed-off file still exists. A deleted/moved file fails closed and leaves **Choose Audio...** available rather than silently switching source.
 - Search changes, a new verification, cancellation/failure, or clearing results invalidates the old reference handoff so one query cannot reuse another query's audio accidentally.
-- Transcription still uses the existing local NAudio -> Spotify Basic Pitch ONNX -> deterministic arranger -> canonical `PerformanceTrack` -> readiness/review -> verified DryWetMIDI persistence path. Verification evidence never mutates playback truth.
-- This phase introduces no media downloader, YouTube access-control bypass, Python, PyTorch, ffmpeg, developer SDK requirement, second inference stack, or new third-party dependency.
 
 ## Runtime Input P0 Phase 81 — target-key provenance contamination guard
 
 - Phase 80 made all four synthetic W cells comparable through the same bounded `WH_KEYBOARD_LL` provenance contract. Phase 81 closes a remaining evidence-integrity gap: a physical W press during a synthetic attempt can no longer hide behind the first captured injected W-down/W-up pair.
 - The observer counts every target-W low-level event inside the bounded observation window and separately counts `NotInjected`, `Injected`, and `LowerIntegrityInjected` provenance.
 - `PhysicalTargetContaminationObserved` becomes true when any target-W event is not injected. `UnexpectedTargetTransitionObserved` becomes true for duplicate/reordered/incomplete target-key transitions such as DOWN/DOWN/UP or UP-before-DOWN.
-- `UncontaminatedInjectedPairObserved` is true only for exactly two target events in clean DOWN-then-UP order, both injected or lower-integrity injected, with no physical target-key contamination.
-- Existing `InjectedPairObserved` remains backward-compatible raw evidence. Phase 81 adds a stricter forensic interpretation rather than silently rewriting historical meaning.
-- The observer ignores unrelated keys, never blocks/re-writes keyboard input, never injects extra input, and never logs unrelated personal keyboard activity.
-
-## Audio-to-Piano Phase 23 — one-reference batch verification and reranking
-
-- Phase 22 verified one discovered MIDI at a time. Phase 23 analyzes the selected owned/local reference audio once, then reuses that immutable analysis to verify up to five current top online MIDI matches.
-- Candidate verification stays sequential and bounded. Each MIDI retains provider/redirect validation, the existing five-MiB maximum download, production `SongSourceLoader` parsing into canonical `PerformanceTrack`, deterministic reference timeline alignment, and hash-bound confidence assessment.
-- A malformed, unavailable, oversized, or otherwise invalid candidate fails independently and cannot discard valid evidence from the remaining candidates. Operation-wide cancellation still stops remaining work.
-- Successfully verified candidates are reranked with `ReferenceVerifiedSongRanker`: High confidence / Review / Mismatch evidence outranks provider metadata, while metadata score is only a tie-breaker after verified evidence.
-- Verification itself never persists a candidate into Library. Candidate temporary files remain operation-scoped and are removed best-effort after each verification.
-- Reference audio remains local.
+- `UncontaminatedInjectedPairObserved` is true only for exactly two target events in clean DOWN-then-UP order, both injected or lower-integrity injected, with no physical target-key contamination. Phase 83 further requires the pair not be lower-integrity before matrix trust can become clean.
 
 ## Runtime Input P0 Phase 80 — full synthetic-matrix low-level provenance
 
 - Phase 79 added bounded `WH_KEYBOARD_LL` provenance to the PowerShell-oracle virtual-key `keybd_event` cell. Phase 80 extends the same target-key-only observer to non-zero-scan `keybd_event`, SendInput virtual-key, and SendInput scan-code.
 - Every explicit synthetic W attempt emits the same `LOWLEVEL_PROVENANCE_ARMED`, `LOWLEVEL_PROVENANCE_EVENT`, and `LOWLEVEL_PROVENANCE_SUMMARY` contract under its stable probe ID.
 - Down/up evidence records low-level scan code, flags, and `NotInjected`, `Injected`, or `LowerIntegrityInjected` classification. `LLKHF_LOWER_IL_INJECTED` remains distinct so integrity/UIPI differences stay visible.
-- `NativeDeliveryObserved` remains intentionally independent. Low-level provenance improves forensic comparability; it does not redefine Windows evidence as Roblox consumption.
 
 ## Real-vs-synthetic field contract
 
 - Physical W remains the control and must visibly react in the selected Roblox experience before a synthetic-failure matrix is considered conclusive.
 - The four synthetic cells are PowerShell-oracle virtual-key `keybd_event`, non-zero-scan `keybd_event`, SendInput virtual-key, and SendInput scan-code.
 - Any focus/window continuity loss invalidates that exact attempt even if focus later returns.
-- Any physical/non-injected W event, malformed target-W transition sequence, or missing exact-probe low-level provenance prevents that synthetic cell from participating in a conclusive matrix verdict; rerun the cell.
-- Only an uncontaminated injected down/up pair plus stable trusted focus, Windows delivery, same-session identity, fresh reaction context, and explicit Roblox `NO` reaction can strengthen boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`.
+- Any physical/non-injected W event, malformed target-W transition sequence, missing exact-probe low-level provenance, or lower-integrity injected target-W evidence prevents that synthetic cell from participating in a conclusive matrix verdict; rerun after resolving the blocker.
+- Only a same-integrity uncontaminated injected down/up pair plus stable trusted focus, Windows delivery, same-session identity, fresh reaction context, and explicit Roblox `NO` reaction can strengthen boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`.
 - `FIELD_CONFIRMED_PASS` still requires explicit visible Roblox movement/piano reaction from the production executable. No CI or Windows-only signal can manufacture that verdict.
 
 ## Runtime Input invariants
@@ -98,4 +92,4 @@ SHA256: `{{SHA256}}`
 
 - Audio Phase 17 remains the bundled Spotify Basic Pitch + ONNX Runtime + NAudio transcription/arrangement path for owned/local audio.
 - Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, Phase 23 one-reference bounded multi-candidate verification/reranking, Phase 24 single-reference verify-or-create handoff, and Phase 25 single-selection Find-or-Create orchestration.
-- Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 82 and its field gate do not modify the Audio-to-Piano architecture.
+- Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 83 and its field gate do not modify the Audio-to-Piano architecture.
