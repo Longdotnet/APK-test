@@ -9,6 +9,7 @@ internal sealed class AudioToPianoCreateForm : Form
     private readonly AudioToPianoClientJob _job = new();
     private readonly GeneratedPianoPreviewPlayer _previewPlayer = new();
     private readonly GeneratedTrackLibraryWriter _libraryWriter;
+    private readonly TextBox _songIdentity = new() { Dock = DockStyle.Fill, PlaceholderText = "Song title / identity (optional)" };
     private readonly TextBox _path = new() { ReadOnly = true, Dock = DockStyle.Fill, PlaceholderText = "Choose an owned/local audio file..." };
     private readonly Button _choose = new() { Text = "Choose Audio...", AutoSize = true };
     private readonly Button _create = new() { Text = "Create Piano Version", AutoSize = true, Enabled = false };
@@ -24,18 +25,23 @@ internal sealed class AudioToPianoCreateForm : Form
     private AudioTranscriptionReadiness? _generatedReadiness;
     private bool _addedToLibrary;
 
-    public AudioToPianoCreateForm()
+    public AudioToPianoCreateForm(string? suggestedTitle = null)
     {
         Text = "Create Piano Version";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(680, 360);
-        Size = new Size(780, 450);
+        MinimumSize = new Size(680, 390);
+        Size = new Size(780, 490);
 
         var managedRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RobloxPiano",
             "sheets");
         _libraryWriter = new GeneratedTrackLibraryWriter(managedRoot);
+        _songIdentity.Text = AudioToPianoSongIdentity.Normalize(suggestedTitle, string.Empty);
+        if (_songIdentity.Text == "Generated Piano" && string.IsNullOrWhiteSpace(suggestedTitle))
+        {
+            _songIdentity.Clear();
+        }
 
         BuildLayout();
         _choose.Click += (_, _) => ChooseAudio();
@@ -51,11 +57,19 @@ internal sealed class AudioToPianoCreateForm : Form
         };
     }
 
+    public string? AddedLibraryPath { get; private set; }
+
     private void BuildLayout()
     {
         var intro = CreateLabel(
             "Create a deterministic Roblox piano arrangement from audio you are authorized to use. " +
             "Basic Pitch runs locally; low-confidence output is surfaced for review instead of silently guessed.");
+
+        var identityRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
+        identityRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        identityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        identityRow.Controls.Add(new Label { Text = "Song identity", AutoSize = true, Padding = new Padding(0, 6, 8, 0) }, 0, 0);
+        identityRow.Controls.Add(_songIdentity, 1, 0);
 
         var sourceRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
         sourceRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
@@ -71,8 +85,9 @@ internal sealed class AudioToPianoCreateForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(18),
             ColumnCount = 1,
-            RowCount = 7
+            RowCount = 8
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -82,11 +97,12 @@ internal sealed class AudioToPianoCreateForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         root.Controls.Add(new Label { Text = "Create Piano Version", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) }, 0, 0);
         root.Controls.Add(intro, 0, 1);
-        root.Controls.Add(sourceRow, 0, 2);
-        root.Controls.Add(actions, 0, 3);
-        root.Controls.Add(_progress, 0, 4);
-        root.Controls.Add(_status, 0, 5);
-        root.Controls.Add(_result, 0, 6);
+        root.Controls.Add(identityRow, 0, 2);
+        root.Controls.Add(sourceRow, 0, 3);
+        root.Controls.Add(actions, 0, 4);
+        root.Controls.Add(_progress, 0, 5);
+        root.Controls.Add(_status, 0, 6);
+        root.Controls.Add(_result, 0, 7);
         Controls.Add(root);
     }
 
@@ -105,6 +121,10 @@ internal sealed class AudioToPianoCreateForm : Form
 
         StopPreview();
         _path.Text = Path.GetFullPath(dialog.FileName);
+        if (string.IsNullOrWhiteSpace(_songIdentity.Text))
+        {
+            _songIdentity.Text = AudioToPianoSongIdentity.Normalize(null, _path.Text);
+        }
         ResetGeneratedResult();
         _create.Enabled = true;
         _progress.Value = 0;
@@ -123,12 +143,14 @@ internal sealed class AudioToPianoCreateForm : Form
         SetRunning(true);
         _result.Text = string.Empty;
         var progress = new Progress<AudioToPianoClientJobSnapshot>(UpdateProgress);
+        var normalizedTitle = AudioToPianoSongIdentity.Normalize(_songIdentity.Text, _path.Text);
+        _songIdentity.Text = normalizedTitle;
 
         try
         {
             var jobResult = await _job.RunAsync(
                 _path.Text,
-                Path.GetFileNameWithoutExtension(_path.Text),
+                normalizedTitle,
                 progress: progress,
                 cancellationToken: _runCancellation.Token).ConfigureAwait(true);
 
@@ -227,6 +249,7 @@ internal sealed class AudioToPianoCreateForm : Form
         {
             var saved = _libraryWriter.Add(_generatedTrack);
             _addedToLibrary = true;
+            AddedLibraryPath = saved.Path;
             _addToLibrary.Enabled = false;
             _status.Text = $"Added to Library as {Path.GetFileName(saved.Path)} — {saved.NoteCount} notes, {saved.ByteCount:N0} bytes, production MIDI round-trip verified.";
             ClientDiagnostics.Log($"Generated piano version committed to Library after MIDI round-trip verification: file='{Path.GetFileName(saved.Path)}', notes={saved.NoteCount}, bytes={saved.ByteCount}.");
@@ -260,6 +283,7 @@ internal sealed class AudioToPianoCreateForm : Form
         _generatedTrack = null;
         _generatedReadiness = null;
         _addedToLibrary = false;
+        AddedLibraryPath = null;
         _preview.Enabled = false;
         _stopPreview.Enabled = false;
         _addToLibrary.Enabled = false;
@@ -268,6 +292,7 @@ internal sealed class AudioToPianoCreateForm : Form
     private void SetRunning(bool running)
     {
         _choose.Enabled = !running;
+        _songIdentity.Enabled = !running;
         _create.Enabled = !running && !string.IsNullOrWhiteSpace(_path.Text);
         _cancel.Enabled = running;
         _preview.Enabled = !running && _generatedTrack is not null && !_previewPlayer.IsPlaying;
