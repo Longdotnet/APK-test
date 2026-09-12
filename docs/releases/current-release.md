@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.38
+version: 0.40.39
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -16,8 +16,18 @@ SHA256: `{{SHA256}}`
 3. The client searches public MIDI discovery, locally analyzes the chosen audio once, and verifies/reranks up to five candidate MIDI files. If a `High confidence` existing source is found, use **Add Verified Match**. If none is trustworthy, the same local audio opens **Create Piano Version** automatically without a second picker.
 4. Preview/review generated piano before **Add to Library**. Existing-source verification and generated transcription never silently mutate canonical playback truth.
 5. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and full synthetic matrix without intentionally changing Roblox experience/session.
-6. During each synthetic cell, do not intentionally press W yourself. Phases 84–85 keep each retained probe identity single-assignment and emit an explicit provenance trust/reason line for the exact probe, including duplicate-ID, lower-integrity, physical-contamination, malformed-transition, incomplete-pair, clean-pair, and missing-snapshot states.
+6. During each synthetic cell, do not intentionally press W yourself. Phases 84–86 keep each probe identity single-assignment while retained, expose exact provenance trust/reason, and bind that provenance to the exact retained reaction so later registry eviction/reset cannot rewrite historical matrix evidence.
 7. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_PROVENANCE`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**. Windows-side delivery, CI success, or focus success alone is not a Roblox field PASS.
+
+## Runtime Input P0 Phase 86 — reaction-bound matrix provenance
+
+- Phase 82–85 made matrix decisions provenance-aware, failed closed on contaminated/lower-integrity evidence, made retained probe IDs single-assignment, and exposed deterministic provenance reason codes.
+- The remaining integrity gap was temporal: a retained matrix cell looked provenance up again from the mutable bounded registry every time the matrix was assessed. The registry intentionally retains only 256 snapshots and can be reset for diagnostics, so a reaction that was clean when retained could later become `MissingSnapshot` for reasons unrelated to that field attempt.
+- Phase 86 captures the exact synthetic provenance trust and reason when `RobloxInputMatrixCellEvidence` is created after the probe/human reaction result is retained. Matrix policy consumes that reaction-bound assessment instead of doing a later lookup by textual probe ID.
+- A clean retained reaction remains clean after unrelated registry eviction/reset. A contaminated retained reaction cannot be upgraded by later clean state, and a reaction retained with missing provenance cannot be backfilled afterward.
+- Contaminated next-action diagnostics now carry the reaction-bound reason with the cell name, reducing ambiguity in one support log.
+- Production `keybd_event`, SendInput diagnostics, scheduler truth, focus authorization, held-key/pedal ownership, emergency release, Legacy, and **Legacy x2** remain unchanged.
+- P0 remains `NOT YET PROVEN`. Explicit visible Roblox movement or piano reaction from production `RobloxPiano.exe` remains mandatory.
 
 ## Runtime Input P0 Phase 85 — reason-coded matrix provenance
 
@@ -91,8 +101,9 @@ SHA256: `{{SHA256}}`
 - Physical W remains the control and must visibly react in the selected Roblox experience before a synthetic-failure matrix is considered conclusive.
 - The four synthetic cells are PowerShell-oracle virtual-key `keybd_event`, non-zero-scan `keybd_event`, SendInput virtual-key, and SendInput scan-code.
 - Any focus/window continuity loss invalidates that exact attempt even if focus later returns.
-- Any replayed probe ID, physical/non-injected W event, malformed target-W transition sequence, missing exact-probe low-level provenance, lower-integrity injected target-W evidence, or incomplete injected pair prevents that synthetic cell from participating in a conclusive matrix verdict.
-- Only a unique-ID, same-integrity, uncontaminated injected down/up pair plus stable trusted focus, Windows delivery, same-session identity, fresh reaction context, and explicit Roblox `NO` reaction can strengthen boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`.
+- Any replayed probe ID, physical/non-injected W event, malformed target-W transition sequence, missing reaction-bound low-level provenance, lower-integrity injected target-W evidence, or incomplete injected pair prevents that synthetic cell from participating in a conclusive matrix verdict.
+- Only a unique-ID, same-integrity, uncontaminated injected down/up pair captured with the retained reaction, plus stable trusted focus, Windows delivery, same-session identity, fresh reaction context, and explicit Roblox `NO` reaction can strengthen boundary `POST_WINDOWS_SYNTHETIC_TO_ROBLOX_CONSUMPTION`.
+- Later process-local registry eviction/reset cannot promote, demote, or backfill an already retained reaction's provenance assessment.
 - `FIELD_CONFIRMED_PASS` still requires explicit visible Roblox movement/piano reaction from the production executable. No CI or Windows-only signal can manufacture that verdict.
 
 ## Runtime Input invariants
@@ -107,4 +118,4 @@ SHA256: `{{SHA256}}`
 
 - Audio Phase 17 remains the bundled Spotify Basic Pitch + ONNX Runtime + NAudio transcription/arrangement path for owned/local audio.
 - Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, Phase 23 one-reference bounded multi-candidate verification/reranking, Phase 24 single-reference verify-or-create handoff, and Phase 25 single-selection Find-or-Create orchestration.
-- Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 85 and its field gate do not modify the Audio-to-Piano architecture.
+- Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 86 and its field gate do not modify the Audio-to-Piano architecture.
