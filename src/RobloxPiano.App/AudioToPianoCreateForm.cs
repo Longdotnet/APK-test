@@ -7,11 +7,14 @@ namespace RobloxPiano.App;
 internal sealed class AudioToPianoCreateForm : Form
 {
     private readonly AudioToPianoClientJob _job = new();
+    private readonly GeneratedPianoPreviewPlayer _previewPlayer = new();
     private readonly GeneratedTrackLibraryWriter _libraryWriter;
     private readonly TextBox _path = new() { ReadOnly = true, Dock = DockStyle.Fill, PlaceholderText = "Choose an owned/local audio file..." };
     private readonly Button _choose = new() { Text = "Choose Audio...", AutoSize = true };
     private readonly Button _create = new() { Text = "Create Piano Version", AutoSize = true, Enabled = false };
     private readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, Enabled = false };
+    private readonly Button _preview = new() { Text = "Preview", AutoSize = true, Enabled = false };
+    private readonly Button _stopPreview = new() { Text = "Stop Preview", AutoSize = true, Enabled = false };
     private readonly Button _addToLibrary = new() { Text = "Add to Library", AutoSize = true, Enabled = false };
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100 };
     private readonly Label _status = CreateLabel("Choose an owned/local audio file. Nothing is uploaded.");
@@ -26,7 +29,7 @@ internal sealed class AudioToPianoCreateForm : Form
         Text = "Create Piano Version";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(680, 360);
-        Size = new Size(760, 430);
+        Size = new Size(780, 450);
 
         var managedRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -38,8 +41,14 @@ internal sealed class AudioToPianoCreateForm : Form
         _choose.Click += (_, _) => ChooseAudio();
         _create.Click += async (_, _) => await CreateAsync().ConfigureAwait(true);
         _cancel.Click += (_, _) => CancelCreation();
+        _preview.Click += (_, _) => StartPreview();
+        _stopPreview.Click += (_, _) => StopPreview();
         _addToLibrary.Click += (_, _) => AddToLibrary();
-        FormClosing += (_, _) => CancelCreation();
+        FormClosing += (_, _) =>
+        {
+            CancelCreation();
+            StopPreview();
+        };
     }
 
     private void BuildLayout()
@@ -55,7 +64,7 @@ internal sealed class AudioToPianoCreateForm : Form
         sourceRow.Controls.Add(_choose, 1, 0);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        actions.Controls.AddRange([_create, _cancel, _addToLibrary]);
+        actions.Controls.AddRange([_create, _cancel, _preview, _stopPreview, _addToLibrary]);
 
         var root = new TableLayoutPanel
         {
@@ -94,6 +103,7 @@ internal sealed class AudioToPianoCreateForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
+        StopPreview();
         _path.Text = Path.GetFullPath(dialog.FileName);
         ResetGeneratedResult();
         _create.Enabled = true;
@@ -107,6 +117,7 @@ internal sealed class AudioToPianoCreateForm : Form
         if (string.IsNullOrWhiteSpace(_path.Text) || _job.IsRunning)
             return;
 
+        StopPreview();
         ResetGeneratedResult();
         _runCancellation = new CancellationTokenSource();
         SetRunning(true);
@@ -137,16 +148,16 @@ internal sealed class AudioToPianoCreateForm : Form
             var reasons = quality.Reasons.Count == 0 ? "none" : string.Join(", ", quality.Reasons);
             _status.Text = quality.Readiness switch
             {
-                AudioTranscriptionReadiness.Ready => "Ready — deterministic quality checks passed. Review the summary, then Add to Library.",
-                AudioTranscriptionReadiness.NeedsReview => "Needs review — warnings must stay visible. Add is allowed only as an explicit reviewed choice.",
-                _ => "Rejected — this result cannot be added to the Library until the source/arrangement is repaired."
+                AudioTranscriptionReadiness.Ready => "Ready — deterministic quality checks passed. Preview locally, then Add to Library.",
+                AudioTranscriptionReadiness.NeedsReview => "Needs review — warnings must stay visible. Preview before deciding whether to Add to Library.",
+                _ => "Rejected — preview is available for diagnosis, but this result cannot be added to the Library until repaired."
             };
             _result.Text =
                 $"{track.Title} • {track.Events.Count} events • {track.Bpm:0.###} BPM • {FormatTime(track.TimelineDuration)}{Environment.NewLine}" +
                 $"Readiness: {quality.Readiness} • reasons: {reasons}{Environment.NewLine}" +
                 $"Decoded notes: {transcription.Diagnostics.DecodedNotes}; retained after suppression: {transcription.Diagnostics.NotesAfterSuppression}; " +
                 $"elapsed: {transcription.Diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
-                "Add to Library writes a standards-compliant MIDI, then re-imports it through the production MIDI parser and refuses the commit if note/timing parity fails. Roblox playback still requires the separate Runtime Input field gate.";
+                "Preview synthesizes the canonical generated piano locally and never sends Roblox keys. Add to Library writes a standards-compliant MIDI, then re-imports it through the production MIDI parser and refuses the commit if note/timing parity fails. Roblox playback still requires the separate Runtime Input field gate.";
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
         {
@@ -159,6 +170,39 @@ internal sealed class AudioToPianoCreateForm : Form
             _runCancellation = null;
             SetRunning(false);
         }
+    }
+
+    private void StartPreview()
+    {
+        if (_generatedTrack is null || _job.IsRunning)
+            return;
+
+        try
+        {
+            var info = _previewPlayer.Play(_generatedTrack);
+            _preview.Enabled = false;
+            _stopPreview.Enabled = true;
+            _status.Text = info.IsTruncated
+                ? $"Previewing the first {FormatTime(info.PreviewDuration)} locally ({info.NoteVoices} note voices). The full generated track is {FormatTime(info.SourceDuration)}."
+                : $"Previewing {FormatTime(info.PreviewDuration)} locally ({info.NoteVoices} note voices). No Roblox input is sent.";
+            ClientDiagnostics.Log($"Generated piano local preview started: duration={info.PreviewDuration.TotalSeconds:0.###}s, sourceDuration={info.SourceDuration.TotalSeconds:0.###}s, voices={info.NoteVoices}, truncated={info.IsTruncated}.");
+        }
+        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException or NAudio.MmException)
+        {
+            ClientDiagnostics.Log($"Generated piano local preview failed safely: {exception}");
+            _status.Text = $"Could not preview this piano version on the current Windows audio device: {exception.Message}";
+            _preview.Enabled = _generatedTrack is not null;
+            _stopPreview.Enabled = false;
+        }
+    }
+
+    private void StopPreview()
+    {
+        if (_previewPlayer.IsPlaying)
+            ClientDiagnostics.Log("Generated piano local preview stopped.");
+        _previewPlayer.Stop();
+        _stopPreview.Enabled = false;
+        _preview.Enabled = !_job.IsRunning && _generatedTrack is not null;
     }
 
     private void AddToLibrary()
@@ -216,6 +260,8 @@ internal sealed class AudioToPianoCreateForm : Form
         _generatedTrack = null;
         _generatedReadiness = null;
         _addedToLibrary = false;
+        _preview.Enabled = false;
+        _stopPreview.Enabled = false;
         _addToLibrary.Enabled = false;
     }
 
@@ -224,6 +270,8 @@ internal sealed class AudioToPianoCreateForm : Form
         _choose.Enabled = !running;
         _create.Enabled = !running && !string.IsNullOrWhiteSpace(_path.Text);
         _cancel.Enabled = running;
+        _preview.Enabled = !running && _generatedTrack is not null && !_previewPlayer.IsPlaying;
+        _stopPreview.Enabled = !running && _previewPlayer.IsPlaying;
         _addToLibrary.Enabled = !running
             && !_addedToLibrary
             && _generatedTrack is not null
@@ -237,6 +285,7 @@ internal sealed class AudioToPianoCreateForm : Form
         {
             _runCancellation?.Cancel();
             _runCancellation?.Dispose();
+            _previewPlayer.Dispose();
             _job.Dispose();
         }
         base.Dispose(disposing);
@@ -246,7 +295,7 @@ internal sealed class AudioToPianoCreateForm : Form
     {
         Text = text,
         AutoSize = true,
-        MaximumSize = new Size(700, 0),
+        MaximumSize = new Size(720, 0),
         Padding = new Padding(0, 5, 0, 5)
     };
 
