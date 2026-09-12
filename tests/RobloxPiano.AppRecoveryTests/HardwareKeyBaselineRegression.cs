@@ -68,6 +68,30 @@ internal static class HardwareKeyBaselineRegression
             throw new InvalidOperationException("A live Roblox MainWindowHandle replacement must invalidate the real-key baseline surface.");
         }
 
+        if (!RobloxHardwareKeyBaselineProbe.IsHoldContinuityTrusted(
+                keyDownObserved: true,
+                keyUpObserved: true,
+                continuityPreserved: true))
+        {
+            throw new InvalidOperationException("A continuously trusted real-key hold must remain eligible for baseline evidence.");
+        }
+
+        if (RobloxHardwareKeyBaselineProbe.IsHoldContinuityTrusted(
+                keyDownObserved: true,
+                keyUpObserved: true,
+                continuityPreserved: false))
+        {
+            throw new InvalidOperationException("Focus/window loss between real W down and up must permanently invalidate that baseline attempt even if Roblox is trusted again at key-up.");
+        }
+
+        if (RobloxHardwareKeyBaselineProbe.IsHoldContinuityTrusted(
+                keyDownObserved: true,
+                keyUpObserved: false,
+                continuityPreserved: true))
+        {
+            throw new InvalidOperationException("A real-key baseline cannot be trusted before the matching non-injected key-up is observed.");
+        }
+
         var complete = new RobloxHardwareKeyBaselineResult(
             "test",
             ActivationConfirmed: true,
@@ -79,19 +103,28 @@ internal static class HardwareKeyBaselineRegression
             TrustedWindowSurfaceAtDown: true,
             TrustedWindowSurfaceAtUp: true,
             VirtualKey: 0x57,
-            ObservationDuration: TimeSpan.FromMilliseconds(250));
+            ObservationDuration: TimeSpan.FromMilliseconds(250))
+        {
+            HoldContinuityPreserved = true
+        };
         if (!complete.PhysicalBaselineObserved)
         {
-            throw new InvalidOperationException("A complete non-injected W down/up pair on the trusted selected Roblox surface must establish baseline observation.");
+            throw new InvalidOperationException("A complete non-injected W down/up pair continuously held on the trusted selected Roblox surface must establish baseline observation.");
         }
 
         if ((complete with { NonInjectedKeyUpObserved = false }).PhysicalBaselineObserved
             || (complete with { ForegroundHeldAtUp = false }).PhysicalBaselineObserved
             || (complete with { TrustedWindowSurfaceAtDown = false }).PhysicalBaselineObserved
             || (complete with { TrustedWindowSurfaceAtUp = false }).PhysicalBaselineObserved
+            || (complete with { HoldContinuityPreserved = false, FirstHoldContinuityLossAt = TimeSpan.FromMilliseconds(75) }).PhysicalBaselineObserved
             || (complete with { StableForegroundConfirmed = false }).PhysicalBaselineObserved)
         {
-            throw new InvalidOperationException("Real-key baseline assessment must fail closed when release, foreground continuity, selected-window identity, or stable activation evidence is incomplete.");
+            throw new InvalidOperationException("Real-key baseline assessment must fail closed when release, continuous foreground/window ownership, selected-window identity, or stable activation evidence is incomplete.");
+        }
+
+        if (RobloxHardwareKeyBaselineProbe.HoldContinuitySampleInterval > TimeSpan.FromMilliseconds(25))
+        {
+            throw new InvalidOperationException("Real-key hold continuity must be sampled at least as frequently as the synthetic P0 probe continuity contract.");
         }
     }
 
