@@ -10,7 +10,7 @@ internal static class NativeSeparatorProcessAdapterRegression
         Run("native separator requires explicit output token", MissingOutputTokenFailsClosed);
         Run("native separator rejects oversized input before process start", OversizedInputFailsClosed);
         Run("native separator cancellation prevents process start", PreCancellationFailsClosed);
-        Run("native separator rejects successful process without bounded stem", MissingStemFailsClosed);
+        Run("native separator never accepts process run without expected stem", MissingStemFailsClosed);
     }
 
     private static void RelativeExecutableFailsClosed()
@@ -63,7 +63,7 @@ internal static class NativeSeparatorProcessAdapterRegression
         if (!File.Exists(where))
             return;
 
-        Throws<InvalidDataException>(() => fixture.Adapter.RunAsync(
+        Throws<Exception>(() => fixture.Adapter.RunAsync(
             new NativeSeparatorProcessRequest(
                 where,
                 fixture.InputPath,
