@@ -13,10 +13,11 @@ internal static class Program
         var failures = new List<string>();
         await RunAsync("NAudio reference normalization is deterministic and bounded", ReferenceNormalizationAsync, failures);
         await RunAsync("online MIDI verifies against owned reference without persistence", CandidateVerificationAsync, failures);
+        await RunAsync("one reference verifies a bounded candidate batch and isolates failures", BatchVerificationAsync, failures);
         await RunAsync("oversized candidate fails before download", OversizedCandidateFailsAsync, failures);
         await RunAsync("cancelled verification performs no work", CancellationFailsClosedAsync, failures);
 
-        Console.WriteLine($"Reference verification regressions: {4 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Reference verification regressions: {5 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
             Console.Error.WriteLine(failure);
         return failures.Count == 0 ? 0 : 1;
@@ -72,6 +73,52 @@ internal static class Program
         True(!Directory.Exists(temp) || !Directory.EnumerateFileSystemEntries(temp).Any(), "verification left candidate data behind");
     }
 
+    private static async Task BatchVerificationAsync()
+    {
+        var track = BuildTrack();
+        var midi = PerformanceTrackMidiExporter.Export(track);
+        var requests = 0;
+        using var http = new HttpClient(new StaticHandler(request =>
+        {
+            requests++;
+            if (request.RequestUri?.AbsolutePath.Contains("broken", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                {
+                    Content = new ByteArrayContent([0x00])
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(midi)
+            };
+        }));
+        var temp = Path.Combine(Path.GetTempPath(), "RobloxPiano-batch-verify-test-" + Guid.NewGuid().ToString("N"));
+        var service = new OnlineSongReferenceVerificationService(http, temp);
+        var reference = BuildReference(track);
+        var candidates = new[]
+        {
+            Candidate("Lower metadata", "lower.mid", 50),
+            Candidate("Broken candidate", "broken.mid", 999),
+            Candidate("Higher metadata", "higher.mid", 200),
+            Candidate("Outside bound", "outside.mid", 500)
+        };
+
+        var result = await service.VerifyBatchAsync(candidates, reference, maxCandidates: 3);
+
+        Equal(3, result.AttemptedCount);
+        Equal(3, requests);
+        Equal(1, result.Failures.Count);
+        Equal("Broken candidate", result.Failures[0].Candidate.Title);
+        Equal(2, result.RankedVerifiedCandidates.Count);
+        Equal("Higher metadata", result.RankedVerifiedCandidates[0].Candidate.Title);
+        Equal("Lower metadata", result.RankedVerifiedCandidates[1].Candidate.Title);
+        True(result.RankedVerifiedCandidates.All(item => item.Assessment.Verdict == ReferenceCandidateVerdict.HighConfidence), "valid batch candidates should be high confidence");
+        True(result.RankedVerifiedCandidates.All(item => ReferenceCandidateConfidencePolicy.Verify(item.Assessment)), "ranked assessments must retain verified immutable evidence");
+        True(!Directory.Exists(temp) || !Directory.EnumerateFileSystemEntries(temp).Any(), "batch verification left candidate data behind");
+    }
+
     private static async Task OversizedCandidateFailsAsync()
     {
         using var http = new HttpClient(new StaticHandler(_ =>
@@ -96,20 +143,24 @@ internal static class Program
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
         await ThrowsAsync<OperationCanceledException>(() => service.VerifyAsync(Candidate(), BuildReference(BuildTrack()), cancelled.Token));
+        await ThrowsAsync<OperationCanceledException>(() => service.VerifyBatchAsync([Candidate()], BuildReference(BuildTrack()), cancellationToken: cancelled.Token));
         Equal(0, requests);
     }
 
-    private static SongDiscoveryCandidate Candidate() => new(
+    private static SongDiscoveryCandidate Candidate()
+        => Candidate("Reference Candidate", "reference.mid", 120);
+
+    private static SongDiscoveryCandidate Candidate(string title, string fileName, int score) => new(
         "wikimedia-commons",
         "Wikimedia Commons",
-        "Reference Candidate",
+        title,
         "Test Artist",
         DiscoveredSongFormat.Midi,
-        new Uri("https://upload.wikimedia.org/reference.mid"),
-        new Uri("https://commons.wikimedia.org/wiki/File:reference.mid"),
-        "reference-test",
+        new Uri("https://upload.wikimedia.org/" + fileName),
+        new Uri("https://commons.wikimedia.org/wiki/File:" + fileName),
+        fileName,
         1024,
-        Score: 120);
+        Score: score);
 
     private static PerformanceTrack BuildTrack()
     {
