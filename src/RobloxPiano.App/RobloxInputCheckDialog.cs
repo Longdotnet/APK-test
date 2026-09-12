@@ -5,7 +5,7 @@ namespace RobloxPiano.App;
 internal sealed class RobloxInputCheckDialog : Form
 {
     private readonly string _matrixId = RobloxInputForensics.NewProbeId();
-    private readonly Dictionary<string, RobloxInputMatrixCellEvidence> _matrixCells = new(StringComparer.Ordinal);
+    private readonly List<RobloxInputMatrixCellEvidence> _matrixCells = [];
     private readonly Label _status = new() { AutoSize = true, MaximumSize = new Size(650, 0) };
     private readonly Label _matrixStatus = new()
     {
@@ -399,7 +399,7 @@ internal sealed class RobloxInputCheckDialog : Form
         RobloxInputMatrixSessionIdentity? sessionIdentity)
     {
         var evidence = new RobloxInputMatrixCellEvidence(cell, probeId, verdict, reacted, sessionIdentity);
-        _matrixCells[cell] = evidence;
+        _matrixCells.Add(evidence);
         ClientDiagnostics.Log(
             $"INPUT_MATRIX_SESSION matrix={_matrixId} probe={probeId} cell={cell} stage=RESULT_RETAINED " +
             $"identity={(sessionIdentity is null ? "UNAVAILABLE" : sessionIdentity.Value.ToLogToken())} " +
@@ -408,7 +408,7 @@ internal sealed class RobloxInputCheckDialog : Form
             $"INPUT_MATRIX matrix={_matrixId} probe={probeId} cell={cell} verdict={verdict} " +
             $"robloxReaction={(reacted is null ? "UNKNOWN" : reacted.Value ? "YES" : "NO")} authorizesPlayback=false.");
 
-        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(_matrixCells.Values);
+        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(_matrixCells);
         var winners = assessment.WinningCells.Count == 0 ? "NONE" : string.Join(",", assessment.WinningCells);
         var failures = assessment.FailingCells.Count == 0 ? "NONE" : string.Join(",", assessment.FailingCells);
         var pending = assessment.PendingCells.Count == 0 ? "NONE" : string.Join(",", assessment.PendingCells);
