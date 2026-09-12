@@ -57,10 +57,10 @@ internal static class GeneratedPianoPreviewRegression
         var buffer = new float[64];
         var total = 0;
         int read;
-        while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
+        while ((read = provider.Read(buffer.AsSpan())) > 0)
             total += read;
         Equal(16_000, total);
-        Equal(0, provider.Read(buffer, 0, buffer.Length));
+        Equal(0, provider.Read(buffer.AsSpan()));
     }
 
     public static void InvalidCanonicalKeyFailsClosed()
@@ -82,7 +82,7 @@ internal static class GeneratedPianoPreviewRegression
         var result = new List<float>();
         var buffer = new float[chunkSize];
         int read;
-        while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
+        while ((read = provider.Read(buffer.AsSpan())) > 0)
             result.AddRange(buffer.AsSpan(0, read).ToArray());
         return result.ToArray();
     }
