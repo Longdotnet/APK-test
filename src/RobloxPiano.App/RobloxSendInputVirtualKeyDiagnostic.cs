@@ -106,6 +106,7 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
         lowLevelProvenance.Start();
         var lowLevelObservationEnded = false;
         var downEmitted = false;
+        var upEmitted = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
@@ -156,6 +157,7 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
 
             LogKeyState(probeId, "SENDINPUT_VK_BEFORE_UP", target, oracle.VirtualKey, Stopwatch.GetElapsedTime(started));
             Emit(upEvent);
+            upEmitted = true;
             eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "SENDINPUT_VK_AFTER_UP", target, oracle.VirtualKey, heldDuration);
@@ -180,7 +182,7 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
         finally
         {
             eventContinuity.EndHold();
-            if (ShouldEmitBestEffortRelease(downEmitted))
+            if (ShouldEmitBestEffortRelease(downEmitted, upEmitted))
             {
                 try
                 {
@@ -191,11 +193,11 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
                     // Best-effort release. Preserve the original diagnostic failure.
                 }
             }
-            else
+            else if (!downEmitted)
             {
                 ClientDiagnostics.Log(
                     $"INPUT_FORENSIC probe={probeId} stage=SENDINPUT_VK_RELEASE_SKIPPED backend=SendInput " +
-                    "probePath=SendInputVirtualKeyDiagnostic keyDownEmitted=false nativeEventsAfterAbort=0 " +
+                    "probePath=SendInputVirtualKeyDiagnostic keyDownEmitted=false keyUpEmitted=false nativeEventsAfterAbort=0 " +
                     "verdict=ABORT_BEFORE_DOWN authorizesPlayback=false productionChanged=false.");
             }
 
@@ -206,8 +208,8 @@ internal static class RobloxSendInputVirtualKeyDiagnosticProbe
         }
     }
 
-    internal static bool ShouldEmitBestEffortRelease(bool keyDownEmitted)
-        => keyDownEmitted;
+    internal static bool ShouldEmitBestEffortRelease(bool keyDownEmitted, bool keyUpEmitted)
+        => keyDownEmitted && !keyUpEmitted;
 
     internal static SendInputVirtualKeyDiagnosticEvent BuildEvent(ushort virtualKey, bool keyUp)
     {
