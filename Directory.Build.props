@@ -5,7 +5,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
     <LangVersion>latest</LangVersion>
-    <VersionPrefix>0.40.40</VersionPrefix>
+    <VersionPrefix>0.40.41</VersionPrefix>
     <RepositoryUrl>https://github.com/Longdotnet/APK-test</RepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
