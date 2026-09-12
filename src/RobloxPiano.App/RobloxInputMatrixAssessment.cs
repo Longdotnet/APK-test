@@ -56,7 +56,9 @@ internal sealed record RobloxInputMatrixCellEvidence(
     public bool SyntheticProvenanceTrusted => !IsSynthetic
         || SyntheticProvenanceTrust == RobloxInputMatrixSyntheticProvenanceTrust.Clean;
 
-    public bool WindowsBoundaryConfirmed => Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION"
+    public bool ClaimsWindowsBoundaryVerdict => Verdict is "ROBLOX_REACTED" or "ROBLOX_NO_REACTION";
+
+    public bool WindowsBoundaryConfirmed => ClaimsWindowsBoundaryVerdict
         && SyntheticProvenanceTrusted;
 
     public bool Reacted => WindowsBoundaryConfirmed
@@ -131,7 +133,7 @@ internal static class RobloxInputMatrixAssessmentPolicy
                 RobloxInputMatrixVerdict.InsufficientEvidence,
                 "MATRIX_CELL_REPLAY",
                 $"The retained matrix contains repeated decision-eligible observation(s) for cell(s): {string.Join(",", replayedCells)}. Last-write-wins evidence is not safe for a field boundary decision.",
-                "Close and reopen Roblox Input Check, keep one stable Roblox surface, then rerun the matrix from Real-Key Baseline. A retry may replace stale/incomplete evidence only before that earlier attempt reached the Windows boundary.",
+                "Close and reopen Roblox Input Check, keep one stable Roblox surface, then rerun the matrix from Real-Key Baseline. A retry may replace stale/incomplete evidence only before that earlier attempt claimed a Roblox reaction verdict.",
                 Array.Empty<string>(),
                 Array.Empty<string>(),
                 replayedCells);
@@ -276,15 +278,17 @@ internal static class RobloxInputMatrixAssessmentPolicy
             return false;
         }
 
-        var confirmedIndexes = group
+        var decisionEligibleIndexes = group
             .Select((item, index) => (item, index))
-            .Where(pair => pair.item.WindowsBoundaryConfirmed)
+            .Where(pair => pair.item.ClaimsWindowsBoundaryVerdict)
             .Select(pair => pair.index)
             .ToArray();
 
-        // A retry is safe only when every earlier retained attempt was still incomplete
-        // and exactly the latest attempt is the first one to reach the Windows boundary.
-        return confirmedIndexes.Length != 1 || confirmedIndexes[0] != group.Length - 1;
+        // A retry is safe only when every earlier retained attempt was truly incomplete and
+        // exactly the latest attempt is the first one to claim a human Roblox reaction verdict.
+        // Missing/contaminated provenance must not downgrade an earlier Yes/No into retryable
+        // history, because a later clean attempt could otherwise erase untrusted field evidence.
+        return decisionEligibleIndexes.Length != 1 || decisionEligibleIndexes[0] != group.Length - 1;
     }
 
     private static (string Boundary, string Summary, string NextAction)? AssessRetainedHistorySessionContinuity(
