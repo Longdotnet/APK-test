@@ -139,7 +139,7 @@ internal static class InputMatrixAssessmentRegression
             new RobloxInputMatrixCellEvidence("KEYBD_EVENT_SCAN", "missing", "ROBLOX_REACTED", true, null)
         ]);
         Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, missingIdentity.Verdict, "missing session identity must fail closed");
-        Equal("MATRIX_SESSION_IDENTITY_UNAVAILABLE", missingIdentity.FailureBoundary, "missing session boundary");
+        Equal("MATRIX_HISTORY_SESSION_IDENTITY_UNAVAILABLE", missingIdentity.FailureBoundary, "missing retained-history session boundary");
         if (missingIdentity.IsConclusive)
         {
             throw new InvalidOperationException("A synthetic winner without stable session identity must not be conclusive.");
@@ -151,7 +151,7 @@ internal static class InputMatrixAssessmentRegression
             new RobloxInputMatrixCellEvidence("SENDINPUT_VK", "unbound", "ROBLOX_REACTED", true)
         ]);
         Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, unboundLegacyEvidence.Verdict, "unbound evidence must never post-hoc capture the current Roblox target");
-        Equal("MATRIX_SESSION_IDENTITY_UNAVAILABLE", unboundLegacyEvidence.FailureBoundary, "unbound evidence boundary");
+        Equal("MATRIX_HISTORY_SESSION_IDENTITY_UNAVAILABLE", unboundLegacyEvidence.FailureBoundary, "unbound retained-history evidence boundary");
         if (unboundLegacyEvidence.IsConclusive)
         {
             throw new InvalidOperationException("Evidence without a probe-start identity must fail closed even when Roblox visibly reacted.");

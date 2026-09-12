@@ -21,6 +21,7 @@ internal static class InputMatrixCellReplayRegression
             SyntheticYesThenNoCannotBecomeAllSyntheticFailure();
             DuplicateRealKeyCannotRewriteControl();
             IncompleteThenConfirmedRetryStillWorks();
+            UnknownSessionIncompleteThenConfirmedRetryFailsClosed();
         }
         finally
         {
@@ -103,9 +104,30 @@ internal static class InputMatrixCellReplayRegression
         ],
         Session);
 
-        if (assessment.FailureBoundary == "MATRIX_CELL_REPLAY")
+        if (assessment.FailureBoundary is "MATRIX_CELL_REPLAY" or "MATRIX_HISTORY_SESSION_IDENTITY_UNAVAILABLE")
         {
-            throw new InvalidOperationException("incomplete-to-first-confirmed retry must remain valid after client history retention.");
+            throw new InvalidOperationException("same-session incomplete-to-first-confirmed retry must remain valid after retained-history hardening.");
+        }
+    }
+
+    private static void UnknownSessionIncompleteThenConfirmedRetryFailsClosed()
+    {
+        const string confirmed = "phase91-retry-confirmed";
+        RecordClean(confirmed);
+
+        var assessment = RobloxInputMatrixAssessmentPolicy.Assess(
+        [
+            PassingRealKey(),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_VK", "phase91-retry-unknown-session", "WINDOWS_BOUNDARY_NOT_CONFIRMED", null, null),
+            new RobloxInputMatrixCellEvidence("SENDINPUT_VK", confirmed, "ROBLOX_REACTED", true, Session)
+        ],
+        Session);
+
+        Equal(RobloxInputMatrixVerdict.SessionContinuityInvalid, assessment.Verdict, "unknown retained session verdict");
+        Equal("MATRIX_HISTORY_SESSION_IDENTITY_UNAVAILABLE", assessment.FailureBoundary, "unknown retained session boundary");
+        if (assessment.IsConclusive || assessment.WinningCells.Count != 0)
+        {
+            throw new InvalidOperationException("a later retry must not erase an earlier retained attempt whose Roblox session identity was unavailable.");
         }
     }
 
