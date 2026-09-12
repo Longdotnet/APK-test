@@ -17,14 +17,18 @@ public sealed record NativeSeparatorProcessOptions(
 public sealed record NativeSeparatorProcessRequest(
     string ExecutablePath,
     string InputAudioPath,
-    IReadOnlyList<string> Arguments);
+    IReadOnlyList<string> Arguments,
+    string? ExpectedOutputRelativePath = null);
 
 /// <summary>
 /// Engineering-only adapter for benchmarking a portable/native source separator without putting
 /// that separator in the production RobloxPiano client. The process is launched directly (never
-/// through a shell), gets an isolated temporary workspace, must write one bounded output stem,
-/// and is killed as a process tree on cancellation/timeout. The stem is consumed before workspace
-/// cleanup and the resulting notes/resource evidence are returned to the Phase 27 benchmark runner.
+/// through a shell), gets an isolated temporary workspace, must write one bounded selected WAV stem,
+/// and is killed as a process tree on cancellation/timeout. Separators that accept an output
+/// directory (for example demucs.cpp) may name a safe relative stem through
+/// <see cref="NativeSeparatorProcessRequest.ExpectedOutputRelativePath"/>; legacy exact-file
+/// adapters keep using the default separated-stem.wav contract. The selected stem is consumed before
+/// workspace cleanup and the resulting notes/resource evidence are returned to the Phase 27 runner.
 /// </summary>
 public sealed class NativeSeparatorProcessAdapter
 {
@@ -58,9 +62,15 @@ public sealed class NativeSeparatorProcessAdapter
         if (!request.Arguments.Any(argument => argument.Contains(OutputToken, StringComparison.Ordinal)))
             throw new ArgumentException($"Separator arguments must contain the {OutputToken} token.", nameof(request));
 
+        ValidateExpectedOutputRelativePath(request.ExpectedOutputRelativePath);
+
         var workspace = Path.Combine(Path.GetTempPath(), "RobloxPiano", "separator-bench", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workspace);
-        var outputStemPath = Path.Combine(workspace, "separated-stem.wav");
+        var directoryOutputMode = !string.IsNullOrWhiteSpace(request.ExpectedOutputRelativePath);
+        var outputStemPath = directoryOutputMode
+            ? ResolveContainedRelativePath(workspace, request.ExpectedOutputRelativePath!)
+            : Path.Combine(workspace, "separated-stem.wav");
+        var outputTokenPath = directoryOutputMode ? workspace : outputStemPath;
 
         try
         {
@@ -79,7 +89,7 @@ public sealed class NativeSeparatorProcessAdapter
             {
                 startInfo.ArgumentList.Add(template
                     .Replace(InputToken, inputAudioPath, StringComparison.Ordinal)
-                    .Replace(OutputToken, outputStemPath, StringComparison.Ordinal)
+                    .Replace(OutputToken, outputTokenPath, StringComparison.Ordinal)
                     .Replace(WorkspaceToken, workspace, StringComparison.Ordinal));
             }
 
@@ -119,7 +129,7 @@ public sealed class NativeSeparatorProcessAdapter
 
             var output = new FileInfo(outputStemPath);
             if (!output.Exists)
-                throw new InvalidDataException("Native separator completed without producing the expected WAV stem.");
+                throw new InvalidDataException($"Native separator completed without producing the expected WAV stem '{Path.GetFileName(outputStemPath)}'.");
             if (output.Length <= 0 || output.Length > options.MaxOutputBytes)
                 throw new InvalidDataException($"Native separator output must be between 1 and {options.MaxOutputBytes} bytes.");
 
@@ -151,6 +161,31 @@ public sealed class NativeSeparatorProcessAdapter
             throw new ArgumentOutOfRangeException(nameof(options), "Separator argument limit must be between 1 and 512.");
         if (options.MaxArgumentLength is <= 0 or > 32768)
             throw new ArgumentOutOfRangeException(nameof(options), "Separator argument-length limit must be between 1 and 32768.");
+    }
+
+    private static void ValidateExpectedOutputRelativePath(string? path)
+    {
+        if (path is null)
+            return;
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Expected separator output path cannot be blank.", nameof(NativeSeparatorProcessRequest.ExpectedOutputRelativePath));
+        if (path.Length > 1024)
+            throw new ArgumentException("Expected separator output path cannot exceed 1024 characters.", nameof(NativeSeparatorProcessRequest.ExpectedOutputRelativePath));
+        if (Path.IsPathFullyQualified(path))
+            throw new ArgumentException("Expected separator output path must be relative to the isolated workspace.", nameof(NativeSeparatorProcessRequest.ExpectedOutputRelativePath));
+        if (!string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Expected separator output must select a WAV stem.", nameof(NativeSeparatorProcessRequest.ExpectedOutputRelativePath));
+    }
+
+    private static string ResolveContainedRelativePath(string workspace, string relativePath)
+    {
+        var workspaceRoot = Path.GetFullPath(workspace);
+        var candidate = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefix = Path.TrimEndingDirectorySeparator(workspaceRoot) + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, comparison))
+            throw new ArgumentException("Expected separator output path must stay inside the isolated workspace.", nameof(NativeSeparatorProcessRequest.ExpectedOutputRelativePath));
+        return candidate;
     }
 
     private static string RequireExistingAbsoluteFile(string path, string parameterName)
