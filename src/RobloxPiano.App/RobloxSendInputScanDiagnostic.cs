@@ -111,6 +111,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
         using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "SendInputScanCodeDiagnostic", oracle.VirtualKey);
         lowLevelProvenance.Start();
         var lowLevelObservationEnded = false;
+        var downEmitted = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
@@ -118,6 +119,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
             eventContinuity.BeginHold();
             lowLevelProvenance.BeginObservation();
             Emit(downEvent);
+            downEmitted = true;
 
             var sampleIndex = 0;
             while (true)
@@ -191,13 +193,23 @@ internal static class RobloxSendInputScanDiagnosticProbe
         finally
         {
             eventContinuity.EndHold();
-            try
+            if (ShouldEmitBestEffortRelease(downEmitted))
             {
-                Emit(upEvent);
+                try
+                {
+                    Emit(upEvent);
+                }
+                catch (WindowsInputInjectionException)
+                {
+                    // Best-effort release for a diagnostic path. Preserve the original failure.
+                }
             }
-            catch (WindowsInputInjectionException)
+            else
             {
-                // Best-effort release for a diagnostic path. Preserve the original failure.
+                ClientDiagnostics.Log(
+                    $"INPUT_FORENSIC probe={probeId} stage=SENDINPUT_RELEASE_SKIPPED backend=SendInput " +
+                    "probePath=SendInputScanCodeDiagnostic keyDownEmitted=false nativeEventsAfterAbort=0 " +
+                    "verdict=ABORT_BEFORE_DOWN authorizesPlayback=false productionChanged=false.");
             }
 
             if (!lowLevelObservationEnded)
@@ -206,6 +218,9 @@ internal static class RobloxSendInputScanDiagnosticProbe
             }
         }
     }
+
+    internal static bool ShouldEmitBestEffortRelease(bool keyDownEmitted)
+        => keyDownEmitted;
 
     internal static ushort NormalizeScanCode(uint mappedScanCode, out bool extended)
     {
