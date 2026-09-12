@@ -9,6 +9,12 @@ Distribution: self-contained Windows x64 single executable
 Client dependencies: none required manually
 SHA256: `{{SHA256}}`
 
+## Client entrypoint and support contract
+
+- **Sheet Library** remains the normal client starting point; this release changes only Runtime Input field-evidence policy.
+- **Support Bundle** remains the preferred way to preserve correlated `INPUT_MATRIX_*`, `INPUT_MATRIX_PROVENANCE`, `LOWLEVEL_PROVENANCE_*`, and `INPUT_FORENSIC` evidence for a field run.
+- Legacy and **Legacy x2** remain protected regression/perceptual baselines.
+
 ## Runtime Input P0 Phase 87 — physical-control-gated synthetic winner
 
 - The real-vs-synthetic matrix now requires a trusted, visibly reacting physical `REAL_KEY` W control before any provenance-clean synthetic `ROBLOX_REACTED` cell can become the conclusive `SYNTHETIC_VARIANT_REACHES_ROBLOX` verdict.
