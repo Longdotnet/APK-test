@@ -95,10 +95,13 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
             "semantics=DIAGNOSTIC_NONZERO_SCAN productionChanged=false.");
 
         var continuity = new RobloxProbeFocusContinuity();
+        using var eventContinuity = new RobloxSyntheticProbeForegroundContinuity(target, probeId, "KeybdEventScanDiagnostic");
+        eventContinuity.Start();
         var started = Stopwatch.GetTimestamp();
         try
         {
             LogKeyState(probeId, "PHYSICAL_BEFORE_DOWN", target, oracle.VirtualKey, scanCode);
+            eventContinuity.BeginHold();
             Emit(downEvent);
 
             var sampleIndex = 0;
@@ -109,6 +112,7 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
                 var foregroundNow = target.IsForeground;
                 var keyDownNow = WindowsKeyboardInputSink.IsVirtualKeyDown(oracle.VirtualKey);
                 var held = continuity.Observe(foregroundNow, keyDownNow, elapsed);
+                var eventHeld = eventContinuity.ObservePollingFallback();
                 LogKeyState(
                     probeId,
                     $"PHYSICAL_HOLD_SAMPLE_{sampleIndex:000}",
@@ -117,12 +121,13 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
                     scanCode,
                     elapsed);
 
-                if (!held)
+                if (!held || !eventHeld)
                 {
                     ClientDiagnostics.Log(
                         $"INPUT_FORENSIC probe={probeId} stage=PHYSICAL_FOCUS_LOST_DURING_HOLD verdict=FOCUS_LOST_BEFORE_UP " +
-                        $"firstLossMs={continuity.FirstFocusLossAt?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
-                        $"samples={continuity.SamplesObserved} action=RELEASE_IMMEDIATELY productionChanged=false.");
+                        $"firstLossMs={(eventContinuity.FirstContinuityLossAt ?? continuity.FirstFocusLossAt)?.TotalMilliseconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "na"} " +
+                        $"source={eventContinuity.FirstContinuityLossSource ?? "POLL"} samples={continuity.SamplesObserved} " +
+                        "foregroundEvents=true action=RELEASE_IMMEDIATELY productionChanged=false.");
                     break;
                 }
 
@@ -135,9 +140,10 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
                 var delay = remaining < RobloxFieldInputPolicy.ProbeContinuitySampleInterval
                     ? remaining
                     : RobloxFieldInputPolicy.ProbeContinuitySampleInterval;
-                if (delay > TimeSpan.Zero)
+                if (delay > TimeSpan.Zero
+                    && !await eventContinuity.WaitForDelayOrLossAsync(delay, cancellationToken).ConfigureAwait(false))
                 {
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
 
                 sampleIndex++;
@@ -145,6 +151,7 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
 
             LogKeyState(probeId, "PHYSICAL_BEFORE_UP", target, oracle.VirtualKey, scanCode, Stopwatch.GetElapsedTime(started));
             Emit(upEvent);
+            eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "PHYSICAL_AFTER_UP", target, oracle.VirtualKey, scanCode, heldDuration);
 
@@ -154,7 +161,7 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
                 true,
                 desktop.Parity,
                 continuity.WindowsKeyDownObserved,
-                continuity.ForegroundHeldContinuously,
+                continuity.ForegroundHeldContinuously && eventContinuity.ContinuityPreserved,
                 oracle.VirtualKey,
                 scanCode,
                 heldDuration);
@@ -163,6 +170,7 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
         }
         finally
         {
+            eventContinuity.EndHold();
             try
             {
                 Emit(upEvent);
@@ -233,7 +241,7 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
         ClientDiagnostics.Log(
             $"INPUT_FORENSIC probe={result.ProbeId} stage=PHYSICAL_VERDICT verdict={verdict} " +
             $"windowsPath={native} robloxReaction={reaction} vk=0x{result.VirtualKey:X2} scanCode=0x{result.ScanCode:X2} " +
-            $"continuousFocus={result.ForegroundHeldDuringProbe} productionChanged=false success=false.");
+            $"continuousFocus={result.ForegroundHeldDuringProbe} foregroundEvents=true productionChanged=false success=false.");
     }
 
     private static async Task<bool> WaitForStableForegroundAsync(
@@ -246,7 +254,8 @@ internal static class RobloxPhysicalKeyDiagnosticProbe
         while (Stopwatch.GetElapsedTime(timeoutStarted) < RobloxFieldInputPolicy.ProbeFocusTimeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (target.IsForeground)
+            var identity = WindowsRobloxWindowIdentity.Capture(target);
+            if (target.IsForeground && identity.IsTrustedProbeSurface)
             {
                 stableSince ??= Stopwatch.GetTimestamp();
                 if (Stopwatch.GetElapsedTime(stableSince.Value) >= RobloxFieldInputPolicy.StableFocusDuration)
