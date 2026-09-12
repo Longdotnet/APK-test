@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.35
+version: 0.40.36
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -12,12 +12,23 @@ SHA256: `{{SHA256}}`
 ## Client flow
 
 1. Download `RobloxPiano.exe` and double-click it; **Sheet Library** remains the normal starting point.
-2. Search for the song. When several online MIDI matches appear, choose **Verify top matches with my audio...** once and select audio you own or are authorized to use. The audio is analyzed locally once; up to five top MIDI candidates are then verified and evidence-reranked as High confidence / Review / Mismatch.
-3. Use **Add Verified Match** when a High-confidence existing source is available. If no trustworthy source is found, choose **Create Piano Version from this audio**: the same local reference is handed into transcription without a second file picker, then preview/review and Add to Library.
-4. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and full synthetic matrix without intentionally changing Roblox experience/session.
-5. During each synthetic cell, do not intentionally press W yourself. Phase 82 binds the matrix verdict to the exact probe's bounded low-level provenance. Any physical/non-injected W, malformed target-W sequence, or missing retained provenance leaves that cell pending and requires a retry.
-6. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**.
-7. Answer the visible Roblox reaction prompt for every matrix cell. Windows-side delivery, low-level injected provenance, CI success, or focus success alone is not a Roblox field PASS.
+2. For the shortest audio path, choose **Find or Create with my audio...** and select one owned/local WAV, MP3, AIFF, or AIF file. Search text is used as song identity when present; otherwise the local filename supplies the deterministic identity.
+3. The client searches public MIDI discovery, locally analyzes the chosen audio once, and verifies/reranks up to five candidate MIDI files. If a `High confidence` existing source is found, use **Add Verified Match**. If none is trustworthy, the same local audio opens **Create Piano Version** automatically without a second picker.
+4. Preview/review generated piano before **Add to Library**. Existing-source verification and generated transcription never silently mutate canonical playback truth.
+5. Open Roblox and run **Test Roblox Input**. Start with **Run Real-Key Baseline**, physically press/release W once on the selected Roblox surface, then run the PowerShell-oracle and full synthetic matrix without intentionally changing Roblox experience/session.
+6. During each synthetic cell, do not intentionally press W yourself. Phase 82 binds the matrix verdict to the exact probe's bounded low-level provenance. Any physical/non-injected W, malformed target-W sequence, or missing retained provenance leaves that cell pending and requires a retry.
+7. Keep the selected Roblox surface foreground throughout each hold and reaction assessment. Preserve every `LOWLEVEL_PROVENANCE_*`, `INPUT_MATRIX_*`, and `INPUT_FORENSIC` line, or export a **Support Bundle**. Windows-side delivery, CI success, or focus success alone is not a Roblox field PASS.
+
+## Audio-to-Piano Phase 25 — single-selection Find or Create
+
+- **Find or Create with my audio...** unifies discovery, evidence verification, and deterministic create fallback behind one local-audio selection.
+- `AudioFindOrCreatePlan` binds one absolute local path, normalized song identity, and bounded candidate count. The interactive flow verifies at most five candidates; the reusable plan rejects counts above ten.
+- Search text wins as song identity when present. Blank search text falls back deterministically to the selected audio filename through the existing `AudioToPianoSongIdentity` contract.
+- Candidate discovery remains a fast path, not truth. Up to five candidates are verified against immutable local reference analysis and evidence-reranked. Only `HighConfidence` can become the preferred existing-source route.
+- If discovery yields no candidate, providers are unavailable, or verification yields no High-confidence candidate, the same local path is handed immediately into **Create Piano Version**. No second file picker is required.
+- Transcription deliberately re-reads the file through the production NAudio -> pinned Spotify Basic Pitch ONNX -> deterministic arranger -> canonical `PerformanceTrack` path. Verification analysis never becomes playback truth.
+- Cancellation, timeout, malformed candidates, oversized downloads, and provider failures remain bounded/fail-safe. Nothing is silently added to Library.
+- No new dependency, model, native runtime, media downloader, YouTube access-control bypass, Python, PyTorch, ffmpeg, or developer SDK is introduced. Existing attribution/NOTICE remains unchanged.
 
 ## Runtime Input P0 Phase 82 — matrix provenance binding
 
@@ -86,20 +97,5 @@ SHA256: `{{SHA256}}`
 ## Audio-to-Piano production bundle
 
 - Audio Phase 17 remains the bundled Spotify Basic Pitch + ONNX Runtime + NAudio transcription/arrangement path for owned/local audio.
-- Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, Phase 23 one-reference bounded multi-candidate verification/reranking, and Phase 24 single-reference verify-or-create handoff.
+- Audio Phase 18 retains verified DryWetMIDI persistence, Phase 19 bounded preview/review, Phase 20 search-to-create flow, Phase 21 deterministic reference confidence, Phase 22 owned-audio candidate verification, Phase 23 one-reference bounded multi-candidate verification/reranking, Phase 24 single-reference verify-or-create handoff, and Phase 25 single-selection Find-or-Create orchestration.
 - Canonical `PerformanceTrack` remains authoritative. Runtime Input Phase 82 and its field gate do not modify the Audio-to-Piano architecture.
-
-## OSS and attribution
-
-- Runtime Input Phase 82 adds no third-party dependency, copied implementation, model, native binary, or new license obligation.
-- Existing Spotify Basic Pitch, Microsoft ONNX Runtime, NAudio, and Melanchall DryWetMIDI attribution remains unchanged and is available through `RobloxPiano.exe --third-party-notices`.
-
-## Current boundaries
-
-- High confidence means strong deterministic onset/tempo/timeline agreement with supplied local reference audio; it is not a claim of waveform identity, copyright ownership, or recording provenance.
-- Batch audio verification remains intentionally sequential and bounded.
-- `WH_KEYBOARD_LL`, `GetAsyncKeyState`, API return values, desktop parity, session identity, and focus continuity are Windows-side forensic evidence, not visibility into Roblox's internal gameplay input pipeline.
-- `LLKHF_INJECTED` classification is useful diagnostic provenance, not cryptographic hardware provenance. Phase 82 prevents contaminated target-key evidence from becoming conclusive but cannot prove the physical origin of every possible Windows input source.
-- PID/start-time/HWND continuity cannot prove an internal Roblox place transition if the same process/window is reused; field runs must stay in one experience/session.
-- No source code in this phase attempts to bypass Roblox, Windows UIPI, integrity boundaries, anti-cheat, platform security, or media access controls.
-- The executable remains unsigned, so Windows SmartScreen may show a reputation warning.

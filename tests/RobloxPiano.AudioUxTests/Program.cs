@@ -15,8 +15,12 @@ internal static class Program
         Run("verified reference handoff preserves search identity", VerifiedReferencePreservesSearchIdentity, failures);
         Run("verified reference handoff falls back to reference filename", VerifiedReferenceFallsBackToFilename, failures);
         Run("verified reference handoff rejects blank path", VerifiedReferenceRejectsBlankPath, failures);
+        Run("find-or-create plan preserves one normalized reference", FindOrCreatePlanPreservesReference, failures);
+        Run("find-or-create plan bounds candidate work", FindOrCreatePlanBoundsCandidates, failures);
+        Run("find-or-create prefers verified existing source only with high confidence", FindOrCreateDecisionRequiresHighConfidence, failures);
+        Run("find-or-create falls back to owned audio without high confidence", FindOrCreateDecisionFallsBack, failures);
 
-        Console.WriteLine($"Audio UX regressions: {8 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Audio UX regressions: {12 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
             Console.Error.WriteLine(failure);
         return failures.Count == 0 ? 0 : 1;
@@ -66,6 +70,38 @@ internal static class Program
         catch (ArgumentException)
         {
         }
+    }
+
+    private static void FindOrCreatePlanPreservesReference()
+    {
+        var plan = AudioFindOrCreatePlan.From("  Popular Song 2026  ", @"C:\owned\reference mix.wav", 5);
+        Equal("Popular Song 2026", plan.SongIdentity);
+        Equal(Path.GetFullPath(@"C:\owned\reference mix.wav"), plan.AudioPath);
+        Equal(5, plan.CandidateLimit);
+    }
+
+    private static void FindOrCreatePlanBoundsCandidates()
+    {
+        try
+        {
+            _ = AudioFindOrCreatePlan.From("Song", @"C:\owned\song.wav", AudioFindOrCreatePlan.MaxCandidateLimit + 1);
+            throw new InvalidOperationException("unbounded candidate count was accepted");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+        }
+    }
+
+    private static void FindOrCreateDecisionRequiresHighConfidence()
+    {
+        var plan = AudioFindOrCreatePlan.From("Song", @"C:\owned\song.wav", 5);
+        Equal(AudioFindOrCreateOutcome.PreferVerifiedExistingSource, plan.Decide(1));
+    }
+
+    private static void FindOrCreateDecisionFallsBack()
+    {
+        var plan = AudioFindOrCreatePlan.From("Song", @"C:\owned\song.wav", 5);
+        Equal(AudioFindOrCreateOutcome.CreateFromOwnedAudio, plan.Decide(0));
     }
 
     private static void Run(string name, Action test, ICollection<string> failures)

@@ -37,6 +37,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         HorizontalScrollbar = true
     };
     private readonly Button _addButton = new() { Text = "Add to Library", AutoSize = true, Enabled = false };
+    private readonly Button _findOrCreateButton = new() { Text = "Find or Create with my audio...", AutoSize = true };
     private readonly Button _verifyButton = new() { Text = "Verify top matches with my audio...", AutoSize = true, Enabled = false };
     private readonly Button _createFromReferenceButton = new()
     {
@@ -52,6 +53,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
     private CancellationTokenSource? _verificationCancellation;
     private string? _verifiedReferenceAudioPath;
     private bool _referenceFallbackRecommended;
+    private bool _suppressSearchTextChanged;
     private bool _disposed;
 
     public OnlineSongDiscoveryController(
@@ -74,7 +76,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _referenceVerifier = new OnlineSongReferenceVerificationService(_httpClient);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        actions.Controls.AddRange([_addButton, _verifyButton, _createFromReferenceButton, _sourceButton]);
+        actions.Controls.AddRange([_addButton, _findOrCreateButton, _verifyButton, _createFromReferenceButton, _sourceButton]);
         _panel.Controls.Add(_status, 0, 0);
         _panel.Controls.Add(_results, 0, 1);
         _panel.Controls.Add(actions, 0, 2);
@@ -85,6 +87,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         _results.SelectedIndexChanged += (_, _) => UpdateActions();
         _results.DoubleClick += async (_, _) => await ImportSelectedAsync().ConfigureAwait(true);
         _addButton.Click += async (_, _) => await ImportSelectedAsync().ConfigureAwait(true);
+        _findOrCreateButton.Click += async (_, _) => await FindOrCreateWithAudioAsync().ConfigureAwait(true);
         _verifyButton.Click += async (_, _) => await VerifyTopCandidatesAsync().ConfigureAwait(true);
         _createFromReferenceButton.Click += (_, _) => CreateFromVerifiedReference();
         _sourceButton.Click += (_, _) => OpenSelectedSource();
@@ -94,6 +97,9 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
 
     private void HandleSearchTextChanged(object? sender, EventArgs eventArgs)
     {
+        if (_suppressSearchTextChanged)
+            return;
+
         _debounce.Stop();
         CancelSearch();
         CancelVerification();
@@ -195,6 +201,127 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         }
     }
 
+    private async Task FindOrCreateWithAudioAsync()
+    {
+        if (_disposed)
+            return;
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Choose owned/local audio to find or create a piano version",
+            Filter = "Audio files (*.wav;*.mp3;*.aiff;*.aif)|*.wav;*.mp3;*.aiff;*.aif|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(_panel.FindForm()) != DialogResult.OK)
+            return;
+
+        var plan = AudioFindOrCreatePlan.From(_searchBox.Text, dialog.FileName, ReferenceBatchSize);
+        _debounce.Stop();
+        CancelSearch();
+        CancelVerification();
+        ResetReferenceHandoff();
+        _referenceAssessments.Clear();
+        _suppressSearchTextChanged = true;
+        try
+        {
+            _searchBox.Text = plan.SongIdentity;
+        }
+        finally
+        {
+            _suppressSearchTextChanged = false;
+        }
+
+        var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        _verificationCancellation = cancellation;
+        _panel.Visible = true;
+        _results.DataSource = null;
+        _status.Text = "Finding existing MIDI matches, then verifying them against your local audio. If none is High confidence, the same audio will open Create Piano Version automatically.";
+        UpdateActions();
+
+        try
+        {
+            var discovery = await _discovery.SearchAsync(plan.SongIdentity, 10, cancellation.Token).ConfigureAwait(true);
+            if (_disposed || cancellation.IsCancellationRequested)
+                return;
+
+            foreach (var error in discovery.ProviderErrors)
+                ClientDiagnostics.Log("Find-or-create discovery provider: " + error);
+
+            _results.DataSource = discovery.Candidates.ToList();
+            var candidates = discovery.Candidates.Take(plan.CandidateLimit).ToArray();
+            if (candidates.Length == 0)
+            {
+                _verifiedReferenceAudioPath = plan.AudioPath;
+                _referenceFallbackRecommended = true;
+                _status.Text = discovery.ProviderErrors.Count > 0
+                    ? "No trustworthy existing source could be verified because online discovery is unavailable. Opening Create Piano Version from the same local audio; no upload is used."
+                    : "No existing MIDI match was found. Opening Create Piano Version from the same local audio; no second file picker is needed.";
+                UpdateActions();
+                CreateFromVerifiedReference(plan.SongIdentity);
+                return;
+            }
+
+            var reference = await Task.Run(
+                () => _referenceAnalyzer.AnalyzeFile(plan.AudioPath, cancellation.Token),
+                cancellation.Token).ConfigureAwait(true);
+            var batch = await _referenceVerifier.VerifyBatchAsync(
+                candidates,
+                reference,
+                plan.CandidateLimit,
+                cancellation.Token).ConfigureAwait(true);
+            if (_disposed || cancellation.IsCancellationRequested)
+                return;
+
+            ApplyVerificationBatch(batch);
+            var high = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.HighConfidence);
+            var review = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.Review);
+            var mismatch = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.Mismatch);
+            _verifiedReferenceAudioPath = plan.AudioPath;
+            _referenceFallbackRecommended = plan.Decide(high) == AudioFindOrCreateOutcome.CreateFromOwnedAudio;
+
+            if (!_referenceFallbackRecommended)
+            {
+                _status.Text = $"Find or Create verified {batch.AttemptedCount} top match(es): {high} High confidence, {review} Review, {mismatch} Mismatch, {batch.Failures.Count} failed safely. A High-confidence existing source is first; use Add Verified Match. Your audio stays local.";
+                UpdateActions();
+                return;
+            }
+
+            _status.Text = $"Find or Create found no High-confidence source after {batch.AttemptedCount} verification attempt(s) ({review} Review, {mismatch} Mismatch, {batch.Failures.Count} failed safely). Opening Create Piano Version from the same local audio.";
+            UpdateActions();
+            CreateFromVerifiedReference(plan.SongIdentity);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            ResetReferenceHandoff();
+            if (!_disposed)
+                _status.Text = "Find or Create was cancelled or timed out. Nothing was added to your Library.";
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException
+            or IOException
+            or UnauthorizedAccessException
+            or FormatException
+            or InvalidDataException
+            or InvalidOperationException
+            or NotSupportedException
+            or OverflowException
+            or NAudio.MmException)
+        {
+            ResetReferenceHandoff();
+            ClientDiagnostics.Log($"Find-or-create failed safely: {exception}");
+            if (!_disposed)
+                _status.Text = $"Find or Create could not finish safely: {exception.Message} Nothing was added automatically.";
+        }
+        finally
+        {
+            if (ReferenceEquals(_verificationCancellation, cancellation))
+                _verificationCancellation = null;
+            cancellation.Dispose();
+            UpdateActions();
+        }
+    }
+
     private async Task VerifyTopCandidatesAsync()
     {
         if (_disposed)
@@ -239,30 +366,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
             if (_disposed || cancellation.IsCancellationRequested)
                 return;
 
-            foreach (var verified in batch.RankedVerifiedCandidates)
-            {
-                _referenceAssessments[CandidateKey(verified.Candidate)] = verified.Assessment;
-                ClientDiagnostics.Log(
-                    $"Batch reference verification: provider='{verified.Candidate.ProviderId}', title='{verified.Candidate.Title}', verdict={verified.Assessment.Verdict}, score={verified.Assessment.ConfidenceScore}, reason={verified.Assessment.ReasonCode}, coverage={verified.Assessment.MatchCoverage:0.###}, meanMs={verified.Assessment.MeanAbsoluteErrorMilliseconds:0.###}, p95Ms={verified.Assessment.P95AbsoluteErrorMilliseconds:0.###}, evidence={verified.Assessment.EvidenceSha256}.");
-            }
-            foreach (var failure in batch.Failures)
-            {
-                ClientDiagnostics.Log(
-                    $"Batch reference verification candidate failed safely: provider='{failure.Candidate.ProviderId}', title='{failure.Candidate.Title}', error='{failure.Error}'.");
-            }
-
-            var current = _results.Items.Cast<SongDiscoveryCandidate>().ToArray();
-            var verifiedKeys = batch.RankedVerifiedCandidates
-                .Select(item => CandidateKey(item.Candidate))
-                .ToHashSet(StringComparer.Ordinal);
-            var ordered = batch.RankedVerifiedCandidates
-                .Select(item => item.Candidate)
-                .Concat(current.Where(candidate => !verifiedKeys.Contains(CandidateKey(candidate))))
-                .ToList();
-            _results.DataSource = ordered;
-            if (_results.Items.Count > 0)
-                _results.SelectedIndex = 0;
-
+            ApplyVerificationBatch(batch);
             var high = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.HighConfidence);
             var review = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.Review);
             var mismatch = batch.RankedVerifiedCandidates.Count(item => item.Assessment.Verdict == ReferenceCandidateVerdict.Mismatch);
@@ -304,7 +408,34 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         }
     }
 
-    private void CreateFromVerifiedReference()
+    private void ApplyVerificationBatch(OnlineSongReferenceVerificationBatchResult batch)
+    {
+        foreach (var verified in batch.RankedVerifiedCandidates)
+        {
+            _referenceAssessments[CandidateKey(verified.Candidate)] = verified.Assessment;
+            ClientDiagnostics.Log(
+                $"Batch reference verification: provider='{verified.Candidate.ProviderId}', title='{verified.Candidate.Title}', verdict={verified.Assessment.Verdict}, score={verified.Assessment.ConfidenceScore}, reason={verified.Assessment.ReasonCode}, coverage={verified.Assessment.MatchCoverage:0.###}, meanMs={verified.Assessment.MeanAbsoluteErrorMilliseconds:0.###}, p95Ms={verified.Assessment.P95AbsoluteErrorMilliseconds:0.###}, evidence={verified.Assessment.EvidenceSha256}.");
+        }
+        foreach (var failure in batch.Failures)
+        {
+            ClientDiagnostics.Log(
+                $"Batch reference verification candidate failed safely: provider='{failure.Candidate.ProviderId}', title='{failure.Candidate.Title}', error='{failure.Error}'.");
+        }
+
+        var current = _results.Items.Cast<SongDiscoveryCandidate>().ToArray();
+        var verifiedKeys = batch.RankedVerifiedCandidates
+            .Select(item => CandidateKey(item.Candidate))
+            .ToHashSet(StringComparer.Ordinal);
+        var ordered = batch.RankedVerifiedCandidates
+            .Select(item => item.Candidate)
+            .Concat(current.Where(candidate => !verifiedKeys.Contains(CandidateKey(candidate))))
+            .ToList();
+        _results.DataSource = ordered;
+        if (_results.Items.Count > 0)
+            _results.SelectedIndex = 0;
+    }
+
+    private void CreateFromVerifiedReference(string? suggestedTitle = null)
     {
         if (_disposed || !_referenceFallbackRecommended || string.IsNullOrWhiteSpace(_verifiedReferenceAudioPath))
             return;
@@ -318,7 +449,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
             return;
         }
 
-        var suggestedTitle = _searchBox.Text.Trim();
+        suggestedTitle ??= _searchBox.Text.Trim();
         using var create = new AudioToPianoCreateForm(suggestedTitle, audioPath);
         create.ShowDialog(_panel.FindForm());
         if (!string.IsNullOrWhiteSpace(create.AddedLibraryPath))
@@ -423,6 +554,7 @@ internal sealed class OnlineSongDiscoveryController : IDisposable
         var referenceAllowsFastPath = assessment is null || assessment.Verdict == ReferenceCandidateVerdict.HighConfidence;
         _addButton.Enabled = selected && _importCancellation is null && _verificationCancellation is null && referenceAllowsFastPath;
         _addButton.Text = assessment?.Verdict == ReferenceCandidateVerdict.HighConfidence ? "Add Verified Match" : "Add to Library";
+        _findOrCreateButton.Enabled = _verificationCancellation is null && _importCancellation is null;
         _verifyButton.Enabled = _results.Items.Count > 0 && _verificationCancellation is null && _importCancellation is null;
         _createFromReferenceButton.Visible = _referenceFallbackRecommended;
         _createFromReferenceButton.Enabled = _referenceFallbackRecommended
