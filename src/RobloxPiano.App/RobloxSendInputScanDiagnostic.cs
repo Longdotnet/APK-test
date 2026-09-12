@@ -111,6 +111,8 @@ internal static class RobloxSendInputScanDiagnosticProbe
         using var lowLevelProvenance = new WindowsLowLevelKeyboardProvenance(probeId, "SendInputScanCodeDiagnostic", oracle.VirtualKey);
         lowLevelProvenance.Start();
         var lowLevelObservationEnded = false;
+        var downEmitted = false;
+        var upEmitted = false;
         var started = Stopwatch.GetTimestamp();
         try
         {
@@ -118,6 +120,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
             eventContinuity.BeginHold();
             lowLevelProvenance.BeginObservation();
             Emit(downEvent);
+            downEmitted = true;
 
             var sampleIndex = 0;
             while (true)
@@ -166,6 +169,7 @@ internal static class RobloxSendInputScanDiagnosticProbe
 
             LogKeyState(probeId, "SENDINPUT_BEFORE_UP", target, oracle.VirtualKey, scanCode, Stopwatch.GetElapsedTime(started));
             Emit(upEvent);
+            upEmitted = true;
             eventContinuity.EndHold();
             var heldDuration = Stopwatch.GetElapsedTime(started);
             LogKeyState(probeId, "SENDINPUT_AFTER_UP", target, oracle.VirtualKey, scanCode, heldDuration);
@@ -191,13 +195,23 @@ internal static class RobloxSendInputScanDiagnosticProbe
         finally
         {
             eventContinuity.EndHold();
-            try
+            if (ShouldEmitBestEffortRelease(downEmitted, upEmitted))
             {
-                Emit(upEvent);
+                try
+                {
+                    Emit(upEvent);
+                }
+                catch (WindowsInputInjectionException)
+                {
+                    // Best-effort release for a diagnostic path. Preserve the original failure.
+                }
             }
-            catch (WindowsInputInjectionException)
+            else if (!downEmitted)
             {
-                // Best-effort release for a diagnostic path. Preserve the original failure.
+                ClientDiagnostics.Log(
+                    $"INPUT_FORENSIC probe={probeId} stage=SENDINPUT_RELEASE_SKIPPED backend=SendInput " +
+                    "probePath=SendInputScanCodeDiagnostic keyDownEmitted=false keyUpEmitted=false nativeEventsAfterAbort=0 " +
+                    "verdict=ABORT_BEFORE_DOWN authorizesPlayback=false productionChanged=false.");
             }
 
             if (!lowLevelObservationEnded)
@@ -206,6 +220,9 @@ internal static class RobloxSendInputScanDiagnosticProbe
             }
         }
     }
+
+    internal static bool ShouldEmitBestEffortRelease(bool keyDownEmitted, bool keyUpEmitted)
+        => keyDownEmitted && !keyUpEmitted;
 
     internal static ushort NormalizeScanCode(uint mappedScanCode, out bool extended)
     {
