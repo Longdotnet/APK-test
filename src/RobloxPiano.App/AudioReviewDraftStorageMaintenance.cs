@@ -126,10 +126,30 @@ internal static class AudioReviewDraftStorageMaintenance
         var orphanCandidates = !scanTruncated && !ambiguousCheckpoint
             ? FindOrphanEvidenceCandidates(files, referencedEvidence, nowUtc)
             : Array.Empty<(FileInfo File, string Digest)>();
-        if (orphanCandidates.Length > 0 && destructiveCheckpointSnapshot is not null)
+
+        var destructiveLeaseRequired = orphanCandidates.Length > 0 && destructiveCheckpointSnapshot is not null;
+        AudioReviewDraftStorageLease? acquiredDestructiveLease = null;
+        if (destructiveLeaseRequired)
         {
+            AudioReviewDraftStorageLease.TryAcquire(
+                root,
+                AudioReviewDraftStorageLease.MaintenanceAcquireTimeout,
+                out acquiredDestructiveLease);
+        }
+        using var destructiveLease = acquiredDestructiveLease;
+
+        if (destructiveLeaseRequired && destructiveLease is null)
+        {
+            destructiveSnapshotChanged = true;
+            ClientDiagnostics.Log("Audio review evidence GC deferred because another app instance owns the review storage writer lease.");
+        }
+        else if (destructiveLeaseRequired)
+        {
+            // Hold the same lease used by client checkpoint/delete writers across final revalidation and deletion.
+            // A writer that completed before lease acquisition is detected by the content snapshot; a writer that starts
+            // after acquisition waits until this destructive batch has either committed or failed safe.
             beforeDestructiveRevalidation?.Invoke();
-            if (!CheckpointSnapshotMatches(root, destructiveCheckpointSnapshot))
+            if (!CheckpointSnapshotMatches(root, destructiveCheckpointSnapshot!))
             {
                 destructiveSnapshotChanged = true;
                 ClientDiagnostics.Log("Audio review evidence GC aborted because the managed checkpoint set or checkpoint bytes changed during destructive revalidation.");
@@ -166,9 +186,9 @@ internal static class AudioReviewDraftStorageMaintenance
         {
             foreach (var candidate in orphanCandidates)
             {
-                // Revalidate immediately before every destructive delete. A concurrent checkpoint create/update/delete,
-                // an unreadable checkpoint, or a bounded-scan overflow aborts the remainder of the GC batch fail-safe.
-                if (destructiveCheckpointSnapshot is null || !CheckpointSnapshotMatches(root, destructiveCheckpointSnapshot))
+                // Revalidate immediately before every destructive delete while holding the cooperative cross-process
+                // writer lease. External/non-cooperating edits are still caught by the fingerprint snapshot.
+                if (destructiveCheckpointSnapshot is null || destructiveLease is null || !CheckpointSnapshotMatches(root, destructiveCheckpointSnapshot))
                 {
                     skipEvidenceGc = true;
                     ClientDiagnostics.Log("Audio review evidence GC stopped because checkpoint state changed immediately before deletion.");
