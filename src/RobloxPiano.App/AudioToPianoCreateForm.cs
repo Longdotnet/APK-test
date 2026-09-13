@@ -9,11 +9,13 @@ internal sealed class AudioToPianoCreateForm : Form
     private readonly AudioToPianoClientJob _job = new();
     private readonly GeneratedPianoPreviewPlayer _previewPlayer = new();
     private readonly GeneratedTrackLibraryWriter _libraryWriter;
-    private readonly AudioReviewQueue _reviewQueue = new();
+    private readonly AudioReviewDraftClientSession _draftSession;
+    private AudioReviewQueue _reviewQueue = new();
     private readonly TextBox _songIdentity = new() { Dock = DockStyle.Fill, PlaceholderText = "Song title / identity (optional)" };
     private readonly TextBox _path = new() { ReadOnly = true, Dock = DockStyle.Fill, PlaceholderText = "Choose an owned/local audio file..." };
     private readonly Button _choose = new() { Text = "Choose Audio...", AutoSize = true };
     private readonly Button _create = new() { Text = "Create Piano Version", AutoSize = true, Enabled = false };
+    private readonly Button _resumeDraft = new() { Text = "Resume Review", AutoSize = true, Enabled = false };
     private readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, Enabled = false };
     private readonly Button _preview = new() { Text = "Preview Full", AutoSize = true, Enabled = false };
     private readonly Button _stopPreview = new() { Text = "Stop Preview", AutoSize = true, Enabled = false };
@@ -41,6 +43,7 @@ internal sealed class AudioToPianoCreateForm : Form
     private IReadOnlyList<AudioTranscriptionReviewRegion> _reviewRegions = Array.Empty<AudioTranscriptionReviewRegion>();
     private int _reviewRegionIndex;
     private bool _addedToLibrary;
+    private string? _availableDraftPath;
 
     public AudioToPianoCreateForm(string? suggestedTitle = null, string? preselectedAudioPath = null)
     {
@@ -49,11 +52,12 @@ internal sealed class AudioToPianoCreateForm : Form
         MinimumSize = new Size(720, 430);
         Size = new Size(960, 640);
 
-        var managedRoot = Path.Combine(
+        var localRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RobloxPiano",
-            "sheets");
-        _libraryWriter = new GeneratedTrackLibraryWriter(managedRoot);
+            "RobloxPiano");
+        _libraryWriter = new GeneratedTrackLibraryWriter(Path.Combine(localRoot, "sheets"));
+        _draftSession = new AudioReviewDraftClientSession(
+            new AudioReviewDraftStore(Path.Combine(localRoot, "audio-review-drafts")));
 
         AudioToPianoCreatePrefill? prefill = null;
         if (!string.IsNullOrWhiteSpace(preselectedAudioPath))
@@ -74,20 +78,21 @@ internal sealed class AudioToPianoCreateForm : Form
         _repairKind.SelectedIndex = 0;
 
         BuildLayout();
-        _choose.Click += (_, _) => ChooseAudio();
+        _choose.Click += async (_, _) => await ChooseAudioAsync().ConfigureAwait(true);
         _create.Click += async (_, _) => await CreateAsync().ConfigureAwait(true);
+        _resumeDraft.Click += async (_, _) => await ResumeReviewDraftAsync().ConfigureAwait(true);
         _cancel.Click += (_, _) => CancelCreation();
         _preview.Click += (_, _) => StartPreview();
         _stopPreview.Click += (_, _) => StopPreview();
         _previousReview.Click += (_, _) => SelectReviewRegion(-1);
         _previewReview.Click += (_, _) => StartReviewPreview();
         _nextReview.Click += (_, _) => SelectReviewRegion(1);
-        _deferReview.Click += (_, _) => DeferReviewRegion();
-        _resumeReview.Click += (_, _) => ResumeReviewRegion();
+        _deferReview.Click += async (_, _) => await DeferReviewRegionAsync().ConfigureAwait(true);
+        _resumeReview.Click += async (_, _) => await ResumeReviewRegionAsync().ConfigureAwait(true);
         _nextPendingReview.Click += (_, _) => SelectNextPendingReview();
         _previewRepair.Click += (_, _) => StartRepairPreview();
-        _applyRepair.Click += (_, _) => ApplyRepair();
-        _revertRepair.Click += (_, _) => RevertRepair();
+        _applyRepair.Click += async (_, _) => await ApplyRepairAsync().ConfigureAwait(true);
+        _revertRepair.Click += async (_, _) => await RevertRepairAsync().ConfigureAwait(true);
         _repairKind.SelectedIndexChanged += (_, _) => UpdateReviewControls();
         _addToLibrary.Click += (_, _) => AddToLibrary();
         FormClosing += (_, _) =>
@@ -97,7 +102,10 @@ internal sealed class AudioToPianoCreateForm : Form
         };
 
         if (prefill is not null)
+        {
             ApplyPreselectedAudio(prefill);
+            Shown += async (_, _) => await ProbeReviewDraftAsync().ConfigureAwait(true);
+        }
     }
 
     public string? AddedLibraryPath { get; private set; }
@@ -121,7 +129,7 @@ internal sealed class AudioToPianoCreateForm : Form
         sourceRow.Controls.Add(_choose, 1, 0);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        actions.Controls.AddRange([_create, _cancel, _preview, _stopPreview, _addToLibrary]);
+        actions.Controls.AddRange([_create, _resumeDraft, _cancel, _preview, _stopPreview, _addToLibrary]);
 
         var reviewActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         reviewActions.Controls.AddRange([
@@ -180,7 +188,7 @@ internal sealed class AudioToPianoCreateForm : Form
         }
     }
 
-    private void ChooseAudio()
+    private async Task ChooseAudioAsync()
     {
         using var dialog = new OpenFileDialog
         {
@@ -202,6 +210,78 @@ internal sealed class AudioToPianoCreateForm : Form
         _progress.Value = 0;
         _status.Text = "Ready to create a piano version locally.";
         _result.Text = string.Empty;
+        await ProbeReviewDraftAsync().ConfigureAwait(true);
+    }
+
+    private async Task ProbeReviewDraftAsync()
+    {
+        _availableDraftPath = null;
+        _resumeDraft.Enabled = false;
+        if (string.IsNullOrWhiteSpace(_path.Text) || !File.Exists(_path.Text) || _job.IsRunning)
+            return;
+
+        try
+        {
+            var draftPath = await _draftSession.FindAsync(_path.Text).ConfigureAwait(true);
+            if (draftPath is null)
+                return;
+            _availableDraftPath = draftPath;
+            _resumeDraft.Enabled = _generatedTrack is null;
+            _status.Text = "Saved review progress was found for this owned/local audio. Resume Review restores only fingerprint-verified deterministic repair state; Create Piano Version discards the saved review and regenerates from audio.";
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"Audio review draft discovery failed safely: {exception}");
+            _status.Text = $"Could not inspect saved review progress safely: {exception.Message}. You can still regenerate from the owned/local audio.";
+        }
+    }
+
+    private async Task ResumeReviewDraftAsync()
+    {
+        if (_job.IsRunning || _generatedTrack is not null || string.IsNullOrWhiteSpace(_availableDraftPath))
+            return;
+
+        var draftPath = _availableDraftPath;
+        SetRunning(true);
+        try
+        {
+            var restored = await _draftSession.RestoreAsync(draftPath).ConfigureAwait(true);
+            if (!string.Equals(Path.GetFullPath(_path.Text), restored.SourcePath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Saved review belongs to a different owned/local audio path. Regenerate instead of restoring ambiguous state.");
+
+            _repairSession = restored.RepairSession;
+            _reviewQueue = restored.ReviewQueue;
+            _generatedTrack = restored.RepairSession.CurrentTrack;
+            _baseQuality = restored.BaseQuality;
+            _reviewRegions = restored.RepairSession.ReviewRegions;
+            _reviewRegionIndex = _reviewRegions.Count == 0
+                ? 0
+                : Math.Clamp(restored.SelectedRegionIndex, 0, _reviewRegions.Count - 1);
+            _addedToLibrary = false;
+            AddedLibraryPath = null;
+            _availableDraftPath = restored.DraftPath;
+            _progress.Value = 100;
+            _songIdentity.Text = restored.OriginalTrack.Title;
+            RefreshQualityFromRepairState();
+            var snapshot = _reviewQueue.Synchronize(_reviewRegions, _reviewRegionIndex);
+            _status.Text = $"Resumed fingerprint-verified review saved {restored.SavedAtUtc.ToLocalTime():g}. {snapshot.PendingRegions} pending, {snapshot.DeferredRegions} deferred, {snapshot.AppliedDecisions} repair decision(s) replayed. No transcription inference was rerun.";
+            _result.Text =
+                $"{_generatedTrack.Title} • {_generatedTrack.Events.Count} events • {_generatedTrack.Bpm:0.###} BPM • {FormatTime(_generatedTrack.TimelineDuration)}{Environment.NewLine}" +
+                $"Overall readiness: {_generatedReadiness} • resumed deterministic repair revision: {_repairSession.Revision}{Environment.NewLine}{Environment.NewLine}" +
+                "Resume rebuilds canonical playback truth from immutable note evidence plus explicit repair decisions and verifies the rebuilt PerformanceTrack fingerprint. Serialized repaired output is never trusted as playback truth.";
+            ClientDiagnostics.Log($"Audio review draft resumed after deterministic replay: source='{Path.GetFileName(restored.SourcePath)}', revision={_repairSession.Revision}, pending={snapshot.PendingRegions}, deferred={snapshot.DeferredRegions}, applied={snapshot.AppliedDecisions}, readiness={_generatedReadiness}.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
+        {
+            ClientDiagnostics.Log($"Audio review draft restore failed closed: {exception}");
+            _status.Text = $"Saved review cannot be resumed safely: {exception.Message} Regenerate with Create Piano Version; stale review state was not applied.";
+            ResetGeneratedResult(preserveAvailableDraft: true);
+            _availableDraftPath = draftPath;
+        }
+        finally
+        {
+            SetRunning(false);
+        }
     }
 
     private async Task CreateAsync()
@@ -210,6 +290,7 @@ internal sealed class AudioToPianoCreateForm : Form
             return;
 
         StopPreview();
+        DiscardAvailableDraft("regenerate");
         ResetGeneratedResult();
         _runCancellation = new CancellationTokenSource();
         SetRunning(true);
@@ -253,6 +334,12 @@ internal sealed class AudioToPianoCreateForm : Form
                     baseQuality: diagnostics.BaseQuality);
                 _generatedTrack = _repairSession.CurrentTrack;
                 _reviewRegions = _repairSession.ReviewRegions;
+                _draftSession.StartNew(
+                    _path.Text,
+                    diagnostics.SourceDuration,
+                    transcription.NoteEvidence,
+                    track,
+                    diagnostics.BaseQuality);
                 RefreshQualityFromRepairState();
             }
             else
@@ -265,7 +352,7 @@ internal sealed class AudioToPianoCreateForm : Form
             _status.Text = _generatedReadiness switch
             {
                 AudioTranscriptionReadiness.Ready => "Ready — deterministic quality checks passed. Preview locally, then Add to Library.",
-                AudioTranscriptionReadiness.NeedsReview => "Needs review — work through the review queue, compare deterministic repair candidates, and explicitly Apply or Defer each region before adding it to the Library.",
+                AudioTranscriptionReadiness.NeedsReview => "Needs review — work through the review queue, compare deterministic repair candidates, and explicitly Apply or Defer each region before adding it to the Library. Review progress is saved locally after each decision.",
                 _ => "Rejected — preview is available for diagnosis, but this result cannot be added to the Library until the global quality failure is resolved."
             };
             _result.Text =
@@ -274,6 +361,8 @@ internal sealed class AudioToPianoCreateForm : Form
                 $"Decoded notes: {diagnostics.DecodedNotes}; retained after suppression: {diagnostics.NotesAfterSuppression}; elapsed: {diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
                 "Preview Original Region and Preview Repair are local A/B listening only and never mutate the canonical track. Defer changes review navigation only. Only Apply Repair changes the current generated performance; Revert Repair restores the exact original and resets queue decisions. Add to Library writes only the current explicitly accepted canonical track after production MIDI round-trip verification. Roblox playback still requires the separate Runtime Input field gate.";
             UpdateReviewControls();
+            if (_repairSession is not null)
+                await CheckpointReviewDraftAsync("initial generated review").ConfigureAwait(true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
         {
@@ -359,7 +448,7 @@ internal sealed class AudioToPianoCreateForm : Form
         }
     }
 
-    private void ApplyRepair()
+    private async Task ApplyRepairAsync()
     {
         if (_repairSession is null || _job.IsRunning || _previewPlayer.IsPlaying || _reviewRegions.Count == 0 || _repairKind.SelectedItem is not AudioTranscriptionReviewRepairKind kind)
             return;
@@ -382,17 +471,18 @@ internal sealed class AudioToPianoCreateForm : Form
                 : $"Applied {kind} explicitly. {_reviewQueue.FormatProgress(_reviewRegions)} Overall readiness is {_generatedReadiness}; the next pending region is selected automatically when available.";
             var currentQuality = _repairSession.CurrentQuality;
             ClientDiagnostics.Log($"Generated piano repair applied explicitly: kind={kind}, revision={result.Revision}, remainingReviewRegions={result.ReviewRegions.Count}, pendingReviewRegions={queueSnapshot.PendingRegions}, deferredReviewRegions={queueSnapshot.DeferredRegions}, appliedReviewDecisions={queueSnapshot.AppliedDecisions}, overallReadiness={_generatedReadiness}, globalQualityReadiness={currentQuality?.Readiness}, reasons={FormatReasonCodes(currentQuality?.Reasons)}.");
+            await CheckpointReviewDraftAsync("Apply Repair").ConfigureAwait(true);
             SetRunning(false);
         }
-        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
+        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException or IOException or UnauthorizedAccessException)
         {
             ClientDiagnostics.Log($"Generated piano repair apply failed safely: {exception}");
-            _status.Text = $"Could not apply this deterministic repair: {exception.Message}";
+            _status.Text = $"Could not apply/save this deterministic repair safely: {exception.Message}";
             UpdateReviewControls();
         }
     }
 
-    private void RevertRepair()
+    private async Task RevertRepairAsync()
     {
         if (_repairSession is null || !_repairSession.CanRevert || _job.IsRunning || _previewPlayer.IsPlaying)
             return;
@@ -409,11 +499,13 @@ internal sealed class AudioToPianoCreateForm : Form
             _addedToLibrary = false;
             AddedLibraryPath = null;
             RefreshQualityFromRepairState();
-            _status.Text = $"Reverted to the exact original generated performance and reset review-queue decisions. {_reviewRegions.Count} local review region(s) are active; overall readiness is {_generatedReadiness}.";
-            ClientDiagnostics.Log($"Generated piano repair reverted explicitly: revision={_repairSession.Revision}, reviewRegions={_reviewRegions.Count}, reviewQueueReset=true, overallReadiness={_generatedReadiness}, globalQualityReadiness={_repairSession.CurrentQuality?.Readiness}, reasons={FormatReasonCodes(_repairSession.CurrentQuality?.Reasons)}.");
+            DeleteActiveDraftSafely("Revert Repair");
+            _status.Text = $"Reverted to the exact original generated performance, reset review-queue decisions, and discarded the saved review checkpoint. {_reviewRegions.Count} local review region(s) are active; overall readiness is {_generatedReadiness}.";
+            ClientDiagnostics.Log($"Generated piano repair reverted explicitly: revision={_repairSession.Revision}, reviewRegions={_reviewRegions.Count}, reviewQueueReset=true, draftDiscarded=true, overallReadiness={_generatedReadiness}, globalQualityReadiness={_repairSession.CurrentQuality?.Readiness}, reasons={FormatReasonCodes(_repairSession.CurrentQuality?.Reasons)}.");
             SetRunning(false);
+            await Task.CompletedTask;
         }
-        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
+        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException or IOException or UnauthorizedAccessException)
         {
             ClientDiagnostics.Log($"Generated piano repair revert failed safely: {exception}");
             _status.Text = $"Could not revert this repair safely: {exception.Message}";
@@ -421,7 +513,7 @@ internal sealed class AudioToPianoCreateForm : Form
         }
     }
 
-    private void DeferReviewRegion()
+    private async Task DeferReviewRegionAsync()
     {
         if (_job.IsRunning || _previewPlayer.IsPlaying || _reviewRegions.Count == 0 || _addedToLibrary)
             return;
@@ -437,28 +529,39 @@ internal sealed class AudioToPianoCreateForm : Form
                 ? "All current review regions are deferred. Deferred regions remain unresolved and overall readiness is unchanged; Resume a region before applying a repair."
                 : $"Deferred this region for later. {_reviewQueue.FormatProgress(_reviewRegions)} The next pending region is selected automatically.";
             ClientDiagnostics.Log($"Generated piano review region deferred for navigation only: pending={snapshot.PendingRegions}, deferred={snapshot.DeferredRegions}, appliedDecisions={snapshot.AppliedDecisions}, readiness={_generatedReadiness}.");
+            await CheckpointReviewDraftAsync("Defer Region").ConfigureAwait(true);
             UpdateReviewControls();
         }
-        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException)
         {
             ClientDiagnostics.Log($"Generated piano review defer failed safely: {exception}");
-            _status.Text = $"Could not defer this review region safely: {exception.Message}";
+            _status.Text = $"Could not defer/save this review region safely: {exception.Message}";
             UpdateReviewControls();
         }
     }
 
-    private void ResumeReviewRegion()
+    private async Task ResumeReviewRegionAsync()
     {
         if (_job.IsRunning || _previewPlayer.IsPlaying || _reviewRegions.Count == 0 || _addedToLibrary)
             return;
 
-        var region = _reviewRegions[_reviewRegionIndex];
-        if (!_reviewQueue.Resume(region))
-            return;
-        var snapshot = _reviewQueue.Synchronize(_reviewRegions, _reviewRegionIndex);
-        _status.Text = $"Resumed this review region. {_reviewQueue.FormatProgress(_reviewRegions)} Overall readiness is unchanged until canonical quality/review evidence changes.";
-        ClientDiagnostics.Log($"Generated piano review region resumed: pending={snapshot.PendingRegions}, deferred={snapshot.DeferredRegions}, appliedDecisions={snapshot.AppliedDecisions}, readiness={_generatedReadiness}.");
-        UpdateReviewControls();
+        try
+        {
+            var region = _reviewRegions[_reviewRegionIndex];
+            if (!_reviewQueue.Resume(region))
+                return;
+            var snapshot = _reviewQueue.Synchronize(_reviewRegions, _reviewRegionIndex);
+            _status.Text = $"Resumed this review region. {_reviewQueue.FormatProgress(_reviewRegions)} Overall readiness is unchanged until canonical quality/review evidence changes.";
+            ClientDiagnostics.Log($"Generated piano review region resumed: pending={snapshot.PendingRegions}, deferred={snapshot.DeferredRegions}, appliedDecisions={snapshot.AppliedDecisions}, readiness={_generatedReadiness}.");
+            await CheckpointReviewDraftAsync("Resume Region").ConfigureAwait(true);
+            UpdateReviewControls();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            ClientDiagnostics.Log($"Generated piano review resume failed safely: {exception}");
+            _status.Text = $"Could not resume/save this review region safely: {exception.Message}";
+            UpdateReviewControls();
+        }
     }
 
     private void SelectNextPendingReview()
@@ -478,6 +581,30 @@ internal sealed class AudioToPianoCreateForm : Form
             _status.Text = "No pending review region remains because every current region is deferred. Deferred regions remain unresolved; use Resume Region to continue review.";
         }
         UpdateReviewControls();
+    }
+
+    private async Task CheckpointReviewDraftAsync(string reason)
+    {
+        if (_repairSession is null || !_draftSession.CanCheckpoint || _addedToLibrary)
+            return;
+
+        try
+        {
+            AudioTranscriptionReviewRegion? selectedRegion = _reviewRegions.Count == 0
+                ? null
+                : _reviewRegions[Math.Clamp(_reviewRegionIndex, 0, _reviewRegions.Count - 1)];
+            _availableDraftPath = await _draftSession.CheckpointAsync(
+                _repairSession,
+                _reviewQueue,
+                selectedRegion).ConfigureAwait(true);
+            _resumeDraft.Enabled = false;
+            ClientDiagnostics.Log($"Audio review progress checkpointed after {reason}: revision={_repairSession.Revision}, reviewRegions={_reviewRegions.Count}, draft='{Path.GetFileName(_availableDraftPath)}'.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"Audio review autosave failed without changing canonical state after {reason}: {exception}");
+            _status.Text += $" Review progress could not be saved locally: {exception.Message}";
+        }
     }
 
     private void RefreshQualityFromRepairState()
@@ -600,14 +727,49 @@ internal sealed class AudioToPianoCreateForm : Form
             AddedLibraryPath = saved.Path;
             _addToLibrary.Enabled = false;
             var queueSnapshot = _reviewQueue.Synchronize(_reviewRegions, _reviewRegionIndex);
-            _status.Text = $"Added to Library as {Path.GetFileName(saved.Path)} — {saved.NoteCount} notes, {saved.ByteCount:N0} bytes, production MIDI round-trip verified. {queueSnapshot.AppliedDecisions} repair decision(s) applied; {queueSnapshot.DeferredRegions} region(s) deferred; {queueSnapshot.TotalRegions} unresolved local review region(s) at commit.";
-            ClientDiagnostics.Log($"Generated piano version committed to Library after MIDI round-trip verification: file='{Path.GetFileName(saved.Path)}', notes={saved.NoteCount}, bytes={saved.ByteCount}, repairRevision={_repairSession?.Revision ?? 0}, readiness={_generatedReadiness}, reviewPending={queueSnapshot.PendingRegions}, reviewDeferred={queueSnapshot.DeferredRegions}, reviewAppliedDecisions={queueSnapshot.AppliedDecisions}, unresolvedReviewRegions={queueSnapshot.TotalRegions}.");
+            DeleteActiveDraftSafely("Add to Library");
+            _status.Text = $"Added to Library as {Path.GetFileName(saved.Path)} — {saved.NoteCount} notes, {saved.ByteCount:N0} bytes, production MIDI round-trip verified. Saved review checkpoint removed. {queueSnapshot.AppliedDecisions} repair decision(s) applied; {queueSnapshot.DeferredRegions} region(s) deferred; {queueSnapshot.TotalRegions} unresolved local review region(s) at commit.";
+            ClientDiagnostics.Log($"Generated piano version committed to Library after MIDI round-trip verification: file='{Path.GetFileName(saved.Path)}', notes={saved.NoteCount}, bytes={saved.ByteCount}, repairRevision={_repairSession?.Revision ?? 0}, readiness={_generatedReadiness}, reviewPending={queueSnapshot.PendingRegions}, reviewDeferred={queueSnapshot.DeferredRegions}, reviewAppliedDecisions={queueSnapshot.AppliedDecisions}, unresolvedReviewRegions={queueSnapshot.TotalRegions}, reviewDraftRemoved=true.");
             UpdateReviewControls();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
         {
             ClientDiagnostics.Log($"Generated piano Library commit failed safely: {exception}");
             _status.Text = $"Could not add this piano version to the Library: {exception.Message}";
+        }
+    }
+
+    private void DeleteActiveDraftSafely(string reason)
+    {
+        try
+        {
+            _draftSession.DeleteActive();
+            _availableDraftPath = null;
+            _resumeDraft.Enabled = false;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"Audio review draft cleanup after {reason} failed safely: {exception}");
+        }
+    }
+
+    private void DiscardAvailableDraft(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(_availableDraftPath))
+            return;
+        try
+        {
+            _draftSession.Delete(_availableDraftPath);
+            ClientDiagnostics.Log($"Audio review draft discarded before {reason}.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        {
+            ClientDiagnostics.Log($"Audio review draft discard before {reason} failed safely: {exception}");
+        }
+        finally
+        {
+            _availableDraftPath = null;
+            _resumeDraft.Enabled = false;
         }
     }
 
@@ -628,21 +790,25 @@ internal sealed class AudioToPianoCreateForm : Form
         _job.Cancel();
     }
 
-    private void ResetGeneratedResult()
+    private void ResetGeneratedResult(bool preserveAvailableDraft = false)
     {
+        var availableDraft = preserveAvailableDraft ? _availableDraftPath : null;
         _generatedTrack = null;
         _generatedReadiness = null;
         _baseQuality = null;
         _repairSession = null;
         _reviewRegions = Array.Empty<AudioTranscriptionReviewRegion>();
         _reviewRegionIndex = 0;
-        _reviewQueue.Reset();
+        _reviewQueue = new AudioReviewQueue();
+        _draftSession.ResetRuntimeContext();
         _addedToLibrary = false;
         AddedLibraryPath = null;
         _preview.Enabled = false;
         _stopPreview.Enabled = false;
         _addToLibrary.Enabled = false;
         _qualityStatus.Text = string.Empty;
+        _availableDraftPath = availableDraft;
+        _resumeDraft.Enabled = availableDraft is not null && !_job.IsRunning && !string.IsNullOrWhiteSpace(_path.Text);
         UpdateReviewControls();
     }
 
@@ -651,6 +817,7 @@ internal sealed class AudioToPianoCreateForm : Form
         _choose.Enabled = !running;
         _songIdentity.Enabled = !running;
         _create.Enabled = !running && !string.IsNullOrWhiteSpace(_path.Text);
+        _resumeDraft.Enabled = !running && _generatedTrack is null && !string.IsNullOrWhiteSpace(_availableDraftPath);
         _cancel.Enabled = running;
         _preview.Enabled = !running && _generatedTrack is not null && !_previewPlayer.IsPlaying;
         _stopPreview.Enabled = !running && _previewPlayer.IsPlaying;
