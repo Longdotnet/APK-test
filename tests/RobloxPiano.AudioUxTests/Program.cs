@@ -27,8 +27,9 @@ internal static class Program
         Run("long-song review drafts stay within write amplification budget", AudioReviewDraftWriteAmplificationRegression.Run, failures);
         Run("review draft lookup index is disposable and fail-safe", AudioReviewDraftLookupIndexRegression.Run, failures);
         Run("review draft discovery stays within read I/O budget", AudioReviewDraftDiscoveryReadBudgetRegression.Run, failures);
+        Run("review writer and destructive GC share a crash-recoverable lease", AudioReviewDraftStorageLeaseRegression.Run, failures);
 
-        Console.WriteLine($"Audio UX regressions: {19 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Audio UX regressions: {20 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
             Console.Error.WriteLine(failure);
         return failures.Count == 0 ? 0 : 1;
