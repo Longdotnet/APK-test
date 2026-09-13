@@ -111,8 +111,8 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
             File.SetLastWriteTimeUtc(newlyReferencedEvidencePath, now.UtcDateTime - TimeSpan.FromHours(2));
 
             var tamperCold = AudioReviewDraftStorageMaintenance.RunBestEffort(tamperRoot, now);
-            Require(tamperCold.CheckpointsParsed == 2 && File.Exists(oldEvidencePath) && File.Exists(newlyReferencedEvidencePath),
-                "cold tamper fixture should bind destructive cleanup to checkpoint fingerprints without deleting referenced/recent evidence");
+            Require(tamperCold.CheckpointsParsed == 1 && File.Exists(oldEvidencePath) && File.Exists(newlyReferencedEvidencePath),
+                "cold tamper fixture with no destructive candidate must preserve the no-extra-hash path");
 
             File.WriteAllText(tamperDraftPath, tamperedCheckpoint);
             File.SetLastWriteTimeUtc(tamperDraftPath, originalCheckpointWriteTime);
