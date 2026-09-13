@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.49
+version: 0.40.50
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -11,24 +11,25 @@ SHA256: `{{SHA256}}`
 
 ## Client entrypoint and support contract
 
-- **Sheet Library** remains the normal client starting point; Create Piano Version now supports deterministic A/B repair review for flagged transcription regions before Library commit.
+- **Sheet Library** remains the normal client starting point; Create Piano Version now shows authoritative before/current quality evidence after deterministic repair.
 - **Support Bundle** remains the preferred way to preserve correlated Runtime Input and client diagnostic evidence when troubleshooting playback.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Audio-to-Piano OSS Phase 39b — explicit client repair review
+## Audio-to-Piano OSS Phase 41b — client repair quality delta
 
-- Flagged Audio-to-Piano regions now expose **Preview Original Region**, deterministic repair selection, **Preview Repair**, **Apply Repair**, and **Revert Repair** directly in the Create Piano Version client.
-- Repair preview is side-effect free: listening to Melody Priority or Simplified Harmony never changes the canonical generated `PerformanceTrack`.
-- Only **Apply Repair** mutates the current generated performance, through the Phase 39a deterministic repair-session owner. Stale regions and no-op candidates continue to fail closed.
-- **Revert Repair** restores the exact original generated performance and re-runs deterministic local review evidence.
-- Transcription results retain the deterministic post-suppression Basic Pitch note evidence required for repair. The client does not run Basic Pitch a second time to repair a region.
-- Global transcription quality is retained separately from local review-region warnings. After Apply/Revert, readiness is recomputed fail-closed: global `Rejected` stays rejected, global `NeedsReview` stays review-required, and an otherwise `Ready` result becomes `Ready` only when no local review regions remain.
-- **Add to Library** writes only the current explicitly accepted canonical track and still performs the production MIDI round-trip parity check before commit.
+- Create Piano Version now feeds the immutable transcription base/global quality assessment into the deterministic review-repair session instead of keeping repair quality disconnected from the client.
+- After explicit **Apply Repair** or **Revert Repair**, global quality comes from authoritative `CurrentQuality`; the client no longer derives repair readiness from the stale pre-repair `_baseQuality` snapshot.
+- The client shows before → current retention, transform loss, timeline coverage and event density so a normal user can see whether an accepted repair improved the canonical generated performance.
+- Quality reason codes are shown as **Resolved**, **Persistent**, or **Introduced**. Source/model evidence that cannot legitimately be repaired remains visible.
+- Local review regions remain an independent explicit-decision gate. Even when global quality becomes `Ready`, overall readiness stays `NeedsReview` while a flagged local region remains.
+- A repaired track can legitimately promote overall `NeedsReview → Ready` only when authoritative global quality is Ready and no local review region remains.
+- Global `Rejected` and `NeedsReview` assessments remain fail-closed; repair cannot hide persistent source/model warnings.
+- Preview remains side-effect free. Only Apply mutates canonical repair-session state, Revert restores the original generated performance, and Add to Library still persists only the current explicitly accepted canonical track after MIDI round-trip verification.
 
 ## Audio validation and OSS boundary
 
-- Existing Phase 38/39a regressions continue to prove deterministic candidate generation, canonical immutability during preview, explicit apply, stale-region rejection, atomic cancellation, and exact revert.
-- The real-model Audio-to-Piano gate now also verifies that retained repair evidence exactly matches post-suppression note count and that base/global quality remains free of synthetic local `REVIEW_REGION_` reasons.
+- Audio UX regressions cover a genuine `NeedsReview → Ready` improvement, persistent source/model evidence, and an introduced quality regression.
+- Existing Phase 40/41a regressions continue to verify repair-aware quality provenance, unknown-reason fail-closed behavior, deterministic delta reason classification, Apply atomicity, cancellation, and exact Revert.
 - Spotify Basic Pitch, ONNX Runtime, NAudio ingest/preview, deterministic Roblox arranger, and generated MIDI round-trip verification remain the reused production boundaries.
 - No new OSS package, model, Python runtime, PyTorch, ffmpeg, native separator, or source-separation model is bundled by this phase.
 
@@ -36,15 +37,16 @@ SHA256: `{{SHA256}}`
 
 - This audio release does not modify Roblox target selection, focus guards, input authorization, scheduler, held-key/pedal ownership, `keybd_event`, SendInput, or emergency release behavior.
 - Runtime Input remains `NOT YET PROVEN` until explicit field evidence shows production `RobloxPiano.exe` causing the expected visible Roblox movement or piano reaction.
-- Audio repair preview and Library commit do not claim or imply end-to-end Roblox playability.
+- Audio quality improvement, repair preview, and Library commit do not claim or imply end-to-end Roblox playability.
 
 ## Audio client procedure
 
 1. Choose owned/local audio and run **Create Piano Version**.
 2. If readiness is `NeedsReview`, select a flagged region with **Previous Review** / **Next Review**.
-3. Use **Preview Original Region** to hear the current canonical version locally.
-4. Select **MelodyPriority** or **SimplifiedHarmony** and use **Preview Repair** for a side-effect-free A/B comparison.
-5. Use **Apply Repair** only when the alternative is preferred. Readiness and remaining review regions are recomputed immediately.
-6. Use **Revert Repair** before Library commit whenever the exact original generated performance is preferred.
-7. Add to Library only after reviewing the visible warnings; generated MIDI round-trip verification still runs before commit.
-8. Roblox playback remains subject to the separate Runtime Input field gate.
+3. Use **Preview Original Region** and **Preview Repair** for side-effect-free A/B listening.
+4. Use **Apply Repair** only when the deterministic alternative is preferred.
+5. Read the visible before → current quality metrics and Resolved/Persistent/Introduced reason codes.
+6. Continue reviewing while local regions remain. Overall readiness becomes Ready only when authoritative global quality is Ready and the local review gate is clear.
+7. Use **Revert Repair** before Library commit whenever the exact original generated performance is preferred.
+8. Add to Library only after reviewing the visible warnings; generated MIDI round-trip verification still runs before commit.
+9. Roblox playback remains subject to the separate Runtime Input field gate.

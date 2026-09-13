@@ -1,4 +1,5 @@
 using RobloxPiano.App;
+using RobloxPiano.Audio;
 
 namespace RobloxPiano.AudioUxTests;
 
@@ -19,8 +20,11 @@ internal static class Program
         Run("find-or-create plan bounds candidate work", FindOrCreatePlanBoundsCandidates, failures);
         Run("find-or-create prefers verified existing source only with high confidence", FindOrCreateDecisionRequiresHighConfidence, failures);
         Run("find-or-create falls back to owned audio without high confidence", FindOrCreateDecisionFallsBack, failures);
+        Run("repair quality presentation surfaces authoritative improvement", RepairQualityPresentationShowsImprovement, failures);
+        Run("repair quality presentation keeps persistent source evidence visible", RepairQualityPresentationKeepsPersistentEvidence, failures);
+        Run("repair quality presentation surfaces introduced regression", RepairQualityPresentationShowsRegression, failures);
 
-        Console.WriteLine($"Audio UX regressions: {12 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Audio UX regressions: {15 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
             Console.Error.WriteLine(failure);
         return failures.Count == 0 ? 0 : 1;
@@ -104,6 +108,62 @@ internal static class Program
         Equal(AudioFindOrCreateOutcome.CreateFromOwnedAudio, plan.Decide(0));
     }
 
+    private static void RepairQualityPresentationShowsImprovement()
+    {
+        var before = Quality(AudioTranscriptionReadiness.NeedsReview, 0.45, 0.40, 0.60, 18.0, ["EVENT_DENSITY_HIGH", "MEAN_ACTIVATION_LOW"]);
+        var current = Quality(AudioTranscriptionReadiness.Ready, 0.78, 0.18, 0.82, 8.0, []);
+        var presentation = AudioRepairQualityPresenter.From(AudioTranscriptionQualityDeltaEvaluator.Compare(before, current));
+
+        Equal(AudioTranscriptionReadiness.Ready, presentation.Readiness);
+        Equal(true, presentation.Improved);
+        Equal(false, presentation.Regressed);
+        Contains("NeedsReview → Ready", presentation.Summary);
+        Contains("density 18.0 → 8.0 events/s", presentation.Summary);
+        Contains("Resolved: EVENT_DENSITY_HIGH, MEAN_ACTIVATION_LOW", presentation.Summary);
+    }
+
+    private static void RepairQualityPresentationKeepsPersistentEvidence()
+    {
+        var before = Quality(AudioTranscriptionReadiness.NeedsReview, 0.45, 0.40, 0.60, 18.0, ["EVENT_DENSITY_HIGH", "MEAN_ACTIVATION_LOW"]);
+        var current = Quality(AudioTranscriptionReadiness.NeedsReview, 0.72, 0.20, 0.80, 8.0, ["MEAN_ACTIVATION_LOW"]);
+        var presentation = AudioRepairQualityPresenter.From(AudioTranscriptionQualityDeltaEvaluator.Compare(before, current));
+
+        Equal(AudioTranscriptionReadiness.NeedsReview, presentation.Readiness);
+        Contains("Resolved: EVENT_DENSITY_HIGH", presentation.Summary);
+        Contains("Persistent: MEAN_ACTIVATION_LOW", presentation.Summary);
+    }
+
+    private static void RepairQualityPresentationShowsRegression()
+    {
+        var before = Quality(AudioTranscriptionReadiness.Ready, 0.75, 0.15, 0.85, 7.0, []);
+        var current = Quality(AudioTranscriptionReadiness.NeedsReview, 0.52, 0.31, 0.62, 17.0, ["EVENT_DENSITY_HIGH"]);
+        var presentation = AudioRepairQualityPresenter.From(AudioTranscriptionQualityDeltaEvaluator.Compare(before, current));
+
+        Equal(false, presentation.Improved);
+        Equal(true, presentation.Regressed);
+        Contains("Ready → NeedsReview", presentation.Summary);
+        Contains("Introduced: EVENT_DENSITY_HIGH", presentation.Summary);
+    }
+
+    private static AudioTranscriptionQualityAssessment Quality(
+        AudioTranscriptionReadiness readiness,
+        double retention,
+        double loss,
+        double coverage,
+        double density,
+        IReadOnlyList<string> reasons)
+        => new(
+            readiness,
+            retention,
+            loss,
+            LowActivationRatio: 0.10,
+            OctaveFoldRatio: 0.05,
+            coverage,
+            density,
+            HarmonicSuppressionRatio: 0.05,
+            MeanActivation: 0.70f,
+            reasons);
+
     private static void Run(string name, Action test, ICollection<string> failures)
     {
         try
@@ -120,5 +180,11 @@ internal static class Program
     {
         if (!EqualityComparer<T>.Default.Equals(expected, actual))
             throw new InvalidOperationException($"expected '{expected}', got '{actual}'");
+    }
+
+    private static void Contains(string expected, string actual)
+    {
+        if (!actual.Contains(expected, StringComparison.Ordinal))
+            throw new InvalidOperationException($"expected '{expected}' in '{actual}'");
     }
 }
