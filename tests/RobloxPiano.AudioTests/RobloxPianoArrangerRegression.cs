@@ -22,11 +22,15 @@ internal static class RobloxPianoArrangerRegression
 
     // Kept under the original harness entrypoint name so the Phase-06 regression runner remains stable.
     // The contract is intentionally stronger now: skyline pitch is protected only when it is credible,
-    // and adjacent clusters may protect a near-contour melody instead of an unrelated higher voice.
+    // adjacent clusters may protect a near-contour melody, and dense weak accompaniment is not kept only
+    // to fill the hard Roblox chord cap.
     public static void DensityLimitAlwaysKeepsHighestMelodyPitch()
     {
         DensityLimitRejectsWeakSkylineOvertone();
         DensityLimitUsesMelodyContinuityAcrossClusters();
+        AdaptiveDensityPreservesSparseSectionAndDropsWeakDenseClutter();
+        AdaptiveDensityKeepsStrongHarmonyAtHardCap();
+        AdaptiveDensityCanBeDisabledForFixedCapParity();
         MelodyPolicyFailsClosedOnInvalidThresholds();
     }
 
@@ -84,12 +88,9 @@ internal static class RobloxPianoArrangerRegression
     {
         var notes = new[]
         {
-            // Sparse verse: never thin a cluster that is already within the hard Roblox density cap.
             Note(0, 450, 60, 0.90f),
             Note(0, 450, 64, 0.82f),
             Note(0, 450, 67, 0.76f),
-
-            // Dense chorus/mixture after the continuity window: four strong musical voices plus weak clutter.
             Note(3000, 3500, 55, 0.14f),
             Note(3000, 3500, 60, 0.92f),
             Note(3000, 3500, 64, 0.88f),
