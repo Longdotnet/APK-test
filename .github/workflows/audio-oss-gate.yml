@@ -38,6 +38,9 @@ jobs:
       - name: Run audio ingest, ONNX, decoder and arranger regression harness
         run: dotnet run --project tests/RobloxPiano.AudioTests/RobloxPiano.AudioTests.csproj -c Release
 
+      - name: Verify repair-aware quality delta contract
+        run: dotnet run --project tests/RobloxPiano.AudioQualityDeltaTests/RobloxPiano.AudioQualityDeltaTests.csproj -c Release
+
       - name: Verify reference-audio confidence and candidate ranking
         shell: pwsh
         run: |
