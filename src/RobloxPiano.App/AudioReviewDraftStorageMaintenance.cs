@@ -55,6 +55,7 @@ internal static class AudioReviewDraftStorageMaintenance
             if (TryDelete(file.FullName)) { reclaimedBytes += length; deletedTemps++; }
         }
 
+        var checkpoints = files.Where(file => file.Name.EndsWith(".review.json", StringComparison.OrdinalIgnoreCase)).ToArray();
         var manifest = AudioReviewDraftMaintenanceManifest.LoadBestEffort(root);
         var manifestEntries = new List<AudioReviewDraftMaintenanceManifestEntry>();
         var referencedEvidence = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -64,7 +65,7 @@ internal static class AudioReviewDraftStorageMaintenance
         var manifestEntriesReused = 0;
         var ambiguousCheckpoint = false;
 
-        foreach (var checkpoint in files.Where(file => file.Name.EndsWith(".review.json", StringComparison.OrdinalIgnoreCase)))
+        foreach (var checkpoint in checkpoints)
         {
             draftsScanned++;
             if (manifest.TryGetReusable(checkpoint, out var cached))
@@ -79,6 +80,29 @@ internal static class AudioReviewDraftStorageMaintenance
             var entry = ParseCheckpoint(checkpoint);
             manifestEntries.Add(entry);
             ApplyMetadata(entry, checkpoint.FullName, checkpoint.LastWriteTimeUtc, referencedEvidence, indexCandidates, ref ambiguousCheckpoint);
+        }
+
+        // File length + last-write time is intentionally only a cheap warm-start identity. It must never authorize a
+        // destructive evidence deletion because external tooling can rewrite checkpoint bytes while preserving both.
+        // If cached metadata makes an old evidence file look collectible, re-read every bounded checkpoint first and
+        // base GC, manifest refresh and index rebuild on that authoritative snapshot.
+        var destructiveCandidatesExist = !scanTruncated
+            && !ambiguousCheckpoint
+            && FindOrphanEvidenceCandidates(files, referencedEvidence, nowUtc).Length > 0;
+        if (destructiveCandidatesExist && manifestEntriesReused > 0)
+        {
+            manifestEntries.Clear();
+            referencedEvidence.Clear();
+            indexCandidates.Clear();
+            ambiguousCheckpoint = false;
+
+            foreach (var checkpoint in checkpoints)
+            {
+                checkpointsParsed++;
+                var entry = ParseCheckpoint(checkpoint);
+                manifestEntries.Add(entry);
+                ApplyMetadata(entry, checkpoint.FullName, checkpoint.LastWriteTimeUtc, referencedEvidence, indexCandidates, ref ambiguousCheckpoint);
+            }
         }
 
         if (!scanTruncated)
@@ -108,12 +132,7 @@ internal static class AudioReviewDraftStorageMaintenance
         var deletedEvidence = 0;
         if (!skipEvidenceGc)
         {
-            var orphanCandidates = files.Where(file => file.Name.EndsWith(".evidence.json", StringComparison.OrdinalIgnoreCase))
-                .Select(file => (File:file, Digest:Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(file.Name))))
-                .Where(candidate => IsSha256(candidate.Digest) && !referencedEvidence.Contains(candidate.Digest)
-                    && nowUtc - candidate.File.LastWriteTimeUtc >= OrphanEvidenceGrace)
-                .OrderBy(candidate => candidate.File.LastWriteTimeUtc).ThenBy(candidate => candidate.File.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-            foreach (var candidate in orphanCandidates)
+            foreach (var candidate in FindOrphanEvidenceCandidates(files, referencedEvidence, nowUtc))
             {
                 var length = SafeLength(candidate.File);
                 if (TryDelete(candidate.File.FullName)) { reclaimedBytes += length; deletedEvidence++; }
@@ -128,6 +147,19 @@ internal static class AudioReviewDraftStorageMaintenance
         return new(draftsScanned, referencedEvidence.Count, deletedEvidence, deletedTemps, reclaimedBytes, totalAfter,
             skipEvidenceGc, quotaStillExceeded, indexEntriesRebuilt, indexRebuildSkipped, checkpointsParsed, manifestEntriesReused);
     }
+
+    private static (FileInfo File, string Digest)[] FindOrphanEvidenceCandidates(
+        IEnumerable<FileInfo> files,
+        HashSet<string> referencedEvidence,
+        DateTimeOffset nowUtc)
+        => files.Where(file => file.Name.EndsWith(".evidence.json", StringComparison.OrdinalIgnoreCase))
+            .Select(file => (File:file, Digest:Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(file.Name))))
+            .Where(candidate => IsSha256(candidate.Digest)
+                && !referencedEvidence.Contains(candidate.Digest)
+                && nowUtc - candidate.File.LastWriteTimeUtc >= OrphanEvidenceGrace)
+            .OrderBy(candidate => candidate.File.LastWriteTimeUtc)
+            .ThenBy(candidate => candidate.File.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static AudioReviewDraftMaintenanceManifestEntry ParseCheckpoint(FileInfo checkpoint)
     {
