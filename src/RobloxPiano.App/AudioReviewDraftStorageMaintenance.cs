@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace RobloxPiano.App;
@@ -26,12 +27,24 @@ internal static class AudioReviewDraftStorageMaintenance
     private const int MaximumManagedFiles = 4096;
 
     public static AudioReviewDraftStorageMaintenanceResult RunBestEffort(string rootDirectory, DateTimeOffset? nowUtc = null)
+        => RunBestEffortCore(rootDirectory, nowUtc ?? DateTimeOffset.UtcNow, beforeDestructiveRevalidation: null);
+
+    internal static AudioReviewDraftStorageMaintenanceResult RunBestEffortForTests(
+        string rootDirectory,
+        DateTimeOffset nowUtc,
+        Action beforeDestructiveRevalidation)
+        => RunBestEffortCore(rootDirectory, nowUtc, beforeDestructiveRevalidation ?? throw new ArgumentNullException(nameof(beforeDestructiveRevalidation)));
+
+    private static AudioReviewDraftStorageMaintenanceResult RunBestEffortCore(
+        string rootDirectory,
+        DateTimeOffset nowUtc,
+        Action? beforeDestructiveRevalidation)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         var root = Path.GetFullPath(rootDirectory);
         if (!Directory.Exists(root))
             return new(0,0,0,0,0,0,false,false,0,false,0,0);
-        try { return Run(root, nowUtc ?? DateTimeOffset.UtcNow); }
+        try { return Run(root, nowUtc, beforeDestructiveRevalidation); }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidDataException)
         {
             ClientDiagnostics.Log($"Audio review draft storage maintenance skipped: {exception.Message}");
@@ -39,7 +52,7 @@ internal static class AudioReviewDraftStorageMaintenance
         }
     }
 
-    private static AudioReviewDraftStorageMaintenanceResult Run(string root, DateTimeOffset nowUtc)
+    private static AudioReviewDraftStorageMaintenanceResult Run(string root, DateTimeOffset nowUtc, Action? beforeDestructiveRevalidation)
     {
         var files = new DirectoryInfo(root).EnumerateFiles("*", SearchOption.TopDirectoryOnly)
             .OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase).Take(MaximumManagedFiles + 1).ToArray();
@@ -82,37 +95,56 @@ internal static class AudioReviewDraftStorageMaintenance
             ApplyMetadata(entry, checkpoint.FullName, checkpoint.LastWriteTimeUtc, referencedEvidence, indexCandidates, ref ambiguousCheckpoint);
         }
 
-        // File length + last-write time is intentionally only a cheap warm-start identity. It must never authorize a
-        // destructive evidence deletion because external tooling can rewrite checkpoint bytes while preserving both.
-        // If cached metadata makes an old evidence file look collectible, re-read every bounded checkpoint first and
-        // base GC, manifest refresh and index rebuild on that authoritative snapshot.
+        // Cheap length/mtime metadata is acceleration only. Any destructive evidence cleanup first rebuilds the
+        // authoritative reference set from the exact checkpoint bytes and binds it to content fingerprints.
         var destructiveCandidatesExist = !scanTruncated
             && !ambiguousCheckpoint
             && FindOrphanEvidenceCandidates(files, referencedEvidence, nowUtc).Length > 0;
-        if (destructiveCandidatesExist && manifestEntriesReused > 0)
+        Dictionary<string,string>? destructiveCheckpointSnapshot = null;
+        if (destructiveCandidatesExist)
         {
             manifestEntries.Clear();
             referencedEvidence.Clear();
             indexCandidates.Clear();
             ambiguousCheckpoint = false;
+            destructiveCheckpointSnapshot = new(StringComparer.OrdinalIgnoreCase);
 
             foreach (var checkpoint in checkpoints)
             {
                 checkpointsParsed++;
-                var entry = ParseCheckpoint(checkpoint);
-                manifestEntries.Add(entry);
-                ApplyMetadata(entry, checkpoint.FullName, checkpoint.LastWriteTimeUtc, referencedEvidence, indexCandidates, ref ambiguousCheckpoint);
+                var parsed = ParseCheckpointWithFingerprint(checkpoint);
+                manifestEntries.Add(parsed.Entry);
+                ApplyMetadata(parsed.Entry, checkpoint.FullName, checkpoint.LastWriteTimeUtc, referencedEvidence, indexCandidates, ref ambiguousCheckpoint);
+                if (parsed.FingerprintSha256 is null)
+                    ambiguousCheckpoint = true;
+                else
+                    destructiveCheckpointSnapshot[checkpoint.Name] = parsed.FingerprintSha256;
             }
         }
 
-        if (!scanTruncated)
+        var destructiveSnapshotChanged = false;
+        var orphanCandidates = !scanTruncated && !ambiguousCheckpoint
+            ? FindOrphanEvidenceCandidates(files, referencedEvidence, nowUtc)
+            : Array.Empty<(FileInfo File, string Digest)>();
+        if (orphanCandidates.Length > 0 && destructiveCheckpointSnapshot is not null)
+        {
+            beforeDestructiveRevalidation?.Invoke();
+            if (!CheckpointSnapshotMatches(root, destructiveCheckpointSnapshot))
+            {
+                destructiveSnapshotChanged = true;
+                ClientDiagnostics.Log("Audio review evidence GC aborted because the managed checkpoint set or checkpoint bytes changed during destructive revalidation.");
+            }
+        }
+
+        var cacheRebuildAllowed = !scanTruncated && !destructiveSnapshotChanged;
+        if (cacheRebuildAllowed)
         {
             try { manifest.ReplaceAll(manifestEntries); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
             { ClientDiagnostics.Log($"Audio review maintenance manifest rebuild skipped: {exception.Message}"); }
         }
 
-        var indexRebuildSkipped = scanTruncated;
+        var indexRebuildSkipped = !cacheRebuildAllowed;
         var indexEntriesRebuilt = 0;
         if (!indexRebuildSkipped)
         {
@@ -128,12 +160,21 @@ internal static class AudioReviewDraftStorageMaintenance
             { ClientDiagnostics.Log($"Audio review draft lookup index rebuild skipped: {exception.Message}"); indexRebuildSkipped = true; }
         }
 
-        var skipEvidenceGc = scanTruncated || ambiguousCheckpoint;
+        var skipEvidenceGc = scanTruncated || ambiguousCheckpoint || destructiveSnapshotChanged;
         var deletedEvidence = 0;
         if (!skipEvidenceGc)
         {
-            foreach (var candidate in FindOrphanEvidenceCandidates(files, referencedEvidence, nowUtc))
+            foreach (var candidate in orphanCandidates)
             {
+                // Revalidate immediately before every destructive delete. A concurrent checkpoint create/update/delete,
+                // an unreadable checkpoint, or a bounded-scan overflow aborts the remainder of the GC batch fail-safe.
+                if (destructiveCheckpointSnapshot is null || !CheckpointSnapshotMatches(root, destructiveCheckpointSnapshot))
+                {
+                    skipEvidenceGc = true;
+                    ClientDiagnostics.Log("Audio review evidence GC stopped because checkpoint state changed immediately before deletion.");
+                    break;
+                }
+
                 var length = SafeLength(candidate.File);
                 if (TryDelete(candidate.File.FullName)) { reclaimedBytes += length; deletedEvidence++; }
             }
@@ -162,19 +203,26 @@ internal static class AudioReviewDraftStorageMaintenance
             .ToArray();
 
     private static AudioReviewDraftMaintenanceManifestEntry ParseCheckpoint(FileInfo checkpoint)
+        => ParseCheckpointBytes(checkpoint, includeFingerprint: false).Entry;
+
+    private static (AudioReviewDraftMaintenanceManifestEntry Entry, string? FingerprintSha256) ParseCheckpointWithFingerprint(FileInfo checkpoint)
+        => ParseCheckpointBytes(checkpoint, includeFingerprint: true);
+
+    private static (AudioReviewDraftMaintenanceManifestEntry Entry, string? FingerprintSha256) ParseCheckpointBytes(FileInfo checkpoint, bool includeFingerprint)
     {
         checkpoint.Refresh();
         var length = checkpoint.Exists ? checkpoint.Length : 0L;
         var ticks = checkpoint.LastWriteTimeUtc.Ticks;
-        if (length <= 0 || length > MaximumCheckpointBytes)
-            return new(checkpoint.Name, Math.Max(1,length), Math.Max(1,ticks), null, null, true);
+        if (length <= 0 || length > MaximumCheckpointBytes || length > int.MaxValue)
+            return (new(checkpoint.Name, Math.Max(1,length), Math.Max(1,ticks), null, null, true), null);
         try
         {
-            using var stream = new FileStream(checkpoint.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var document = JsonDocument.Parse(stream);
+            var bytes = ReadExactCheckpointBytes(checkpoint.FullName, checked((int)length));
+            var fingerprint = includeFingerprint ? Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() : null;
+            using var document = JsonDocument.Parse(bytes);
             var root = document.RootElement;
             if (!root.TryGetProperty("schemaVersion", out var schemaElement) || schemaElement.ValueKind != JsonValueKind.Number || !schemaElement.TryGetInt32(out var schemaVersion))
-                return new(checkpoint.Name, length, ticks, null, null, true);
+                return (new(checkpoint.Name, length, ticks, null, null, true), fingerprint);
 
             string? sourceKey = null;
             if (root.TryGetProperty("sourcePath", out var sourceElement) && sourceElement.ValueKind == JsonValueKind.String)
@@ -184,17 +232,61 @@ internal static class AudioReviewDraftStorageMaintenance
             }
 
             if (schemaVersion == AudioReviewDraftStore.LegacySchemaVersion)
-                return new(checkpoint.Name, length, ticks, sourceKey, null, false);
+                return (new(checkpoint.Name, length, ticks, sourceKey, null, false), fingerprint);
             if (schemaVersion != AudioReviewDraftStore.SchemaVersion || !root.TryGetProperty("evidenceSha256", out var evidenceElement) || evidenceElement.ValueKind != JsonValueKind.String)
-                return new(checkpoint.Name, length, ticks, sourceKey, null, true);
+                return (new(checkpoint.Name, length, ticks, sourceKey, null, true), fingerprint);
             var evidence = evidenceElement.GetString();
-            if (!IsSha256(evidence)) return new(checkpoint.Name, length, ticks, sourceKey, null, true);
-            return new(checkpoint.Name, length, ticks, sourceKey, evidence!.ToLowerInvariant(), false);
+            if (!IsSha256(evidence)) return (new(checkpoint.Name, length, ticks, sourceKey, null, true), fingerprint);
+            return (new(checkpoint.Name, length, ticks, sourceKey, evidence!.ToLowerInvariant(), false), fingerprint);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or EndOfStreamException)
         {
             ClientDiagnostics.Log($"Audio review draft maintenance kept evidence because checkpoint '{checkpoint.Name}' is unreadable: {exception.Message}");
-            return new(checkpoint.Name, Math.Max(1,length), Math.Max(1,ticks), null, null, true);
+            return (new(checkpoint.Name, Math.Max(1,length), Math.Max(1,ticks), null, null, true), null);
+        }
+    }
+
+    private static byte[] ReadExactCheckpointBytes(string path, int expectedLength)
+    {
+        var bytes = new byte[expectedLength];
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var offset = 0;
+        while (offset < bytes.Length)
+        {
+            var read = stream.Read(bytes, offset, bytes.Length - offset);
+            if (read == 0) throw new EndOfStreamException("Checkpoint changed while it was being read.");
+            offset += read;
+        }
+        if (stream.ReadByte() != -1) throw new IOException("Checkpoint grew while it was being read.");
+        return bytes;
+    }
+
+    private static bool CheckpointSnapshotMatches(string root, IReadOnlyDictionary<string,string> expected)
+    {
+        try
+        {
+            var current = new DirectoryInfo(root).EnumerateFiles("*.review.json", SearchOption.TopDirectoryOnly)
+                .OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(MaximumManagedFiles + 1)
+                .ToArray();
+            if (current.Length > MaximumManagedFiles || current.Length != expected.Count) return false;
+
+            foreach (var checkpoint in current)
+            {
+                if (!expected.TryGetValue(checkpoint.Name, out var expectedFingerprint)) return false;
+                checkpoint.Refresh();
+                var length = checkpoint.Exists ? checkpoint.Length : 0L;
+                if (length <= 0 || length > MaximumCheckpointBytes || length > int.MaxValue) return false;
+                var bytes = ReadExactCheckpointBytes(checkpoint.FullName, checked((int)length));
+                var actualFingerprint = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+                if (!string.Equals(actualFingerprint, expectedFingerprint, StringComparison.OrdinalIgnoreCase)) return false;
+            }
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or EndOfStreamException)
+        {
+            ClientDiagnostics.Log($"Audio review evidence GC checkpoint revalidation failed safe: {exception.Message}");
+            return false;
         }
     }
 
