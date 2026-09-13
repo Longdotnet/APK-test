@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.56
+version: 0.40.57
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -9,40 +9,37 @@ Distribution: self-contained Windows x64 single executable
 Client dependencies: none required manually
 SHA256: `{{SHA256}}`
 
-## Client entrypoint and support contract
+## Audio-to-Piano OSS Phase 49 — rebuildable review draft lookup index
 
-- **Sheet Library** remains the normal client starting point; Create Piano Version keeps fingerprint-verified local review progress for owned/local audio.
-- **Support Bundle** remains the preferred way to preserve correlated Runtime Input and client diagnostic evidence when troubleshooting playback.
-- Legacy and **Legacy x2** remain protected regression/perceptual baselines.
+- **Create Piano Version** now keeps a bounded local lookup accelerator for resumable owned/local audio review drafts instead of repeatedly opening recent checkpoint files for the same source path.
+- The index stores only `SHA-256(normalized source path) -> managed draft filename`; it does not persist the raw client audio path, Basic Pitch notes, repair decisions, quality state or a `PerformanceTrack`.
+- Missing, corrupt, oversized or stale index state is disposable. Client discovery falls back to the existing authoritative bounded checkpoint scan and repopulates the requested mapping.
+- Checkpoint and verified restore refresh the mapping; explicit review-draft deletion removes the corresponding entry.
+- The accelerator is bounded to 4096 entries / 1 MiB and uses same-directory temp + flush-to-disk + atomic replacement.
 
-## Audio-to-Piano OSS Phase 47 — review draft storage GC and crash recovery
+## Authority and fail-closed resume contract
 
-- Create Piano Version now performs bounded, best-effort maintenance of local review-draft storage before opening the client surface.
-- Review checkpoints are never deleted by maintenance. Immutable evidence becomes eligible for cleanup only when every bounded checkpoint is readable, no schema-v2 checkpoint references that evidence digest, and the snapshot has aged past a 24-hour safety window.
-- If checkpoint discovery is truncated, malformed, oversized, unsupported or unreadable, evidence GC fails safe and preserves evidence rather than guessing whether it is still active.
-- Crash-left `.review.json.tmp-*` / `.evidence.json.tmp-*` artifacts are removed only after a 6-hour grace window; authoritative `.review.json` checkpoints are untouched.
-- A 512 MiB managed-storage budget is monitored. If active/recent/ambiguous state remains above the budget, the app logs the condition and preserves that state instead of deleting client review work to satisfy quota.
-- Storage maintenance reports deterministic counts/bytes to local diagnostics so support can distinguish reclaimed orphan data from preserved active state.
+- The lookup index is never playback truth and never authorizes a draft's contents.
+- **Resume Review** still full-hashes the owned/local audio, rejects changed source bytes, validates content-addressed immutable evidence, deterministically replays explicit repairs, and requires the rebuilt canonical `PerformanceTrack` SHA-256 to match the saved fingerprint.
+- A stale/corrupt lookup entry can therefore cause at most a failed resume or fallback discovery; it cannot silently mutate or authorize playback state.
+- Existing schema-v1 compatibility, compact schema-v2 evidence, checkpoint write-amplification budgets, storage GC/crash recovery, generated-MIDI parity and real-model Audio-to-Piano E2E remain production gates.
 
-## Audio validation and OSS boundary
+## OSS / packaging boundary
 
-- Audio UX regression locks referenced-evidence preservation, old-orphan cleanup, recent-orphan grace, stale-temp crash recovery and malformed-checkpoint fail-safe behavior.
-- Existing schema-v1 compatibility, source-identity checks, immutable evidence fingerprinting, deterministic repair replay, generated-MIDI parity and real-model Audio-to-Piano E2E remain production gates.
-- Spotify Basic Pitch, Microsoft ONNX Runtime, NAudio ingest/preview, deterministic Roblox arranger and generated MIDI verification remain the reused production boundaries.
-- No new OSS package, model, Python runtime, PyTorch, ffmpeg, native separator or source-separation model is bundled by this phase, so no new license/NOTICE obligation is introduced.
+- Spotify Basic Pitch, Microsoft ONNX Runtime, NAudio ingest/preview and the deterministic Roblox arranger remain the reused production boundaries.
+- No SQLite/database package, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime is added by this phase.
+- The index uses .NET BCL JSON, SHA-256 and atomic file primitives because the index is deliberately disposable/rebuildable acceleration state.
+- No new third-party license or NOTICE obligation is introduced.
 
 ## Runtime Input P0 boundary retained
 
-- This audio release does not modify Roblox target selection, focus guards, input authorization, scheduler, held-key/pedal ownership, `keybd_event`, SendInput or emergency release behavior.
+- This release does not modify Roblox target selection, focus guards, input authorization, scheduler, held-key/pedal ownership, `keybd_event`, SendInput or emergency release behavior.
 - Runtime Input remains `NOT YET PROVEN` until explicit field evidence shows production `RobloxPiano.exe` causing the expected visible Roblox movement or piano reaction.
-- Review-draft storage maintenance does not claim or imply end-to-end Roblox playability.
 
-## Audio client procedure
+## Client procedure
 
-1. Open **Create Piano Version**. Local review storage maintenance runs before the form opens; active checkpoints are preserved.
-2. Choose owned/local audio. If a saved checkpoint is found, choose **Resume Review** to continue fingerprint-verified progress or **Create Piano Version** to discard the checkpoint and regenerate.
-3. Resume full-verifies source bytes, validates content-addressed immutable evidence and reconstructs deterministic review state without rerunning Basic Pitch inference.
-4. Use **Preview Original Region** / **Preview Repair** for local A/B listening, and Apply/Defer/Resume explicitly as before.
-5. Old unreferenced evidence is reclaimed only after the safety window; recent or ambiguous evidence remains local until a future safe maintenance pass.
-6. If diagnostics report storage above budget, client review state is still preserved; finish/discard old reviews normally instead of having maintenance delete them implicitly.
-7. Successful Add to Library continues to remove the managed checkpoint after production MIDI round-trip verification. Roblox playback remains subject to the separate Runtime Input field gate.
+1. Open **Create Piano Version** and choose owned/local audio you are authorized to use.
+2. If a review checkpoint was already indexed, resumable-review discovery avoids the previous recent-checkpoint scan.
+3. If the index is absent or damaged, discovery falls back safely and repairs that source's lookup mapping.
+4. Choose **Resume Review** only when desired; resume still performs the full deterministic source/evidence/canonical-state verification before any review state is accepted.
+5. Continue Preview / Apply / Defer / Resume / Add to Library as before. Roblox playback remains subject to the separate Runtime Input field gate.
