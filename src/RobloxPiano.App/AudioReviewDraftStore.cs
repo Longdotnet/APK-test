@@ -420,16 +420,22 @@ internal sealed class AudioReviewDraftStore
         {
             throw new InvalidDataException("Audio review immutable evidence snapshot identity is malformed.");
         }
-        ValidateEvidenceBounds(document.SourceDurationTicks, document.Notes?.Length ?? 0, document.OriginalTrack?.Events?.Length ?? -1);
-        ArgumentNullException.ThrowIfNull(document.BaseQuality);
+
+        var draftNotes = document.Notes
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot note evidence is missing.");
+        var draftOriginalTrack = document.OriginalTrack
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot original track is missing.");
+        var baseQuality = document.BaseQuality
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot base quality is missing.");
+        ValidateEvidenceBounds(document.SourceDurationTicks, draftNotes.Length, draftOriginalTrack.Events?.Length ?? -1);
 
         var sourceDuration = TimeSpan.FromTicks(document.SourceDurationTicks);
-        var notes = document.Notes.Select(FromDraftNote).ToArray();
-        var originalTrack = FromDraftTrack(document.OriginalTrack);
-        var actualSha256 = ComputeEvidenceSha256(sourceDuration, notes, originalTrack, document.BaseQuality);
+        var notes = draftNotes.Select(FromDraftNote).ToArray();
+        var originalTrack = FromDraftTrack(draftOriginalTrack);
+        var actualSha256 = ComputeEvidenceSha256(sourceDuration, notes, originalTrack, baseQuality);
         if (!string.Equals(actualSha256, evidenceSha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Audio review immutable evidence snapshot fingerprint does not match its content.");
-        return new AudioReviewEvidence(sourceDuration, notes, originalTrack, document.BaseQuality);
+        return new AudioReviewEvidence(sourceDuration, notes, originalTrack, baseQuality);
     }
 
     private static AudioReviewEvidence RestoreLegacyEvidence(AudioReviewDraftDocument document)
