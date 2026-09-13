@@ -24,8 +24,9 @@ internal static class Program
         Run("repair quality presentation keeps persistent source evidence visible", RepairQualityPresentationKeepsPersistentEvidence, failures);
         Run("repair quality presentation surfaces introduced regression", RepairQualityPresentationShowsRegression, failures);
         Run("resumable review draft replays deterministic canonical state", AudioReviewDraftStoreRegression.Run, failures);
+        Run("long-song review drafts stay within write amplification budget", AudioReviewDraftWriteAmplificationRegression.Run, failures);
 
-        Console.WriteLine($"Audio UX regressions: {16 - failures.Count} passed, {failures.Count} failed.");
+        Console.WriteLine($"Audio UX regressions: {17 - failures.Count} passed, {failures.Count} failed.");
         foreach (var failure in failures)
             Console.Error.WriteLine(failure);
         return failures.Count == 0 ? 0 : 1;
