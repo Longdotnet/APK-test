@@ -14,7 +14,10 @@ public sealed record RobloxPianoArrangementOptions(
     float MelodyActivationFloor = 0.25f,
     float MelodyRelativeActivationFloor = 0.55f,
     int MelodyContinuityMaxLeapSemitones = 12,
-    TimeSpan? MelodyContinuityWindow = null)
+    TimeSpan? MelodyContinuityWindow = null,
+    bool AdaptiveDensity = true,
+    float AccompanimentActivationFloor = 0.18f,
+    float AccompanimentRelativeActivationFloor = 0.35f)
 {
     public MidiKeyboardProfile EffectiveKeyboardProfile => KeyboardProfile ?? MidiKeyboardProfile.RobloxClassic61;
 
@@ -40,6 +43,10 @@ public sealed record RobloxPianoArrangementOptions(
             throw new ArgumentOutOfRangeException(nameof(MelodyContinuityMaxLeapSemitones));
         if (MelodyContinuityWindow is { } continuity && (continuity <= TimeSpan.Zero || continuity > TimeSpan.FromSeconds(10)))
             throw new ArgumentOutOfRangeException(nameof(MelodyContinuityWindow));
+        if (!float.IsFinite(AccompanimentActivationFloor) || AccompanimentActivationFloor is < 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(AccompanimentActivationFloor));
+        if (!float.IsFinite(AccompanimentRelativeActivationFloor) || AccompanimentRelativeActivationFloor is <= 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(AccompanimentRelativeActivationFloor));
         if (EffectiveKeyboardProfile.Keys.Length == 0)
             throw new ArgumentException("Roblox keyboard profile must contain at least one key.", nameof(KeyboardProfile));
     }
@@ -58,7 +65,8 @@ public sealed record RobloxPianoArrangementDiagnostics(
     int LowActivationEvents,
     float MeanActivation,
     int WeakSkylineRejects = 0,
-    int MelodyContinuitySelections = 0)
+    int MelodyContinuitySelections = 0,
+    int AdaptiveDensityDrops = 0)
 {
     public bool RequiresReview => DensityDrops > 0 || OutOfRangeDrops > 0 || LowActivationEvents > 0;
 }
@@ -153,6 +161,7 @@ public sealed class RobloxPianoArranger
         var densityDrops = 0;
         var weakSkylineRejects = 0;
         var melodyContinuitySelections = 0;
+        var adaptiveDensityDrops = 0;
         Candidate? previousMelody = null;
         var index = 0;
         while (index < normalized.Count)
@@ -189,18 +198,34 @@ public sealed class RobloxPianoArranger
 
             if (unique.Count > options.MaxSimultaneousNotes)
             {
-                var keep = unique
+                var accompaniment = unique
                     .Where(candidate => !ReferenceEquals(candidate, melody))
                     .OrderByDescending(candidate => candidate.Amplitude)
                     .ThenByDescending(candidate => candidate.Duration)
                     .ThenByDescending(candidate => candidate.MappedPitch)
+                    .ToList();
+
+                if (options.AdaptiveDensity)
+                {
+                    var strongestActivation = unique.Max(candidate => candidate.Amplitude);
+                    var accompanimentThreshold = Math.Max(
+                        options.AccompanimentActivationFloor,
+                        strongestActivation * options.AccompanimentRelativeActivationFloor);
+                    accompaniment = accompaniment
+                        .Where(candidate => candidate.Amplitude >= accompanimentThreshold)
+                        .ToList();
+                }
+
+                var keep = accompaniment
                     .Take(options.MaxSimultaneousNotes - 1)
                     .Append(melody)
                     .Distinct()
                     .OrderBy(candidate => candidate.Start)
                     .ThenBy(candidate => candidate.MappedPitch)
                     .ToList();
+                var hardCapKeepCount = Math.Min(unique.Count, options.MaxSimultaneousNotes);
                 densityDrops += unique.Count - keep.Count;
+                adaptiveDensityDrops += Math.Max(0, hardCapKeepCount - keep.Count);
                 unique = keep;
             }
 
@@ -279,7 +304,8 @@ public sealed class RobloxPianoArranger
                 lowActivation,
                 (float)meanActivation,
                 weakSkylineRejects,
-                melodyContinuitySelections));
+                melodyContinuitySelections,
+                adaptiveDensityDrops));
     }
 
     private static Candidate SelectMelodyCandidate(
