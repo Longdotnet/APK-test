@@ -79,6 +79,55 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
             var changed = AudioReviewDraftStorageMaintenance.RunBestEffort(root, now + TimeSpan.FromMinutes(2));
             Require(changed.CheckpointsParsed == 1 && changed.ManifestEntriesReused == 0, "checkpoint identity change must invalidate manifest metadata and force authoritative reparse");
 
+            var tamperRoot = Path.Combine(root, "same-metadata-tamper");
+            Directory.CreateDirectory(tamperRoot);
+            var oldEvidence = new string('2', 64);
+            var newlyReferencedEvidence = new string('3', 64);
+            var tamperSourceSha = new string('4', 64);
+            var tamperSourcePath = Path.Combine(tamperRoot, "owned.wav");
+            File.WriteAllText(tamperSourcePath, "owned-audio-fixture");
+            var tamperDraftPath = Path.Combine(tamperRoot, tamperSourceSha + ".review.json");
+            string CreateTamperCheckpoint(string evidenceSha) => JsonSerializer.Serialize(new
+            {
+                schemaVersion = AudioReviewDraftStore.SchemaVersion,
+                sourcePath = tamperSourcePath,
+                sourceSha256 = tamperSourceSha,
+                evidenceSha256 = evidenceSha,
+                currentTrackSha256 = new string('5', 64),
+                queue = new { deferredRegionKeys = Array.Empty<string>(), appliedDecisions = Array.Empty<object>() },
+                savedAtUtc = now
+            });
+
+            var initialCheckpoint = CreateTamperCheckpoint(oldEvidence);
+            var tamperedCheckpoint = CreateTamperCheckpoint(newlyReferencedEvidence);
+            Require(initialCheckpoint.Length == tamperedCheckpoint.Length, "tamper fixture must preserve checkpoint byte length");
+            File.WriteAllText(tamperDraftPath, initialCheckpoint);
+            var originalCheckpointWriteTime = File.GetLastWriteTimeUtc(tamperDraftPath);
+            var oldEvidencePath = Path.Combine(tamperRoot, oldEvidence + ".evidence.json");
+            var newlyReferencedEvidencePath = Path.Combine(tamperRoot, newlyReferencedEvidence + ".evidence.json");
+            File.WriteAllText(oldEvidencePath, "{}");
+            File.WriteAllText(newlyReferencedEvidencePath, "{}");
+            File.SetLastWriteTimeUtc(oldEvidencePath, now.UtcDateTime - TimeSpan.FromDays(3));
+            File.SetLastWriteTimeUtc(newlyReferencedEvidencePath, now.UtcDateTime - TimeSpan.FromHours(2));
+
+            var tamperCold = AudioReviewDraftStorageMaintenance.RunBestEffort(tamperRoot, now);
+            Require(tamperCold.CheckpointsParsed == 1 && File.Exists(oldEvidencePath) && File.Exists(newlyReferencedEvidencePath),
+                "cold tamper fixture should establish cached metadata without deleting referenced/recent evidence");
+
+            File.WriteAllText(tamperDraftPath, tamperedCheckpoint);
+            File.SetLastWriteTimeUtc(tamperDraftPath, originalCheckpointWriteTime);
+            File.SetLastWriteTimeUtc(newlyReferencedEvidencePath, now.UtcDateTime - TimeSpan.FromDays(3));
+            Require(new FileInfo(tamperDraftPath).Length == initialCheckpoint.Length && File.GetLastWriteTimeUtc(tamperDraftPath) == originalCheckpointWriteTime,
+                "tamper fixture must preserve cached length and last-write identity");
+
+            var tamperWarm = AudioReviewDraftStorageMaintenance.RunBestEffort(tamperRoot, now + TimeSpan.FromMinutes(1));
+            Require(tamperWarm.ManifestEntriesReused == 1 && tamperWarm.CheckpointsParsed == 1,
+                "destructive GC opportunity must force authoritative reparse even when cheap manifest identity still matches");
+            Require(File.Exists(newlyReferencedEvidencePath),
+                "evidence newly referenced by same-length/same-mtime checkpoint bytes must survive fail-safe GC revalidation");
+            Require(!File.Exists(oldEvidencePath) && tamperWarm.DeletedOrphanEvidenceCount == 1,
+                "after authoritative revalidation only the truly unreferenced old evidence may be collected");
+
             var ambiguousRoot = Path.Combine(root, "ambiguous");
             Directory.CreateDirectory(ambiguousRoot);
             var ambiguousOrphan = Path.Combine(ambiguousRoot, new string('f', 64) + ".evidence.json");
