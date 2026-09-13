@@ -14,7 +14,8 @@ internal static class AudioReviewDraftStoreRegression
         var root = Path.Combine(Path.GetTempPath(), "roblox-piano-audio-review-draft-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var sourcePath = Path.Combine(root, "owned-audio.wav");
-        await File.WriteAllBytesAsync(sourcePath, Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray()).ConfigureAwait(false);
+        var originalSourceBytes = Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray();
+        await File.WriteAllBytesAsync(sourcePath, originalSourceBytes).ConfigureAwait(false);
 
         try
         {
@@ -79,18 +80,44 @@ internal static class AudioReviewDraftStoreRegression
 
             True(File.Exists(draftPath), "checkpoint must be committed to its final path");
             Equal(0, Directory.GetFiles(Path.GetDirectoryName(draftPath)!, "*.tmp-*", SearchOption.TopDirectoryOnly).Length, "atomic temp files must be cleaned");
+            Equal(draftPath, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "exact source lookup must find the saved draft");
 
             var restored = await store.RestoreAsync(draftPath).ConfigureAwait(false);
             Equal(expectedFingerprint, PerformanceTrackFingerprint.ComputeSha256(restored.RepairSession.CurrentTrack), "restored canonical fingerprint");
             Equal(1, restored.ReviewQueue.AppliedDecisionCount, "applied decision history");
             Equal(Path.GetFullPath(sourcePath), restored.SourcePath, "source path");
+            Equal(TimeSpan.FromSeconds(5), restored.SourceDuration, "source duration persistence context");
+            Equal(notes.Length, restored.SourceNotes.Count, "note evidence persistence context");
+            Equal(PerformanceTrackFingerprint.ComputeSha256(originalTrack), PerformanceTrackFingerprint.ComputeSha256(restored.OriginalTrack), "original canonical track persistence context");
+            Equal(baseQuality.Readiness, restored.BaseQuality.Readiness, "base quality persistence context");
+            Equal(Path.GetFullPath(draftPath), restored.DraftPath, "managed draft path");
             if (restored.RepairSession.ReviewRegions.Count > 0)
                 True(restored.SelectedRegionIndex >= 0 && restored.SelectedRegionIndex < restored.RepairSession.ReviewRegions.Count, "selected region must be bounded");
 
+            var clientSession = new AudioReviewDraftClientSession(store);
+            var clientRestored = await clientSession.RestoreAsync(draftPath).ConfigureAwait(false);
+            True(clientSession.CanCheckpoint, "client session must recover immutable checkpoint context without inference");
+            Equal(expectedFingerprint, PerformanceTrackFingerprint.ComputeSha256(clientRestored.RepairSession.CurrentTrack), "client restore canonical fingerprint");
+            var checkpointAgain = await clientSession.CheckpointAsync(
+                clientRestored.RepairSession,
+                clientRestored.ReviewQueue,
+                clientRestored.RepairSession.ReviewRegions.Count == 0 ? null : clientRestored.RepairSession.ReviewRegions[clientRestored.SelectedRegionIndex]).ConfigureAwait(false);
+            Equal(draftPath, checkpointAgain, "client checkpoint must update the source-identity draft atomically");
+
             await File.AppendAllTextAsync(sourcePath, "changed").ConfigureAwait(false);
-            await ThrowsAsync<InvalidDataException>(
+            Equal(draftPath, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "changed in-place source must still surface its old draft for an explicit stale-source verdict");
+            await ThrowsAsyncContaining<InvalidDataException>(
                 () => store.RestoreAsync(draftPath),
-                "changed source audio must fail closed").ConfigureAwait(false);
+                "source audio changed",
+                "changed source audio must fail closed with a regenerate explanation").ConfigureAwait(false);
+
+            await File.WriteAllBytesAsync(sourcePath, originalSourceBytes).ConfigureAwait(false);
+            await ThrowsAsync<InvalidDataException>(
+                () => Task.Run(() => store.Delete(Path.Combine(root, "outside.review.json"))),
+                "draft cleanup must never delete outside its managed directory").ConfigureAwait(false);
+            True(clientSession.Delete(draftPath), "explicit client draft cleanup");
+            True(!File.Exists(draftPath), "explicit cleanup must remove only the managed checkpoint");
+            Equal<string?>(null, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "source lookup after cleanup");
         }
         finally
         {
@@ -115,6 +142,20 @@ internal static class AudioReviewDraftStoreRegression
             await action().ConfigureAwait(false);
         }
         catch (TException)
+        {
+            return;
+        }
+        throw new InvalidOperationException(label);
+    }
+
+    private static async Task ThrowsAsyncContaining<TException>(Func<Task> action, string expectedText, string label)
+        where TException : Exception
+    {
+        try
+        {
+            await action().ConfigureAwait(false);
+        }
+        catch (TException exception) when (exception.Message.Contains(expectedText, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
