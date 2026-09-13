@@ -4,20 +4,26 @@ namespace RobloxPiano.Audio;
 
 public sealed record AudioTranscriptionReviewRepairSessionOptions(
     AudioTranscriptionReviewRegionOptions? ReviewRegions = null,
-    AudioTranscriptionReviewRepairOptions? Repair = null);
+    AudioTranscriptionReviewRepairOptions? Repair = null,
+    AudioTranscriptionQualityOptions? Quality = null);
 
 public sealed record AudioTranscriptionReviewRepairApplyResult(
     AudioTranscriptionReviewRepairKind Kind,
     PerformanceTrack PreviousTrack,
     PerformanceTrack CurrentTrack,
     IReadOnlyList<AudioTranscriptionReviewRegion> ReviewRegions,
-    long Revision);
+    long Revision)
+{
+    public AudioTranscriptionQualityAssessment? Quality { get; init; }
+}
 
 /// <summary>
 /// Owns deterministic review-repair state for one generated piano result.
 /// Candidate preview is side-effect free. Canonical session state changes only through an explicit Apply,
-/// and Revert restores the exact original generated performance. This boundary never persists to the
-/// library, schedules Roblox playback, or authorizes input.
+/// and Revert restores the exact original generated performance. When the original global quality assessment
+/// is supplied, every successful Apply recomputes only canonical-track-dependent quality evidence while
+/// preserving immutable source/model evidence. This boundary never persists to the library, schedules Roblox
+/// playback, or authorizes input.
 /// </summary>
 public sealed class AudioTranscriptionReviewRepairSession
 {
@@ -26,9 +32,12 @@ public sealed class AudioTranscriptionReviewRepairSession
     private readonly AudioTranscriptionReviewRepairSessionOptions options;
     private readonly AudioTranscriptionReviewRepairGenerator generator;
     private readonly AudioTranscriptionReviewRegionAnalyzer analyzer;
+    private readonly AudioTranscriptionRepairAwareQualityEvaluator qualityEvaluator;
+    private readonly AudioTranscriptionQualityAssessment? baseQuality;
     private readonly PerformanceTrack originalTrack;
     private PerformanceTrack currentTrack;
     private IReadOnlyList<AudioTranscriptionReviewRegion> reviewRegions;
+    private AudioTranscriptionQualityAssessment? currentQuality;
     private long revision;
 
     public AudioTranscriptionReviewRepairSession(
@@ -38,6 +47,8 @@ public sealed class AudioTranscriptionReviewRepairSession
         AudioTranscriptionReviewRepairSessionOptions? options = null,
         AudioTranscriptionReviewRepairGenerator? generator = null,
         AudioTranscriptionReviewRegionAnalyzer? analyzer = null,
+        AudioTranscriptionQualityAssessment? baseQuality = null,
+        AudioTranscriptionRepairAwareQualityEvaluator? qualityEvaluator = null,
         CancellationToken cancellationToken = default)
     {
         if (sourceDuration <= TimeSpan.Zero)
@@ -58,14 +69,19 @@ public sealed class AudioTranscriptionReviewRepairSession
         this.options = options ?? new AudioTranscriptionReviewRepairSessionOptions();
         this.generator = generator ?? new AudioTranscriptionReviewRepairGenerator();
         this.analyzer = analyzer ?? new AudioTranscriptionReviewRegionAnalyzer();
+        this.baseQuality = baseQuality;
+        this.qualityEvaluator = qualityEvaluator ?? new AudioTranscriptionRepairAwareQualityEvaluator();
         originalTrack = Snapshot(canonicalTrack);
         currentTrack = Snapshot(canonicalTrack);
         reviewRegions = Analyze(currentTrack, cancellationToken);
+        currentQuality = baseQuality;
     }
 
     public PerformanceTrack OriginalTrack => originalTrack;
     public PerformanceTrack CurrentTrack => currentTrack;
     public IReadOnlyList<AudioTranscriptionReviewRegion> ReviewRegions => reviewRegions;
+    public AudioTranscriptionQualityAssessment? BaseQuality => baseQuality;
+    public AudioTranscriptionQualityAssessment? CurrentQuality => currentQuality;
     public bool IsModified => !TracksEquivalent(originalTrack, currentTrack);
     public bool CanRevert => IsModified;
     public long Revision => revision;
@@ -106,16 +122,25 @@ public sealed class AudioTranscriptionReviewRepairSession
         if (TracksEquivalent(previous, next))
             throw new InvalidOperationException("Explicit repair apply refused a no-op candidate.");
 
+        // Compute every derived state before committing any session mutation so cancellation or malformed
+        // candidate evidence leaves the previous canonical state intact.
         var nextRegions = Analyze(next, cancellationToken);
+        var nextQuality = ReevaluateQuality(next, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
         currentTrack = next;
         reviewRegions = nextRegions;
+        currentQuality = nextQuality;
         revision = checked(revision + 1);
         return new AudioTranscriptionReviewRepairApplyResult(
             kind,
             previous,
             currentTrack,
             reviewRegions,
-            revision);
+            revision)
+        {
+            Quality = currentQuality
+        };
     }
 
     public bool Revert(CancellationToken cancellationToken = default)
@@ -126,8 +151,10 @@ public sealed class AudioTranscriptionReviewRepairSession
 
         var restored = Snapshot(originalTrack);
         var restoredRegions = Analyze(restored, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         currentTrack = restored;
         reviewRegions = restoredRegions;
+        currentQuality = baseQuality;
         revision = checked(revision + 1);
         return true;
     }
@@ -152,6 +179,22 @@ public sealed class AudioTranscriptionReviewRepairSession
             track,
             options.ReviewRegions,
             cancellationToken);
+
+    private AudioTranscriptionQualityAssessment? ReevaluateQuality(
+        PerformanceTrack track,
+        CancellationToken cancellationToken)
+    {
+        if (baseQuality is null)
+            return null;
+
+        return qualityEvaluator.Evaluate(
+            sourceDuration,
+            sourceNotes.Count,
+            track,
+            baseQuality,
+            options.Quality,
+            cancellationToken);
+    }
 
     private static PerformanceTrack Snapshot(PerformanceTrack track)
     {
