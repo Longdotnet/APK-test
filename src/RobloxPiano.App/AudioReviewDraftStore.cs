@@ -53,6 +53,12 @@ internal sealed record AudioReviewDraftRestoreResult(
     AudioTranscriptionQualityAssessment BaseQuality,
     string DraftPath);
 
+internal sealed record AudioReviewSourceIdentity(
+    string Path,
+    long Length,
+    long LastWriteTimeUtcTicks,
+    string Sha256);
+
 /// <summary>
 /// Durable, local-only checkpoint for Audio-to-Piano review work. The checkpoint deliberately does not deserialize
 /// a repaired PerformanceTrack as playback truth. Restore rebuilds a fresh repair session from immutable Basic Pitch
@@ -72,6 +78,9 @@ internal sealed class AudioReviewDraftStore
     };
 
     private readonly string rootDirectory;
+    private readonly object sourceIdentityGate = new();
+    private readonly Dictionary<string, AudioReviewSourceIdentity> sourceIdentities = new(StringComparer.OrdinalIgnoreCase);
+    private long sourceHashComputationCount;
 
     public AudioReviewDraftStore(string rootDirectory)
     {
@@ -79,6 +88,8 @@ internal sealed class AudioReviewDraftStore
             throw new ArgumentException("Draft root directory is required.", nameof(rootDirectory));
         this.rootDirectory = Path.GetFullPath(rootDirectory);
     }
+
+    internal long SourceHashComputationCount => Interlocked.Read(ref sourceHashComputationCount);
 
     public async Task<string> SaveAsync(
         string sourcePath,
@@ -105,7 +116,12 @@ internal sealed class AudioReviewDraftStore
             throw new InvalidDataException($"Review draft original track exceeds the {MaximumEvents}-event safety bound.");
 
         var normalizedSourcePath = Path.GetFullPath(sourcePath);
-        var sourceSha256 = await ComputeFileSha256Async(normalizedSourcePath, cancellationToken).ConfigureAwait(false);
+        var sourceIdentity = await ResolveSourceIdentityAsync(
+            normalizedSourcePath,
+            forceFullHash: false,
+            requireCachedContentMatch: true,
+            cancellationToken).ConfigureAwait(false);
+        var sourceSha256 = sourceIdentity.Sha256;
         var evidenceSha256 = ComputeEvidenceSha256(sourceDuration, sourceNotes, originalTrack, baseQuality);
         var currentTrackSha256 = PerformanceTrackFingerprint.ComputeSha256(repairSession.CurrentTrack);
         var document = new AudioReviewDraftDocument(
@@ -166,8 +182,12 @@ internal sealed class AudioReviewDraftStore
         if (!File.Exists(normalizedSourcePath) || !Directory.Exists(rootDirectory))
             return null;
 
-        var currentSourceSha256 = await ComputeFileSha256Async(normalizedSourcePath, cancellationToken).ConfigureAwait(false);
-        var exactPath = GetDraftPath(currentSourceSha256);
+        var currentSourceIdentity = await ResolveSourceIdentityAsync(
+            normalizedSourcePath,
+            forceFullHash: false,
+            requireCachedContentMatch: false,
+            cancellationToken).ConfigureAwait(false);
+        var exactPath = GetDraftPath(currentSourceIdentity.Sha256);
         if (File.Exists(exactPath))
             return exactPath;
 
@@ -218,8 +238,12 @@ internal sealed class AudioReviewDraftStore
         ValidateDocument(document);
 
         var sourcePath = Path.GetFullPath(document.SourcePath);
-        var actualSourceSha256 = await ComputeFileSha256Async(sourcePath, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(actualSourceSha256, document.SourceSha256, StringComparison.OrdinalIgnoreCase))
+        var actualSourceIdentity = await ResolveSourceIdentityAsync(
+            sourcePath,
+            forceFullHash: true,
+            requireCachedContentMatch: false,
+            cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(actualSourceIdentity.Sha256, document.SourceSha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Owned/local source audio changed after this review draft was saved. Regenerate instead of restoring stale review state.");
 
         var sourceDuration = TimeSpan.FromTicks(document.SourceDurationTicks);
@@ -309,6 +333,64 @@ internal sealed class AudioReviewDraftStore
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
+    private async Task<AudioReviewSourceIdentity> ResolveSourceIdentityAsync(
+        string path,
+        bool forceFullHash,
+        bool requireCachedContentMatch,
+        CancellationToken cancellationToken)
+    {
+        var normalizedPath = Path.GetFullPath(path);
+        var currentInfo = GetRequiredFileInfo(normalizedPath);
+        AudioReviewSourceIdentity? cached;
+        lock (sourceIdentityGate)
+            sourceIdentities.TryGetValue(normalizedPath, out cached);
+
+        if (!forceFullHash
+            && cached is not null
+            && cached.Length == currentInfo.Length
+            && cached.LastWriteTimeUtcTicks == currentInfo.LastWriteTimeUtc.Ticks)
+        {
+            return cached;
+        }
+
+        var verified = await ComputeStableSourceIdentityAsync(normalizedPath, cancellationToken).ConfigureAwait(false);
+        if (requireCachedContentMatch
+            && cached is not null
+            && !string.Equals(cached.Sha256, verified.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Owned/local source audio changed during this review session. Regenerate instead of checkpointing stale review state.");
+        }
+
+        lock (sourceIdentityGate)
+            sourceIdentities[normalizedPath] = verified;
+        return verified;
+    }
+
+    private async Task<AudioReviewSourceIdentity> ComputeStableSourceIdentityAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var before = GetRequiredFileInfo(path);
+            var sha256 = await ComputeFileSha256Async(path, cancellationToken).ConfigureAwait(false);
+            var after = GetRequiredFileInfo(path);
+            if (before.Length == after.Length && before.LastWriteTimeUtc.Ticks == after.LastWriteTimeUtc.Ticks)
+                return new AudioReviewSourceIdentity(path, after.Length, after.LastWriteTimeUtc.Ticks, sha256);
+        }
+
+        throw new IOException("Owned/local source audio changed while its identity was being verified. Retry or regenerate before checkpointing review state.");
+    }
+
+    private static FileInfo GetRequiredFileInfo(string path)
+    {
+        var fileInfo = new FileInfo(path);
+        if (!fileInfo.Exists)
+            throw new FileNotFoundException("Owned/local source audio was not found.", path);
+        return fileInfo;
+    }
+
     private async Task<AudioReviewDraftDocument?> ReadDocumentAsync(string path, CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(path);
@@ -337,8 +419,9 @@ internal sealed class AudioReviewDraftStore
         return normalized;
     }
 
-    private static async Task<string> ComputeFileSha256Async(string path, CancellationToken cancellationToken)
+    private async Task<string> ComputeFileSha256Async(string path, CancellationToken cancellationToken)
     {
+        Interlocked.Increment(ref sourceHashComputationCount);
         await using var stream = new FileStream(
             path,
             FileMode.Open,

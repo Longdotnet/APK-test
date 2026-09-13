@@ -78,11 +78,56 @@ internal static class AudioReviewDraftStoreRegression
                 queue,
                 selected).ConfigureAwait(false);
 
+            Equal(1L, store.SourceHashComputationCount, "first checkpoint must establish one verified source hash");
+            var repeatedDraftPath = await store.SaveAsync(
+                sourcePath,
+                TimeSpan.FromSeconds(5),
+                notes,
+                originalTrack,
+                baseQuality,
+                session,
+                queue,
+                selected).ConfigureAwait(false);
+            Equal(draftPath, repeatedDraftPath, "unchanged-source checkpoint path");
+            Equal(1L, store.SourceHashComputationCount, "unchanged metadata must reuse the verified source identity without re-reading the full audio");
+
+            var touchedTime = File.GetLastWriteTimeUtc(sourcePath).AddSeconds(2);
+            File.SetLastWriteTimeUtc(sourcePath, touchedTime);
+            var touchedDraftPath = await store.SaveAsync(
+                sourcePath,
+                TimeSpan.FromSeconds(5),
+                notes,
+                originalTrack,
+                baseQuality,
+                session,
+                queue,
+                selected).ConfigureAwait(false);
+            Equal(draftPath, touchedDraftPath, "metadata-only source change with identical bytes must keep the content-addressed draft path");
+            Equal(2L, store.SourceHashComputationCount, "metadata change must force one full source re-verification");
+
+            await File.AppendAllTextAsync(sourcePath, "changed-before-checkpoint").ConfigureAwait(false);
+            await ThrowsAsyncContaining<InvalidDataException>(
+                () => store.SaveAsync(
+                    sourcePath,
+                    TimeSpan.FromSeconds(5),
+                    notes,
+                    originalTrack,
+                    baseQuality,
+                    session,
+                    queue,
+                    selected),
+                "source audio changed",
+                "checkpoint must fail closed when bytes changed after the cached identity was established").ConfigureAwait(false);
+            Equal(3L, store.SourceHashComputationCount, "changed metadata must rehash before rejecting stale review state");
+            await File.WriteAllBytesAsync(sourcePath, originalSourceBytes).ConfigureAwait(false);
+
             True(File.Exists(draftPath), "checkpoint must be committed to its final path");
             Equal(0, Directory.GetFiles(Path.GetDirectoryName(draftPath)!, "*.tmp-*", SearchOption.TopDirectoryOnly).Length, "atomic temp files must be cleaned");
             Equal(draftPath, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "exact source lookup must find the saved draft");
 
+            var hashCountBeforeRestore = store.SourceHashComputationCount;
             var restored = await store.RestoreAsync(draftPath).ConfigureAwait(false);
+            Equal(hashCountBeforeRestore + 1, store.SourceHashComputationCount, "Resume must always full-hash the owned/local audio even when metadata matches the cache");
             Equal(expectedFingerprint, PerformanceTrackFingerprint.ComputeSha256(restored.RepairSession.CurrentTrack), "restored canonical fingerprint");
             Equal(1, restored.ReviewQueue.AppliedDecisionCount, "applied decision history");
             Equal(Path.GetFullPath(sourcePath), restored.SourcePath, "source path");
@@ -98,11 +143,13 @@ internal static class AudioReviewDraftStoreRegression
             var clientRestored = await clientSession.RestoreAsync(draftPath).ConfigureAwait(false);
             True(clientSession.CanCheckpoint, "client session must recover immutable checkpoint context without inference");
             Equal(expectedFingerprint, PerformanceTrackFingerprint.ComputeSha256(clientRestored.RepairSession.CurrentTrack), "client restore canonical fingerprint");
+            var hashesAfterClientRestore = store.SourceHashComputationCount;
             var checkpointAgain = await clientSession.CheckpointAsync(
                 clientRestored.RepairSession,
                 clientRestored.ReviewQueue,
                 clientRestored.RepairSession.ReviewRegions.Count == 0 ? null : clientRestored.RepairSession.ReviewRegions[clientRestored.SelectedRegionIndex]).ConfigureAwait(false);
             Equal(draftPath, checkpointAgain, "client checkpoint must update the source-identity draft atomically");
+            Equal(hashesAfterClientRestore, store.SourceHashComputationCount, "post-resume review decisions must reuse the freshly verified source identity");
 
             await File.AppendAllTextAsync(sourcePath, "changed").ConfigureAwait(false);
             Equal(draftPath, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "changed in-place source must still surface its old draft for an explicit stale-source verdict");
