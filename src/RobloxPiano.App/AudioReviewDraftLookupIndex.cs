@@ -19,9 +19,9 @@ internal sealed record AudioReviewDraftLookupIndexDocument(
 internal sealed class AudioReviewDraftLookupIndex
 {
     private const int SchemaVersion = 1;
-    private const int MaximumEntries = 4096;
+    internal const int MaximumEntries = 4096;
     private const long MaximumIndexBytes = 1024 * 1024;
-    private const string IndexFileName = "review-index.json";
+    internal const string IndexFileName = "review-index.json";
     private const string ZeroSha256 = "0000000000000000000000000000000000000000000000000000000000000000";
     private static readonly ConcurrentDictionary<string, object> RootGates = new(StringComparer.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = false };
@@ -93,6 +93,34 @@ internal sealed class AudioReviewDraftLookupIndex
             }
 
             WriteDocument(document);
+        }
+    }
+
+    public int ReplaceAll(IEnumerable<KeyValuePair<string, string>> sourceDraftPairs)
+    {
+        ArgumentNullException.ThrowIfNull(sourceDraftPairs);
+        lock (rootGate)
+        {
+            var entries = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var pair in sourceDraftPairs)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                    continue;
+                var sourceKey = ComputeSourcePathKey(pair.Key);
+                var draftFileName = GetManagedDraftFileName(pair.Value);
+                entries[sourceKey] = draftFileName;
+                if (entries.Count >= MaximumEntries)
+                    break;
+            }
+
+            if (entries.Count == 0)
+            {
+                TryDeleteIndex();
+                return 0;
+            }
+
+            WriteDocument(new AudioReviewDraftLookupIndexDocument(SchemaVersion, entries));
+            return entries.Count;
         }
     }
 
@@ -249,7 +277,7 @@ internal sealed class AudioReviewDraftLookupIndex
         return true;
     }
 
-    private static bool IsManagedDraftFileName(string? value)
+    internal static bool IsManagedDraftFileName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || !value.EndsWith(".review.json", StringComparison.OrdinalIgnoreCase))
             return false;
