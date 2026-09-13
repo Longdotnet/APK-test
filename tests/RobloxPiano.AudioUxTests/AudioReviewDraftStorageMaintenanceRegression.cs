@@ -56,7 +56,7 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
             Require(!File.Exists(staleTemp) && !File.Exists(staleIndexTemp) && !File.Exists(staleManifestTemp), "stale managed crash temp artifacts should be removed");
             Require(result.DeletedOrphanEvidenceCount == 1, "expected exactly one old orphan evidence deletion");
             Require(result.DeletedStaleTempCount == 3, "expected evidence, index and manifest stale temp deletion");
-            Require(result.CheckpointsParsed == 1 && result.ManifestEntriesReused == 0, "cold maintenance should parse the checkpoint once while building metadata manifest");
+            Require(result.CheckpointsParsed == 2 && result.ManifestEntriesReused == 0, "destructive cold maintenance must parse once for discovery and once while binding GC to checkpoint content fingerprints");
             Require(!result.EvidenceGcSkipped && !result.ReviewIndexRebuildSkipped && result.ReviewIndexEntriesRebuilt == 1, "healthy bounded checkpoint should rebuild lookup and permit GC");
             Require(index.TryResolve(sourcePath) == managedDraftPath, "cold-start maintenance rebuild should make valid draft directly resolvable");
 
@@ -70,14 +70,14 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
             var indexWriteTime = File.GetLastWriteTimeUtc(index.IndexPath);
 
             var second = AudioReviewDraftStorageMaintenance.RunBestEffort(root, now + TimeSpan.FromMinutes(1));
-            Require(second.CheckpointsParsed == 0 && second.ManifestEntriesReused == 1, "unchanged warm maintenance must reuse manifest metadata without reopening checkpoint JSON");
+            Require(second.CheckpointsParsed == 0 && second.ManifestEntriesReused == 1, "unchanged warm maintenance must reuse manifest metadata without reopening checkpoint JSON when no destructive candidate exists");
             Require(second.ReviewIndexEntriesRebuilt == 1 && index.TryResolve(sourcePath) == managedDraftPath, "warm maintenance must preserve direct lookup behavior");
             Require(indexBytes.SequenceEqual(File.ReadAllBytes(index.IndexPath)) && File.GetLastWriteTimeUtc(index.IndexPath) == indexWriteTime, "unchanged startup must perform zero committed index rewrites");
             Require(manifestBytes.SequenceEqual(File.ReadAllBytes(manifestPath)) && File.GetLastWriteTimeUtc(manifestPath) == manifestWriteTime, "unchanged startup must perform zero committed manifest rewrites");
 
             File.AppendAllText(managedDraftPath, " ");
             var changed = AudioReviewDraftStorageMaintenance.RunBestEffort(root, now + TimeSpan.FromMinutes(2));
-            Require(changed.CheckpointsParsed == 1 && changed.ManifestEntriesReused == 0, "checkpoint identity change must invalidate manifest metadata and force authoritative reparse");
+            Require(changed.CheckpointsParsed == 1 && changed.ManifestEntriesReused == 0, "checkpoint identity change without a destructive candidate must invalidate manifest metadata and force authoritative reparse");
 
             var tamperRoot = Path.Combine(root, "same-metadata-tamper");
             Directory.CreateDirectory(tamperRoot);
@@ -111,8 +111,8 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
             File.SetLastWriteTimeUtc(newlyReferencedEvidencePath, now.UtcDateTime - TimeSpan.FromHours(2));
 
             var tamperCold = AudioReviewDraftStorageMaintenance.RunBestEffort(tamperRoot, now);
-            Require(tamperCold.CheckpointsParsed == 1 && File.Exists(oldEvidencePath) && File.Exists(newlyReferencedEvidencePath),
-                "cold tamper fixture should establish cached metadata without deleting referenced/recent evidence");
+            Require(tamperCold.CheckpointsParsed == 2 && File.Exists(oldEvidencePath) && File.Exists(newlyReferencedEvidencePath),
+                "cold tamper fixture should bind destructive cleanup to checkpoint fingerprints without deleting referenced/recent evidence");
 
             File.WriteAllText(tamperDraftPath, tamperedCheckpoint);
             File.SetLastWriteTimeUtc(tamperDraftPath, originalCheckpointWriteTime);
@@ -122,11 +122,60 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
 
             var tamperWarm = AudioReviewDraftStorageMaintenance.RunBestEffort(tamperRoot, now + TimeSpan.FromMinutes(1));
             Require(tamperWarm.ManifestEntriesReused == 1 && tamperWarm.CheckpointsParsed == 1,
-                "destructive GC opportunity must force authoritative reparse even when cheap manifest identity still matches");
+                "destructive GC opportunity must rebuild an authoritative fingerprinted snapshot even when cheap manifest identity still matches");
             Require(File.Exists(newlyReferencedEvidencePath),
                 "evidence newly referenced by same-length/same-mtime checkpoint bytes must survive fail-safe GC revalidation");
             Require(!File.Exists(oldEvidencePath) && tamperWarm.DeletedOrphanEvidenceCount == 1,
-                "after authoritative revalidation only the truly unreferenced old evidence may be collected");
+                "after authoritative fingerprinted revalidation only the truly unreferenced old evidence may be collected");
+
+            var raceRoot = Path.Combine(root, "destructive-race");
+            Directory.CreateDirectory(raceRoot);
+            var raceInitialEvidence = new string('6', 64);
+            var raceCandidateEvidence = new string('7', 64);
+            var raceSourceSha = new string('8', 64);
+            var raceSourcePath = Path.Combine(raceRoot, "owned.wav");
+            File.WriteAllText(raceSourcePath, "owned-audio-fixture");
+            var raceDraftPath = Path.Combine(raceRoot, raceSourceSha + ".review.json");
+            string CreateRaceCheckpoint(string evidenceSha) => JsonSerializer.Serialize(new
+            {
+                schemaVersion = AudioReviewDraftStore.SchemaVersion,
+                sourcePath = raceSourcePath,
+                sourceSha256 = raceSourceSha,
+                evidenceSha256 = evidenceSha,
+                currentTrackSha256 = new string('9', 64),
+                queue = new { deferredRegionKeys = Array.Empty<string>(), appliedDecisions = Array.Empty<object>() },
+                savedAtUtc = now
+            });
+            var raceInitialCheckpoint = CreateRaceCheckpoint(raceInitialEvidence);
+            var raceChangedCheckpoint = CreateRaceCheckpoint(raceCandidateEvidence);
+            Require(raceInitialCheckpoint.Length == raceChangedCheckpoint.Length, "race fixture must preserve checkpoint byte length");
+            File.WriteAllText(raceDraftPath, raceInitialCheckpoint);
+            var raceOriginalWriteTime = File.GetLastWriteTimeUtc(raceDraftPath);
+            var raceInitialEvidencePath = Path.Combine(raceRoot, raceInitialEvidence + ".evidence.json");
+            var raceCandidateEvidencePath = Path.Combine(raceRoot, raceCandidateEvidence + ".evidence.json");
+            File.WriteAllText(raceInitialEvidencePath, "{}");
+            File.WriteAllText(raceCandidateEvidencePath, "{}");
+            File.SetLastWriteTimeUtc(raceInitialEvidencePath, now.UtcDateTime - TimeSpan.FromDays(3));
+            File.SetLastWriteTimeUtc(raceCandidateEvidencePath, now.UtcDateTime - TimeSpan.FromDays(3));
+
+            var hookInvoked = false;
+            var raced = AudioReviewDraftStorageMaintenance.RunBestEffortForTests(raceRoot, now, () =>
+            {
+                hookInvoked = true;
+                File.WriteAllText(raceDraftPath, raceChangedCheckpoint);
+                File.SetLastWriteTimeUtc(raceDraftPath, raceOriginalWriteTime);
+            });
+            Require(hookInvoked, "race regression must mutate the checkpoint after the authoritative destructive snapshot and before final revalidation");
+            Require(raced.EvidenceGcSkipped && raced.DeletedOrphanEvidenceCount == 0 && raced.ReviewIndexRebuildSkipped,
+                "checkpoint mutation in the destructive window must abort evidence GC and stale cache rebuilds fail-safe");
+            Require(File.Exists(raceInitialEvidencePath) && File.Exists(raceCandidateEvidencePath),
+                "TOCTOU abort must preserve both the previously referenced evidence and the evidence concurrently made authoritative");
+
+            var raceRecovery = AudioReviewDraftStorageMaintenance.RunBestEffort(raceRoot, now + TimeSpan.FromMinutes(1));
+            Require(!raceRecovery.EvidenceGcSkipped && raceRecovery.DeletedOrphanEvidenceCount == 1,
+                "the next stable maintenance pass should safely reclaim only the evidence that is now truly orphaned");
+            Require(!File.Exists(raceInitialEvidencePath) && File.Exists(raceCandidateEvidencePath),
+                "stable recovery must retain the concurrently selected evidence and reclaim only the old reference");
 
             var ambiguousRoot = Path.Combine(root, "ambiguous");
             Directory.CreateDirectory(ambiguousRoot);
