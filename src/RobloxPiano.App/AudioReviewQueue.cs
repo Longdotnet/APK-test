@@ -7,6 +7,10 @@ internal sealed record AudioReviewAppliedDecision(
     AudioTranscriptionReviewRepairKind Kind,
     long RepairRevision);
 
+internal sealed record AudioReviewQueuePersistedState(
+    IReadOnlyList<string> DeferredRegionKeys,
+    IReadOnlyList<AudioReviewAppliedDecision> AppliedDecisions);
+
 internal sealed record AudioReviewQueueSnapshot(
     int TotalRegions,
     int PendingRegions,
@@ -36,6 +40,49 @@ internal sealed class AudioReviewQueue
     {
         deferredRegionKeys.Clear();
         appliedDecisions.Clear();
+    }
+
+    public AudioReviewQueuePersistedState ExportState()
+        => new(
+            deferredRegionKeys.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            appliedDecisions.ToArray());
+
+    public AudioReviewQueueSnapshot RestoreState(
+        IReadOnlyList<AudioTranscriptionReviewRegion> currentRegions,
+        AudioReviewQueuePersistedState state,
+        int startIndex = 0)
+    {
+        ArgumentNullException.ThrowIfNull(currentRegions);
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(state.DeferredRegionKeys);
+        ArgumentNullException.ThrowIfNull(state.AppliedDecisions);
+
+        var currentKeys = currentRegions.Select(GetRegionKey).ToHashSet(StringComparer.Ordinal);
+        var restoredDeferred = state.DeferredRegionKeys
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (restoredDeferred.Length != state.DeferredRegionKeys.Count)
+            throw new InvalidDataException("Review draft contains blank or duplicate deferred-region keys.");
+        if (restoredDeferred.Any(key => !currentKeys.Contains(key)))
+            throw new InvalidDataException("Review draft contains a deferred region that is stale for the restored canonical track.");
+
+        long previousRevision = 0;
+        foreach (var decision in state.AppliedDecisions)
+        {
+            if (decision is null || string.IsNullOrWhiteSpace(decision.RegionKey))
+                throw new InvalidDataException("Review draft contains an invalid applied decision.");
+            if (decision.RepairRevision <= previousRevision)
+                throw new InvalidDataException("Review draft repair revisions must be strictly increasing.");
+            previousRevision = decision.RepairRevision;
+        }
+
+        deferredRegionKeys.Clear();
+        foreach (var key in restoredDeferred)
+            deferredRegionKeys.Add(key);
+        appliedDecisions.Clear();
+        appliedDecisions.AddRange(state.AppliedDecisions);
+        return Synchronize(currentRegions, startIndex);
     }
 
     public AudioReviewQueueSnapshot Synchronize(
@@ -86,6 +133,8 @@ internal sealed class AudioReviewQueue
         ArgumentNullException.ThrowIfNull(region);
         if (repairRevision <= 0)
             throw new ArgumentOutOfRangeException(nameof(repairRevision));
+        if (appliedDecisions.Count != 0 && repairRevision <= appliedDecisions[^1].RepairRevision)
+            throw new InvalidOperationException("Repair revisions must advance monotonically before recording a review decision.");
 
         var key = GetRegionKey(region);
         deferredRegionKeys.Remove(key);
