@@ -8,6 +8,7 @@ namespace RobloxPiano.App;
 /// never mutates a PerformanceTrack. It only checkpoints an already-authoritative repair session or restores one
 /// through AudioReviewDraftStore's deterministic replay/fingerprint gate. Draft discovery uses a disposable local
 /// lookup index; a miss/corruption falls back to authoritative store discovery and repairs the requested index entry.
+/// Mutating client operations take the same crash-recoverable cross-process storage lease as destructive evidence GC.
 /// </summary>
 internal sealed class AudioReviewDraftClientSession
 {
@@ -104,6 +105,7 @@ internal sealed class AudioReviewDraftClientSession
         if (!CanCheckpoint || sourcePath is null || originalTrack is null || baseQuality is null)
             throw new InvalidOperationException("Review draft persistence context is not initialized.");
 
+        using var storageLease = await AudioReviewDraftStorageLease.AcquireAsync(store, cancellationToken).ConfigureAwait(false);
         ActiveDraftPath = await store.SaveAsync(
             sourcePath,
             sourceDuration,
@@ -123,15 +125,19 @@ internal sealed class AudioReviewDraftClientSession
         if (ActiveDraftPath is null)
             return false;
         var path = ActiveDraftPath;
-        ActiveDraftPath = null;
+        using var storageLease = AcquireMutationLease();
         var deleted = store.Delete(path);
         if (deleted)
+        {
+            ActiveDraftPath = null;
             TryRemoveIndex(path);
+        }
         return deleted;
     }
 
     public bool Delete(string draftPath)
     {
+        using var storageLease = AcquireMutationLease();
         var deleted = store.Delete(draftPath);
         if (deleted)
             TryRemoveIndex(draftPath);
@@ -148,6 +154,17 @@ internal sealed class AudioReviewDraftClientSession
         originalTrack = null;
         baseQuality = null;
         ActiveDraftPath = null;
+    }
+
+    private AudioReviewDraftStorageLease AcquireMutationLease()
+    {
+        var root = AudioReviewDraftStorageLease.GetRootDirectory(store);
+        if (AudioReviewDraftStorageLease.TryAcquire(root, AudioReviewDraftStorageLease.WriterAcquireTimeout, out var lease)
+            && lease is not null)
+        {
+            return lease;
+        }
+        throw new IOException("Audio review storage is busy in another app instance. Retry after the other review save/cleanup finishes.");
     }
 
     private void TryIndex(string ownedSourcePath, string draftPath)
