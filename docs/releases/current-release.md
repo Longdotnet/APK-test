@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.63
+version: 0.40.64
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,27 +15,28 @@ SHA256: `{{SHA256}}`
 - **Support Bundle** remains the preferred way to preserve correlated Runtime Input and client diagnostic evidence when troubleshooting playback.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Audio-to-Piano OSS Phase 56 — cross-process review storage lease
+## Audio-to-Piano OSS Phase 57 — full-song melody-priority arrangement
 
-- Review checkpoint commits and client draft deletes now take a root-local OS-backed exclusive file lease before mutating managed review storage.
-- Destructive evidence GC takes that same lease only when old orphan evidence is actually eligible for deletion; if another client instance owns it, cleanup is deferred and evidence is retained fail-safe.
-- After acquiring the lease, maintenance revalidates the Phase-55 exact checkpoint-name/content fingerprint snapshot and holds the lease through every immutable evidence delete.
-- The lease is an exclusive `FileStream` handle over a stateless `review-storage.lease` sentinel. Process exit or crash releases ownership automatically through the OS; no PID/timestamp stale-lock protocol is required.
-- Async checkpoint writers wait for at most five seconds and remain cancellation-aware. Destructive maintenance waits only 250 ms before deferring cleanup, so another client instance cannot turn background cleanup into a long UI stall.
-- Normal warm Create Piano Version startup does not acquire this lease when no destructive evidence candidate exists, preserving the bounded metadata/index fast path from earlier phases.
-
-## Authority and fail-closed resume contract
-
-- `review-storage.lease`, `review-index.json` and `review-maintenance.json` are coordination/acceleration artifacts only; none is playback truth or restore authorization.
-- **Resume Review** still full-hashes owned/local audio, rejects changed source bytes, validates content-addressed immutable evidence, deterministically replays explicit repairs, and requires rebuilt canonical `PerformanceTrack` SHA-256 to match the saved fingerprint.
-- External tools that ignore the cooperative lease remain protected by exact checkpoint-name/content fingerprint revalidation before destructive evidence deletion.
-- Existing schema-v1 compatibility, compact schema-v2 evidence, checkpoint write/read budgets, generated-MIDI parity and real-model Audio-to-Piano E2E remain production gates.
+- Dense Basic Pitch onset clusters no longer protect the absolute highest pitch unconditionally. A very weak upper harmonic/competing voice must first pass bounded confidence gates before it can become the protected melody note.
+- Melody selection uses both an absolute activation floor and a relative-to-cluster activation floor, then tracks a bounded melodic contour across adjacent clusters.
+- Inside the continuity window, a credible near-contour pitch is protected ahead of an unrelated skyline jump; remaining slots still go to the strongest accompaniment candidates.
+- New deterministic diagnostics expose weak-skyline rejection and continuity-driven melody selections so review/quality tooling can see when the stronger policy changed the old behavior.
+- Regression fixtures protect two full-mixture cases: a weak high overtone above a strong chord, and a 72->74 melodic contour competing against a higher MIDI-84 voice.
+- Range folding, note timing/duration, density bounds, duplicate merging, same-key ownership repair and canonical `PerformanceTrack` output remain deterministic.
 
 ## OSS / packaging boundary
 
-- Spotify Basic Pitch, Microsoft ONNX Runtime, NAudio ingest/preview, DryWetMIDI verification and the deterministic Roblox arranger remain the reused production boundaries.
-- Phase 56 uses bounded .NET BCL `FileStream`/file-system primitives and adds no database, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime.
-- No new third-party license or NOTICE obligation is introduced.
+- Spotify Basic Pitch remains the transcription/model-semantics source; its decoded note activation is used as deterministic evidence rather than treating skyline pitch as truth.
+- The design was compared with mature polyphonic melody-extraction practice (including Melodia semantics), but no melody ML runtime or copied upstream implementation is shipped.
+- Microsoft ONNX Runtime, NAudio and DryWetMIDI boundaries remain unchanged.
+- Phase 57 adds no database, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime, and introduces no new third-party license or NOTICE obligation.
+
+## Authority and quality contract
+
+- The arranger may decide which decoded notes survive density reduction, but `RobloxPiano.Core.PerformanceTrack` remains the canonical playback truth.
+- Generated piano targets recognizable melody, useful harmony, original note timing and Roblox-playable density; it does not claim waveform-perfect equivalence to a mixed recording.
+- Low-confidence/lossy arrangements continue to surface review diagnostics instead of silently claiming high confidence.
+- Existing real-model Basic Pitch E2E, generated-MIDI parity, review persistence integrity and production smoke coverage remain gates.
 
 ## Runtime Input P0 boundary retained
 
@@ -44,7 +45,7 @@ SHA256: `{{SHA256}}`
 
 ## Client procedure
 
-1. Open **Create Piano Version** and choose owned/local audio you are authorized to use. Normal warm maintenance remains cheap and does not lock review storage unless destructive cleanup is actually needed.
-2. Continue Preview / Apply / Defer / Resume normally. Autosave/checkpoint writes coordinate across multiple app instances; a rare bounded storage-busy condition asks the client to retry instead of racing cleanup.
-3. Choose **Resume Review** only when desired; resume still performs full source/evidence/canonical-state verification before accepting review state.
+1. Open **Create Piano Version** and choose owned/local audio you are authorized to use.
+2. Transcribe and preview normally. Dense mixed passages now reject weak skyline artifacts and preserve a credible continuous melody more reliably before Roblox density reduction.
+3. Review any surfaced low-confidence/lossy regions and Apply / Defer / Resume repairs as needed.
 4. Add the generated result to **Sheet Library** when satisfied. Roblox playback remains subject to the separate Runtime Input field gate.

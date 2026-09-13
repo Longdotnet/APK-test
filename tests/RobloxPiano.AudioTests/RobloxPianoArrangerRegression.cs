@@ -20,25 +20,62 @@ internal static class RobloxPianoArrangerRegression
         Equal(0, result.Diagnostics.OutOfRangeDrops);
     }
 
+    // Kept under the original harness entrypoint name so the Phase-06 regression runner remains stable.
+    // The contract is intentionally stronger now: skyline pitch is protected only when it is credible,
+    // and adjacent clusters may protect a near-contour melody instead of an unrelated higher voice.
     public static void DensityLimitAlwaysKeepsHighestMelodyPitch()
+    {
+        DensityLimitRejectsWeakSkylineOvertone();
+        DensityLimitUsesMelodyContinuityAcrossClusters();
+        MelodyPolicyFailsClosedOnInvalidThresholds();
+    }
+
+    public static void DensityLimitRejectsWeakSkylineOvertone()
     {
         var notes = new[]
         {
             Note(0, 500, 60, 0.95f),
             Note(0, 500, 64, 0.90f),
             Note(0, 500, 67, 0.85f),
-            Note(0, 500, 72, 0.10f)
+            Note(0, 500, 84, 0.10f)
         };
         var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 3);
 
-        var result = new RobloxPianoArranger().Arrange("density", notes, options);
+        var result = new RobloxPianoArranger().Arrange("weak-skyline", notes, options);
         var keys = result.Track.Events.Select(item => item.Keys.Single()).ToHashSet();
 
         Equal(3, result.Track.Events.Count);
-        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(72)), "Highest melody pitch must survive density reduction even at lower activation.");
-        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(60)), "Strong accompaniment should survive density reduction.");
-        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(64)), "Second strongest accompaniment should survive density reduction.");
+        True(!keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(84)), "Weak high overtone must not be protected as melody solely because it is the highest pitch.");
+        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(67)), "Credible upper voice should survive density reduction.");
         Equal(1, result.Diagnostics.DensityDrops);
+        Equal(1, result.Diagnostics.WeakSkylineRejects);
+    }
+
+    public static void DensityLimitUsesMelodyContinuityAcrossClusters()
+    {
+        var notes = new[]
+        {
+            Note(0, 450, 60, 0.90f),
+            Note(0, 450, 64, 0.82f),
+            Note(0, 450, 72, 0.76f),
+            Note(500, 950, 60, 0.95f),
+            Note(500, 950, 64, 0.90f),
+            Note(500, 950, 74, 0.65f),
+            Note(500, 950, 84, 0.70f)
+        };
+        var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 3);
+
+        var result = new RobloxPianoArranger().Arrange("continuity", notes, options);
+        var secondCluster = result.Track.Events
+            .Where(item => item.Start == TimeSpan.FromMilliseconds(500))
+            .Select(item => item.Keys.Single())
+            .ToHashSet();
+
+        Equal(3, secondCluster.Count);
+        True(secondCluster.Contains(MidiKeyboardProfile.RobloxClassic61.Map(74)), "Near-contour melody should be protected across adjacent dense clusters.");
+        True(!secondCluster.Contains(MidiKeyboardProfile.RobloxClassic61.Map(84)), "A higher competing voice must not displace a credible continuous melody solely through skyline pitch.");
+        Equal(1, result.Diagnostics.DensityDrops);
+        Equal(1, result.Diagnostics.MelodyContinuitySelections);
     }
 
     public static void FoldedDuplicatePitchIsMergedDeterministically()
@@ -88,6 +125,23 @@ internal static class RobloxPianoArrangerRegression
         Equal(1, result.Diagnostics.TooShortDrops);
         Equal(1, result.Diagnostics.LowActivationEvents);
         True(result.Diagnostics.RequiresReview, "Low-activation arrangement must surface review need rather than silently claiming high confidence.");
+    }
+
+    public static void MelodyPolicyFailsClosedOnInvalidThresholds()
+    {
+        var notes = new[] { Note(0, 500, 60, 0.8f) };
+        Throws<ArgumentOutOfRangeException>(() => new RobloxPianoArranger().Arrange(
+            "invalid-melody-floor",
+            notes,
+            new RobloxPianoArrangementOptions(MelodyActivationFloor: 1.1f)));
+        Throws<ArgumentOutOfRangeException>(() => new RobloxPianoArranger().Arrange(
+            "invalid-relative-floor",
+            notes,
+            new RobloxPianoArrangementOptions(MelodyRelativeActivationFloor: 0f)));
+        Throws<ArgumentOutOfRangeException>(() => new RobloxPianoArranger().Arrange(
+            "invalid-leap",
+            notes,
+            new RobloxPianoArrangementOptions(MelodyContinuityMaxLeapSemitones: 0)));
     }
 
     public static void PreCancelledArrangementStopsBeforeMutation()
