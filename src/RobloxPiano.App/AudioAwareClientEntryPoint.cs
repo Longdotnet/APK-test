@@ -45,6 +45,16 @@ internal static class AudioAwareClientEntryPoint
         {
             ClientConsoleWindow.Hide();
             ApplicationConfiguration.Initialize();
+            var localRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RobloxPiano");
+            var maintenance = AudioReviewDraftStorageMaintenance.RunBestEffort(
+                Path.Combine(localRoot, "audio-review-drafts"));
+            ClientDiagnostics.Log(
+                $"Audio review draft maintenance: drafts={maintenance.DraftsScanned}, referencedEvidence={maintenance.ReferencedEvidenceCount}, " +
+                $"deletedEvidence={maintenance.DeletedOrphanEvidenceCount}, deletedTemps={maintenance.DeletedStaleTempCount}, " +
+                $"reclaimedBytes={maintenance.ReclaimedBytes}, totalBytes={maintenance.TotalBytesAfter}, " +
+                $"evidenceGcSkipped={maintenance.EvidenceGcSkipped}, quotaExceeded={maintenance.QuotaStillExceeded}.");
             ClientDiagnostics.Log("Create Piano Version client surface opened.");
             Application.Run(new AudioToPianoCreateForm());
             ClientDiagnostics.Log("Create Piano Version client surface closed.");
