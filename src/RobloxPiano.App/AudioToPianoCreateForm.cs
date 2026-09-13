@@ -27,6 +27,7 @@ internal sealed class AudioToPianoCreateForm : Form
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100 };
     private readonly Label _status = CreateLabel("Choose an owned/local audio file. Nothing is uploaded.");
     private readonly Label _reviewStatus = CreateLabel(string.Empty);
+    private readonly Label _qualityStatus = CreateLabel(string.Empty);
     private readonly Label _result = CreateLabel(string.Empty);
     private CancellationTokenSource? _runCancellation;
     private PerformanceTrack? _generatedTrack;
@@ -42,7 +43,7 @@ internal sealed class AudioToPianoCreateForm : Form
         Text = "Create Piano Version";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(720, 430);
-        Size = new Size(960, 600);
+        Size = new Size(960, 640);
 
         var managedRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -131,17 +132,10 @@ internal sealed class AudioToPianoCreateForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(18),
             ColumnCount = 1,
-            RowCount = 10
+            RowCount = 11
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var index = 0; index < 10; index++)
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         root.Controls.Add(new Label { Text = "Create Piano Version", AutoSize = true, Font = new Font(Font.FontFamily, 18f, FontStyle.Bold) }, 0, 0);
         root.Controls.Add(intro, 0, 1);
@@ -152,7 +146,8 @@ internal sealed class AudioToPianoCreateForm : Form
         root.Controls.Add(_progress, 0, 6);
         root.Controls.Add(_status, 0, 7);
         root.Controls.Add(_reviewStatus, 0, 8);
-        root.Controls.Add(_result, 0, 9);
+        root.Controls.Add(_qualityStatus, 0, 9);
+        root.Controls.Add(_result, 0, 10);
         Controls.Add(root);
     }
 
@@ -244,10 +239,15 @@ internal sealed class AudioToPianoCreateForm : Form
                 _repairSession = new AudioTranscriptionReviewRepairSession(
                     diagnostics.SourceDuration,
                     transcription.NoteEvidence,
-                    track);
+                    track,
+                    baseQuality: diagnostics.BaseQuality);
                 _generatedTrack = _repairSession.CurrentTrack;
                 _reviewRegions = _repairSession.ReviewRegions;
-                RefreshReadinessFromRepairState();
+                RefreshQualityFromRepairState();
+            }
+            else
+            {
+                _qualityStatus.Text = FormatInitialQuality(quality);
             }
 
             var reasons = quality.Reasons.Count == 0 ? "none" : string.Join(", ", quality.Reasons);
@@ -259,9 +259,8 @@ internal sealed class AudioToPianoCreateForm : Form
             };
             _result.Text =
                 $"{track.Title} • {track.Events.Count} events • {track.Bpm:0.###} BPM • {FormatTime(track.TimelineDuration)}{Environment.NewLine}" +
-                $"Readiness: {_generatedReadiness} • initial reasons: {reasons}{Environment.NewLine}" +
-                $"Decoded notes: {diagnostics.DecodedNotes}; retained after suppression: {diagnostics.NotesAfterSuppression}; " +
-                $"elapsed: {diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
+                $"Overall readiness: {_generatedReadiness} • initial reasons: {reasons}{Environment.NewLine}" +
+                $"Decoded notes: {diagnostics.DecodedNotes}; retained after suppression: {diagnostics.NotesAfterSuppression}; elapsed: {diagnostics.TotalElapsed.TotalSeconds:0.0}s.{Environment.NewLine}{Environment.NewLine}" +
                 "Preview Original Region and Preview Repair are local A/B listening only and never mutate the canonical track. Only Apply Repair changes the current generated performance; Revert Repair restores the exact original. Add to Library writes only the current explicitly accepted canonical track after production MIDI round-trip verification. Roblox playback still requires the separate Runtime Input field gate.";
             UpdateReviewControls();
         }
@@ -304,7 +303,6 @@ internal sealed class AudioToPianoCreateForm : Form
     {
         if (_generatedTrack is null || _job.IsRunning || _reviewRegions.Count == 0)
             return;
-
         StartRegionPreview(_generatedTrack, _reviewRegions[_reviewRegionIndex], "original");
     }
 
@@ -364,11 +362,12 @@ internal sealed class AudioToPianoCreateForm : Form
             _reviewRegionIndex = _reviewRegions.Count == 0 ? 0 : Math.Min(_reviewRegionIndex, _reviewRegions.Count - 1);
             _addedToLibrary = false;
             AddedLibraryPath = null;
-            RefreshReadinessFromRepairState();
+            RefreshQualityFromRepairState();
             _status.Text = _reviewRegions.Count == 0
-                ? $"Applied {kind} explicitly. No local review regions remain; readiness is now {_generatedReadiness}. Revert is available until you add the current track to the Library."
-                : $"Applied {kind} explicitly. {_reviewRegions.Count} review region(s) remain; readiness is {_generatedReadiness}.";
-            ClientDiagnostics.Log($"Generated piano repair applied explicitly: kind={kind}, revision={result.Revision}, remainingReviewRegions={result.ReviewRegions.Count}, readiness={_generatedReadiness}.");
+                ? $"Applied {kind} explicitly. No local review regions remain; overall readiness is now {_generatedReadiness}. Revert is available until you add the current track to the Library."
+                : $"Applied {kind} explicitly. {_reviewRegions.Count} local review region(s) remain; overall readiness is {_generatedReadiness}.";
+            var currentQuality = _repairSession.CurrentQuality;
+            ClientDiagnostics.Log($"Generated piano repair applied explicitly: kind={kind}, revision={result.Revision}, remainingReviewRegions={result.ReviewRegions.Count}, overallReadiness={_generatedReadiness}, globalQualityReadiness={currentQuality?.Readiness}, reasons={FormatReasonCodes(currentQuality?.Reasons)}.");
             SetRunning(false);
         }
         catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
@@ -393,9 +392,9 @@ internal sealed class AudioToPianoCreateForm : Form
             _reviewRegionIndex = 0;
             _addedToLibrary = false;
             AddedLibraryPath = null;
-            RefreshReadinessFromRepairState();
-            _status.Text = $"Reverted to the exact original generated performance. {_reviewRegions.Count} review region(s) are active; readiness is {_generatedReadiness}.";
-            ClientDiagnostics.Log($"Generated piano repair reverted explicitly: revision={_repairSession.Revision}, reviewRegions={_reviewRegions.Count}, readiness={_generatedReadiness}.");
+            RefreshQualityFromRepairState();
+            _status.Text = $"Reverted to the exact original generated performance. {_reviewRegions.Count} local review region(s) are active; overall readiness is {_generatedReadiness}.";
+            ClientDiagnostics.Log($"Generated piano repair reverted explicitly: revision={_repairSession.Revision}, reviewRegions={_reviewRegions.Count}, overallReadiness={_generatedReadiness}, globalQualityReadiness={_repairSession.CurrentQuality?.Readiness}, reasons={FormatReasonCodes(_repairSession.CurrentQuality?.Reasons)}.");
             SetRunning(false);
         }
         catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
@@ -406,12 +405,12 @@ internal sealed class AudioToPianoCreateForm : Form
         }
     }
 
-    private void RefreshReadinessFromRepairState()
+    private void RefreshQualityFromRepairState()
     {
-        if (_baseQuality is null)
+        if (_repairSession?.CurrentQuality is not { } currentQuality)
             return;
 
-        _generatedReadiness = _baseQuality.Readiness switch
+        _generatedReadiness = currentQuality.Readiness switch
         {
             AudioTranscriptionReadiness.Rejected => AudioTranscriptionReadiness.Rejected,
             AudioTranscriptionReadiness.NeedsReview => AudioTranscriptionReadiness.NeedsReview,
@@ -419,7 +418,22 @@ internal sealed class AudioToPianoCreateForm : Form
                 ? AudioTranscriptionReadiness.Ready
                 : AudioTranscriptionReadiness.NeedsReview
         };
+
+        var presentation = AudioRepairQualityPresenter.From(_repairSession);
+        var localGate = currentQuality.Readiness == AudioTranscriptionReadiness.Ready && _reviewRegions.Count != 0
+            ? $"{Environment.NewLine}Overall readiness remains NeedsReview because {_reviewRegions.Count} local review region(s) still require an explicit decision."
+            : string.Empty;
+        _qualityStatus.Text = presentation.Summary + localGate;
     }
+
+    private static string FormatInitialQuality(AudioTranscriptionQualityAssessment quality)
+    {
+        var reasons = FormatReasonCodes(quality.Reasons);
+        return $"Quality: {quality.Readiness} • retention {quality.RetentionRatio:P0} • loss {quality.TransformLossRatio:P0} • coverage {quality.TimelineCoverage:P0} • density {quality.EventsPerSecond:0.0} events/s • reasons: {reasons}";
+    }
+
+    private static string FormatReasonCodes(IReadOnlyList<string>? reasons)
+        => reasons is null || reasons.Count == 0 ? "none" : string.Join(",", reasons);
 
     private void SelectReviewRegion(int delta)
     {
@@ -445,7 +459,7 @@ internal sealed class AudioToPianoCreateForm : Form
         if (!hasRegions)
         {
             _reviewStatus.Text = _repairSession?.CanRevert == true
-                ? $"No flagged local review regions remain after explicit repair. Current readiness: {_generatedReadiness}. Revert Repair restores the original generated performance."
+                ? $"No flagged local review regions remain after explicit repair. Current overall readiness: {_generatedReadiness}. Revert Repair restores the original generated performance."
                 : string.Empty;
             return;
         }
@@ -502,7 +516,7 @@ internal sealed class AudioToPianoCreateForm : Form
             AddedLibraryPath = saved.Path;
             _addToLibrary.Enabled = false;
             _status.Text = $"Added to Library as {Path.GetFileName(saved.Path)} — {saved.NoteCount} notes, {saved.ByteCount:N0} bytes, production MIDI round-trip verified.";
-            ClientDiagnostics.Log($"Generated piano version committed to Library after MIDI round-trip verification: file='{Path.GetFileName(saved.Path)}', notes={saved.NoteCount}, bytes={saved.ByteCount}, repairRevision={_repairSession?.Revision ?? 0}.");
+            ClientDiagnostics.Log($"Generated piano version committed to Library after MIDI round-trip verification: file='{Path.GetFileName(saved.Path)}', notes={saved.NoteCount}, bytes={saved.ByteCount}, repairRevision={_repairSession?.Revision ?? 0}, readiness={_generatedReadiness}.");
             UpdateReviewControls();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException or OverflowException)
@@ -542,6 +556,7 @@ internal sealed class AudioToPianoCreateForm : Form
         _preview.Enabled = false;
         _stopPreview.Enabled = false;
         _addToLibrary.Enabled = false;
+        _qualityStatus.Text = string.Empty;
         UpdateReviewControls();
     }
 
