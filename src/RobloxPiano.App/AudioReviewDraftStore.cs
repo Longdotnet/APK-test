@@ -46,7 +46,12 @@ internal sealed record AudioReviewDraftRestoreResult(
     AudioReviewQueue ReviewQueue,
     int SelectedRegionIndex,
     string SourcePath,
-    DateTimeOffset SavedAtUtc);
+    DateTimeOffset SavedAtUtc,
+    TimeSpan SourceDuration,
+    IReadOnlyList<BasicPitchTranscribedNote> SourceNotes,
+    PerformanceTrack OriginalTrack,
+    AudioTranscriptionQualityAssessment BaseQuality,
+    string DraftPath);
 
 /// <summary>
 /// Durable, local-only checkpoint for Audio-to-Piano review work. The checkpoint deliberately does not deserialize
@@ -60,6 +65,7 @@ internal sealed class AudioReviewDraftStore
     private const long MaximumDraftBytes = 32L * 1024L * 1024L;
     private const int MaximumNotes = 250_000;
     private const int MaximumEvents = 500_000;
+    private const int MaximumDiscoveryCandidates = 256;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -146,30 +152,67 @@ internal sealed class AudioReviewDraftStore
         }
     }
 
+    /// <summary>
+    /// Locates the most relevant draft for an owned/local source without trusting it. The exact current source hash is
+    /// the fast path. If the source bytes changed in-place, a bounded metadata scan can still surface the older draft so
+    /// RestoreAsync can reject it with an explicit source-changed error instead of silently pretending no draft exists.
+    /// </summary>
+    public async Task<string?> FindForSourceAsync(
+        string sourcePath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        var normalizedSourcePath = Path.GetFullPath(sourcePath);
+        if (!File.Exists(normalizedSourcePath) || !Directory.Exists(rootDirectory))
+            return null;
+
+        var currentSourceSha256 = await ComputeFileSha256Async(normalizedSourcePath, cancellationToken).ConfigureAwait(false);
+        var exactPath = GetDraftPath(currentSourceSha256);
+        if (File.Exists(exactPath))
+            return exactPath;
+
+        var candidates = new DirectoryInfo(rootDirectory)
+            .EnumerateFiles("*.review.json", SearchOption.TopDirectoryOnly)
+            .Where(file => file.Length > 0 && file.Length <= MaximumDraftBytes)
+            .OrderByDescending(file => file.LastWriteTimeUtc)
+            .Take(MaximumDiscoveryCandidates)
+            .ToArray();
+
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var document = await ReadDocumentAsync(candidate.FullName, cancellationToken).ConfigureAwait(false);
+                if (document is not null
+                    && !string.IsNullOrWhiteSpace(document.SourcePath)
+                    && string.Equals(Path.GetFullPath(document.SourcePath), normalizedSourcePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate.FullName;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+            {
+                // Discovery never trusts malformed checkpoints. Restore remains the authority for a selected candidate.
+            }
+        }
+
+        return null;
+    }
+
     public async Task<AudioReviewDraftRestoreResult> RestoreAsync(
         string draftPath,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(draftPath);
-        var normalizedDraftPath = Path.GetFullPath(draftPath);
+        var normalizedDraftPath = NormalizeOwnedDraftPath(draftPath);
         var fileInfo = new FileInfo(normalizedDraftPath);
         if (!fileInfo.Exists)
             throw new FileNotFoundException("Audio review draft was not found.", normalizedDraftPath);
         if (fileInfo.Length <= 0 || fileInfo.Length > MaximumDraftBytes)
             throw new InvalidDataException("Audio review draft is empty or exceeds the safety bound.");
 
-        AudioReviewDraftDocument? document;
-        await using (var stream = new FileStream(
-            normalizedDraftPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 64 * 1024,
-            options: FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            document = await JsonSerializer.DeserializeAsync<AudioReviewDraftDocument>(stream, JsonOptions, cancellationToken)
-                .ConfigureAwait(false);
-        }
+        var document = await ReadDocumentAsync(normalizedDraftPath, cancellationToken).ConfigureAwait(false);
         if (document is null)
             throw new InvalidDataException("Audio review draft could not be decoded.");
         ValidateDocument(document);
@@ -210,7 +253,27 @@ internal sealed class AudioReviewDraftStore
         var reviewQueue = new AudioReviewQueue();
         reviewQueue.RestoreState(repairSession.ReviewRegions, document.Queue);
         var selectedIndex = ResolveSelectedRegionIndex(repairSession.ReviewRegions, document.SelectedRegionKey, reviewQueue);
-        return new AudioReviewDraftRestoreResult(repairSession, reviewQueue, selectedIndex, sourcePath, document.SavedAtUtc);
+        return new AudioReviewDraftRestoreResult(
+            repairSession,
+            reviewQueue,
+            selectedIndex,
+            sourcePath,
+            document.SavedAtUtc,
+            sourceDuration,
+            notes,
+            originalTrack,
+            document.BaseQuality,
+            normalizedDraftPath);
+    }
+
+    public bool Delete(string draftPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(draftPath);
+        var normalizedDraftPath = NormalizeOwnedDraftPath(draftPath);
+        if (!File.Exists(normalizedDraftPath))
+            return false;
+        File.Delete(normalizedDraftPath);
+        return true;
     }
 
     public string GetDraftPath(string sourceSha256)
@@ -244,6 +307,34 @@ internal sealed class AudioReviewDraftStore
             Append(hash, "\n");
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    private async Task<AudioReviewDraftDocument?> ReadDocumentAsync(string path, CancellationToken cancellationToken)
+    {
+        var fileInfo = new FileInfo(path);
+        if (!fileInfo.Exists || fileInfo.Length <= 0 || fileInfo.Length > MaximumDraftBytes)
+            throw new InvalidDataException("Audio review draft is empty or exceeds the safety bound.");
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await JsonSerializer.DeserializeAsync<AudioReviewDraftDocument>(stream, JsonOptions, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private string NormalizeOwnedDraftPath(string draftPath)
+    {
+        var normalized = Path.GetFullPath(draftPath);
+        var root = rootDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!normalized.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            || !normalized.EndsWith(".review.json", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Audio review draft path is outside the managed local draft directory.");
+        }
+        return normalized;
     }
 
     private static async Task<string> ComputeFileSha256Async(string path, CancellationToken cancellationToken)
