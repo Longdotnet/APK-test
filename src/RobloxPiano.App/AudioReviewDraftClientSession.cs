@@ -6,11 +6,13 @@ namespace RobloxPiano.App;
 /// <summary>
 /// Keeps client-only review-draft persistence context separate from canonical repair/playback state. The coordinator
 /// never mutates a PerformanceTrack. It only checkpoints an already-authoritative repair session or restores one
-/// through AudioReviewDraftStore's deterministic replay/fingerprint gate.
+/// through AudioReviewDraftStore's deterministic replay/fingerprint gate. Draft discovery uses a disposable local
+/// lookup index; a miss/corruption falls back to authoritative store discovery and repairs the requested index entry.
 /// </summary>
 internal sealed class AudioReviewDraftClientSession
 {
     private readonly AudioReviewDraftStore store;
+    private readonly AudioReviewDraftLookupIndex lookupIndex;
     private string? sourcePath;
     private TimeSpan sourceDuration;
     private IReadOnlyList<BasicPitchTranscribedNote> sourceNotes = Array.Empty<BasicPitchTranscribedNote>();
@@ -18,7 +20,10 @@ internal sealed class AudioReviewDraftClientSession
     private AudioTranscriptionQualityAssessment? baseQuality;
 
     public AudioReviewDraftClientSession(AudioReviewDraftStore store)
-        => this.store = store ?? throw new ArgumentNullException(nameof(store));
+    {
+        this.store = store ?? throw new ArgumentNullException(nameof(store));
+        lookupIndex = new AudioReviewDraftLookupIndex(store);
+    }
 
     public string? ActiveDraftPath { get; private set; }
     public bool CanCheckpoint => sourcePath is not null
@@ -52,7 +57,26 @@ internal sealed class AudioReviewDraftClientSession
     }
 
     public async Task<string?> FindAsync(string ownedSourcePath, CancellationToken cancellationToken = default)
-        => await store.FindForSourceAsync(ownedSourcePath, cancellationToken).ConfigureAwait(false);
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownedSourcePath);
+        var indexed = lookupIndex.TryResolve(ownedSourcePath);
+        if (indexed is not null)
+            return indexed;
+
+        var discovered = await store.FindForSourceAsync(ownedSourcePath, cancellationToken).ConfigureAwait(false);
+        if (discovered is not null)
+        {
+            try
+            {
+                lookupIndex.Upsert(ownedSourcePath, discovered);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                // Index persistence is optional acceleration. Authoritative discovery already succeeded.
+            }
+        }
+        return discovered;
+    }
 
     public async Task<AudioReviewDraftRestoreResult> RestoreAsync(
         string draftPath,
@@ -65,6 +89,7 @@ internal sealed class AudioReviewDraftClientSession
         originalTrack = restored.OriginalTrack;
         baseQuality = restored.BaseQuality;
         ActiveDraftPath = restored.DraftPath;
+        TryIndex(sourcePath, ActiveDraftPath);
         return restored;
     }
 
@@ -89,6 +114,7 @@ internal sealed class AudioReviewDraftClientSession
             reviewQueue,
             selectedRegion,
             cancellationToken).ConfigureAwait(false);
+        TryIndex(sourcePath, ActiveDraftPath);
         return ActiveDraftPath;
     }
 
@@ -98,12 +124,17 @@ internal sealed class AudioReviewDraftClientSession
             return false;
         var path = ActiveDraftPath;
         ActiveDraftPath = null;
-        return store.Delete(path);
+        var deleted = store.Delete(path);
+        if (deleted)
+            TryRemoveIndex(path);
+        return deleted;
     }
 
     public bool Delete(string draftPath)
     {
         var deleted = store.Delete(draftPath);
+        if (deleted)
+            TryRemoveIndex(draftPath);
         if (string.Equals(Path.GetFullPath(draftPath), ActiveDraftPath, StringComparison.OrdinalIgnoreCase))
             ActiveDraftPath = null;
         return deleted;
@@ -117,5 +148,29 @@ internal sealed class AudioReviewDraftClientSession
         originalTrack = null;
         baseQuality = null;
         ActiveDraftPath = null;
+    }
+
+    private void TryIndex(string ownedSourcePath, string draftPath)
+    {
+        try
+        {
+            lookupIndex.Upsert(ownedSourcePath, draftPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            // The index is disposable acceleration state and must never block checkpoint/restore.
+        }
+    }
+
+    private void TryRemoveIndex(string draftPath)
+    {
+        try
+        {
+            lookupIndex.RemoveDraft(draftPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            // A stale index entry self-heals on next lookup; draft deletion remains authoritative.
+        }
     }
 }
