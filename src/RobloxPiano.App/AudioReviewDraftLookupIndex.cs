@@ -88,8 +88,6 @@ internal sealed class AudioReviewDraftLookupIndex
             document.Entries[sourceKey] = draftFileName;
             if (document.Entries.Count > MaximumEntries)
             {
-                // The index is disposable acceleration state. Rather than inventing an eviction ordering that could
-                // imply authority, keep the just-touched entry and let future authoritative discoveries repopulate.
                 document = new AudioReviewDraftLookupIndexDocument(
                     SchemaVersion,
                     new Dictionary<string, string>(StringComparer.Ordinal)
@@ -105,16 +103,22 @@ internal sealed class AudioReviewDraftLookupIndex
     public int ReplaceAll(IEnumerable<KeyValuePair<string, string>> sourceDraftPairs)
     {
         ArgumentNullException.ThrowIfNull(sourceDraftPairs);
+        return ReplaceAllSourceKeys(sourceDraftPairs.Select(pair =>
+            new KeyValuePair<string, string>(ComputeSourcePathKey(pair.Key), pair.Value)));
+    }
+
+    internal int ReplaceAllSourceKeys(IEnumerable<KeyValuePair<string, string>> sourceKeyDraftPairs)
+    {
+        ArgumentNullException.ThrowIfNull(sourceKeyDraftPairs);
         lock (rootGate)
         {
             var entries = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var pair in sourceDraftPairs)
+            foreach (var pair in sourceKeyDraftPairs)
             {
-                if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                if (!IsSha256(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
                     continue;
-                var sourceKey = ComputeSourcePathKey(pair.Key);
                 var draftFileName = GetManagedDraftFileName(pair.Value);
-                entries[sourceKey] = draftFileName;
+                entries[pair.Key.ToLowerInvariant()] = draftFileName;
                 if (entries.Count >= MaximumEntries)
                     break;
             }
@@ -273,7 +277,6 @@ internal sealed class AudioReviewDraftLookupIndex
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            // An accelerator must never make authoritative draft discovery or restore unavailable.
         }
     }
 
