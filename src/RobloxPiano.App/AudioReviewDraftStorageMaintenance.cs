@@ -76,7 +76,7 @@ internal static class AudioReviewDraftStorageMaintenance
         }
 
         var referencedEvidence = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var indexCandidates = new List<KeyValuePair<string, string>>();
+        var indexCandidates = new List<(string SourcePath, string DraftPath, DateTime LastWriteTimeUtc)>();
         var draftsScanned = 0;
         var ambiguousCheckpoint = false;
         foreach (var checkpoint in files.Where(file => file.Name.EndsWith(".review.json", StringComparison.OrdinalIgnoreCase)))
@@ -104,7 +104,7 @@ internal static class AudioReviewDraftStorageMaintenance
                 if (TryGetSourcePath(rootElement, out var sourcePath)
                     && AudioReviewDraftLookupIndex.IsManagedDraftFileName(checkpoint.Name))
                 {
-                    indexCandidates.Add(new KeyValuePair<string, string>(sourcePath, checkpoint.FullName));
+                    indexCandidates.Add((sourcePath, checkpoint.FullName, checkpoint.LastWriteTimeUtc));
                 }
 
                 if (schemaVersion == AudioReviewDraftStore.LegacySchemaVersion)
@@ -139,7 +139,11 @@ internal static class AudioReviewDraftStorageMaintenance
             try
             {
                 var lookupIndex = new AudioReviewDraftLookupIndex(new AudioReviewDraftStore(root));
-                indexEntriesRebuilt = lookupIndex.ReplaceAll(indexCandidates);
+                var orderedIndexCandidates = indexCandidates
+                    .OrderBy(candidate => candidate.LastWriteTimeUtc)
+                    .ThenBy(candidate => candidate.DraftPath, StringComparer.OrdinalIgnoreCase)
+                    .Select(candidate => new KeyValuePair<string, string>(candidate.SourcePath, candidate.DraftPath));
+                indexEntriesRebuilt = lookupIndex.ReplaceAll(orderedIndexCandidates);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
             {
