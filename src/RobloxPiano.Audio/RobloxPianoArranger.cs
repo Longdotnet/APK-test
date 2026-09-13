@@ -57,8 +57,8 @@ public sealed record RobloxPianoArrangementDiagnostics(
     int SameKeyOverlapDrops,
     int LowActivationEvents,
     float MeanActivation,
-    int WeakSkylineRejects,
-    int MelodyContinuitySelections)
+    int WeakSkylineRejects = 0,
+    int MelodyContinuitySelections = 0)
 {
     public bool RequiresReview => DensityDrops > 0 || OutOfRangeDrops > 0 || LowActivationEvents > 0;
 }
