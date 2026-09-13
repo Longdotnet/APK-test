@@ -49,6 +49,7 @@ internal static class RobloxPianoArrangerRegression
         True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(67)), "Credible upper voice should survive density reduction.");
         Equal(1, result.Diagnostics.DensityDrops);
         Equal(1, result.Diagnostics.WeakSkylineRejects);
+        Equal(0, result.Diagnostics.AdaptiveDensityDrops);
     }
 
     public static void DensityLimitUsesMelodyContinuityAcrossClusters()
@@ -76,6 +77,87 @@ internal static class RobloxPianoArrangerRegression
         True(!secondCluster.Contains(MidiKeyboardProfile.RobloxClassic61.Map(84)), "A higher competing voice must not displace a credible continuous melody solely through skyline pitch.");
         Equal(1, result.Diagnostics.DensityDrops);
         Equal(1, result.Diagnostics.MelodyContinuitySelections);
+        Equal(0, result.Diagnostics.AdaptiveDensityDrops);
+    }
+
+    public static void AdaptiveDensityPreservesSparseSectionAndDropsWeakDenseClutter()
+    {
+        var notes = new[]
+        {
+            // Sparse verse: never thin a cluster that is already within the hard Roblox density cap.
+            Note(0, 450, 60, 0.90f),
+            Note(0, 450, 64, 0.82f),
+            Note(0, 450, 67, 0.76f),
+
+            // Dense chorus/mixture after the continuity window: four strong musical voices plus weak clutter.
+            Note(3000, 3500, 55, 0.14f),
+            Note(3000, 3500, 60, 0.92f),
+            Note(3000, 3500, 64, 0.88f),
+            Note(3000, 3500, 67, 0.82f),
+            Note(3000, 3500, 72, 0.78f),
+            Note(3000, 3500, 76, 0.16f),
+            Note(3000, 3500, 79, 0.12f),
+            Note(3000, 3500, 84, 0.10f)
+        };
+        var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 6);
+
+        var result = new RobloxPianoArranger().Arrange("adaptive-density", notes, options);
+        var verse = result.Track.Events.Where(item => item.Start == TimeSpan.Zero).ToArray();
+        var chorus = result.Track.Events.Where(item => item.Start == TimeSpan.FromMilliseconds(3000)).ToArray();
+        var chorusKeys = chorus.Select(item => item.Keys.Single()).ToHashSet();
+
+        Equal(3, verse.Length);
+        Equal(4, chorus.Length);
+        True(chorusKeys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(72)), "Credible chorus melody must survive adaptive density filtering.");
+        True(chorusKeys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(60)), "Strong accompaniment must survive adaptive density filtering.");
+        True(chorusKeys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(64)), "Strong accompaniment must survive adaptive density filtering.");
+        True(chorusKeys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(67)), "Strong accompaniment must survive adaptive density filtering.");
+        True(!chorusKeys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(84)), "Weak upper clutter must not consume a Roblox chord slot.");
+        Equal(4, result.Diagnostics.DensityDrops);
+        Equal(2, result.Diagnostics.AdaptiveDensityDrops);
+    }
+
+    public static void AdaptiveDensityKeepsStrongHarmonyAtHardCap()
+    {
+        var notes = new[]
+        {
+            Note(0, 500, 48, 0.91f),
+            Note(0, 500, 55, 0.87f),
+            Note(0, 500, 60, 0.84f),
+            Note(0, 500, 64, 0.79f),
+            Note(0, 500, 67, 0.74f),
+            Note(0, 500, 72, 0.69f),
+            Note(0, 500, 76, 0.63f)
+        };
+        var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 4);
+
+        var result = new RobloxPianoArranger().Arrange("strong-harmony", notes, options);
+
+        Equal(4, result.Track.Events.Count);
+        Equal(3, result.Diagnostics.DensityDrops);
+        Equal(0, result.Diagnostics.AdaptiveDensityDrops);
+    }
+
+    public static void AdaptiveDensityCanBeDisabledForFixedCapParity()
+    {
+        var notes = new[]
+        {
+            Note(0, 500, 55, 0.14f),
+            Note(0, 500, 60, 0.92f),
+            Note(0, 500, 64, 0.88f),
+            Note(0, 500, 67, 0.82f),
+            Note(0, 500, 72, 0.78f),
+            Note(0, 500, 76, 0.16f),
+            Note(0, 500, 79, 0.12f),
+            Note(0, 500, 84, 0.10f)
+        };
+        var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 6, AdaptiveDensity: false);
+
+        var result = new RobloxPianoArranger().Arrange("fixed-cap-parity", notes, options);
+
+        Equal(6, result.Track.Events.Count);
+        Equal(2, result.Diagnostics.DensityDrops);
+        Equal(0, result.Diagnostics.AdaptiveDensityDrops);
     }
 
     public static void FoldedDuplicatePitchIsMergedDeterministically()
@@ -142,6 +224,14 @@ internal static class RobloxPianoArrangerRegression
             "invalid-leap",
             notes,
             new RobloxPianoArrangementOptions(MelodyContinuityMaxLeapSemitones: 0)));
+        Throws<ArgumentOutOfRangeException>(() => new RobloxPianoArranger().Arrange(
+            "invalid-accompaniment-floor",
+            notes,
+            new RobloxPianoArrangementOptions(AccompanimentActivationFloor: 1.1f)));
+        Throws<ArgumentOutOfRangeException>(() => new RobloxPianoArranger().Arrange(
+            "invalid-accompaniment-relative-floor",
+            notes,
+            new RobloxPianoArrangementOptions(AccompanimentRelativeActivationFloor: 0f)));
     }
 
     public static void PreCancelledArrangementStopsBeforeMutation()
