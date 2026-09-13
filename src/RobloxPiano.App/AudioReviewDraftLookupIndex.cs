@@ -29,6 +29,7 @@ internal sealed class AudioReviewDraftLookupIndex
     private readonly string rootDirectory;
     private readonly string indexPath;
     private readonly object rootGate;
+    private long committedWriteCount;
 
     public AudioReviewDraftLookupIndex(AudioReviewDraftStore store)
     {
@@ -41,6 +42,7 @@ internal sealed class AudioReviewDraftLookupIndex
     }
 
     internal string IndexPath => indexPath;
+    internal long CommittedWriteCount => Interlocked.Read(ref committedWriteCount);
 
     public string? TryResolve(string sourcePath)
     {
@@ -79,6 +81,10 @@ internal sealed class AudioReviewDraftLookupIndex
                 SchemaVersion,
                 new Dictionary<string, string>(StringComparer.Ordinal));
 
+            if (document.Entries.TryGetValue(sourceKey, out var existing)
+                && string.Equals(existing, draftFileName, StringComparison.OrdinalIgnoreCase))
+                return;
+
             document.Entries[sourceKey] = draftFileName;
             if (document.Entries.Count > MaximumEntries)
             {
@@ -92,7 +98,7 @@ internal sealed class AudioReviewDraftLookupIndex
                     });
             }
 
-            WriteDocument(document);
+            WriteDocumentIfChanged(document);
         }
     }
 
@@ -119,7 +125,7 @@ internal sealed class AudioReviewDraftLookupIndex
                 return 0;
             }
 
-            WriteDocument(new AudioReviewDraftLookupIndexDocument(SchemaVersion, entries));
+            WriteDocumentIfChanged(new AudioReviewDraftLookupIndexDocument(SchemaVersion, entries));
             return entries.Count;
         }
     }
@@ -150,7 +156,7 @@ internal sealed class AudioReviewDraftLookupIndex
                 TryDeleteIndex();
                 return;
             }
-            WriteDocument(document);
+            WriteDocumentIfChanged(document);
         }
     }
 
@@ -192,12 +198,15 @@ internal sealed class AudioReviewDraftLookupIndex
         }
     }
 
-    private void WriteDocument(AudioReviewDraftLookupIndexDocument document)
+    private bool WriteDocumentIfChanged(AudioReviewDraftLookupIndexDocument document)
     {
         Directory.CreateDirectory(rootDirectory);
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(document, JsonOptions);
+        var bytes = SerializeCanonical(document);
         if (bytes.LongLength <= 0 || bytes.LongLength > MaximumIndexBytes)
             throw new InvalidDataException("Audio review draft lookup index exceeds its safety bound.");
+
+        if (ExistingBytesMatch(bytes))
+            return false;
 
         var tempPath = indexPath + ".tmp-" + Guid.NewGuid().ToString("N");
         try
@@ -208,6 +217,8 @@ internal sealed class AudioReviewDraftLookupIndex
                 stream.Flush(flushToDisk: true);
             }
             File.Move(tempPath, indexPath, overwrite: true);
+            Interlocked.Increment(ref committedWriteCount);
+            return true;
         }
         finally
         {
@@ -225,6 +236,32 @@ internal sealed class AudioReviewDraftLookupIndex
         }
     }
 
+    private byte[] SerializeCanonical(AudioReviewDraftLookupIndexDocument document)
+    {
+        var ordered = document.Entries
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .ToDictionary(pair => pair.Key.ToLowerInvariant(), pair => pair.Value.ToLowerInvariant(), StringComparer.Ordinal);
+        return JsonSerializer.SerializeToUtf8Bytes(
+            new AudioReviewDraftLookupIndexDocument(SchemaVersion, ordered),
+            JsonOptions);
+    }
+
+    private bool ExistingBytesMatch(ReadOnlySpan<byte> expected)
+    {
+        try
+        {
+            var fileInfo = new FileInfo(indexPath);
+            if (!fileInfo.Exists || fileInfo.Length != expected.Length || fileInfo.Length <= 0 || fileInfo.Length > MaximumIndexBytes)
+                return false;
+            var existing = File.ReadAllBytes(indexPath);
+            return expected.SequenceEqual(existing);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     private void TryWriteDocument(AudioReviewDraftLookupIndexDocument document)
     {
         try
@@ -232,7 +269,7 @@ internal sealed class AudioReviewDraftLookupIndex
             if (document.Entries.Count == 0)
                 TryDeleteIndex();
             else
-                WriteDocument(document);
+                WriteDocumentIfChanged(document);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {

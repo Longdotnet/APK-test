@@ -22,11 +22,25 @@ internal static class AudioReviewDraftLookupIndexRegression
 
             Equal<string?>(null, index.TryResolve(sourcePath), "empty index must miss");
             index.Upsert(sourcePath, firstDraft);
+            Equal(1L, index.CommittedWriteCount, "first mapping must commit exactly one index write");
             Equal(Path.GetFullPath(firstDraft), index.TryResolve(sourcePath), "indexed source path must resolve in O(1) without reading checkpoint content");
             True(File.Exists(index.IndexPath), "lookup index must be persisted beside managed drafts");
             var persisted = File.ReadAllText(index.IndexPath);
             True(!persisted.Contains(Path.GetFullPath(sourcePath), StringComparison.OrdinalIgnoreCase), "lookup index must not persist raw client source paths");
             True(persisted.Contains(AudioReviewDraftLookupIndex.ComputeSourcePathKey(sourcePath), StringComparison.Ordinal), "lookup index must persist only a one-way source-path key");
+
+            var stableBytes = File.ReadAllBytes(index.IndexPath);
+            var stableWriteTime = File.GetLastWriteTimeUtc(index.IndexPath);
+            index.Upsert(sourcePath, firstDraft);
+            Equal(1L, index.CommittedWriteCount, "identical upsert must not rewrite the index");
+            True(stableBytes.SequenceEqual(File.ReadAllBytes(index.IndexPath)), "identical upsert must preserve canonical index bytes");
+            Equal(stableWriteTime, File.GetLastWriteTimeUtc(index.IndexPath), "identical upsert must preserve index write time");
+
+            var replacedCount = index.ReplaceAll([new KeyValuePair<string, string>(sourcePath, firstDraft)]);
+            Equal(1, replacedCount, "stable full rebuild must retain the mapping count");
+            Equal(1L, index.CommittedWriteCount, "unchanged cold-start rebuild must commit zero additional writes");
+            True(stableBytes.SequenceEqual(File.ReadAllBytes(index.IndexPath)), "unchanged cold-start rebuild must keep byte-identical canonical index content");
+            Equal(stableWriteTime, File.GetLastWriteTimeUtc(index.IndexPath), "unchanged cold-start rebuild must not touch index mtime");
 
             File.Delete(firstDraft);
             Equal<string?>(null, index.TryResolve(sourcePath), "missing managed draft must invalidate a stale index hit");
@@ -52,7 +66,7 @@ internal static class AudioReviewDraftLookupIndexRegression
             var client = new AudioReviewDraftClientSession(store);
             File.WriteAllText(secondDraft, "{}");
             index.Upsert(sourcePath, secondDraft);
-            Equal(Path.GetFullPath(secondDraft), client.FindAsync(sourcePath).GetAwaiter().GetResult(), "client discovery must consume the persisted accelerator");
+            Equal(Path.GetFullPath(secondDraft), client.FindAsync(sourcePath).GetAwaiter().GetResult(), "client discovery must consume the persisted accelerator even when checkpoint content is not a valid resumable document");
         }
         finally
         {
