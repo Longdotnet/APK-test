@@ -13,11 +13,16 @@ internal static class AudioRepairQualityPresenter
     public static AudioRepairQualityPresentation From(AudioTranscriptionReviewRepairSession session)
     {
         ArgumentNullException.ThrowIfNull(session);
-        var current = session.CurrentQuality
+        _ = session.CurrentQuality
             ?? throw new InvalidOperationException("Repair quality presentation requires authoritative current quality.");
         var delta = session.CompareCurrent()
             ?? throw new InvalidOperationException("Repair quality presentation requires an immutable base quality assessment.");
+        return From(delta);
+    }
 
+    internal static AudioRepairQualityPresentation From(AudioTranscriptionQualityDelta delta)
+    {
+        ArgumentNullException.ThrowIfNull(delta);
         var transition = delta.ReadinessChanged
             ? $"{delta.Before.Readiness} → {delta.Current.Readiness}"
             : delta.Current.Readiness.ToString();
@@ -34,7 +39,7 @@ internal static class AudioRepairQualityPresenter
 
         return new AudioRepairQualityPresentation(
             summary,
-            current.Readiness,
+            delta.Current.Readiness,
             delta.ImprovedReadiness,
             delta.RegressedReadiness);
     }
