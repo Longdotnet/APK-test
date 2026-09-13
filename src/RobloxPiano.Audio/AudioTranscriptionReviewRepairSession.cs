@@ -19,11 +19,11 @@ public sealed record AudioTranscriptionReviewRepairApplyResult(
 
 /// <summary>
 /// Owns deterministic review-repair state for one generated piano result.
-/// Candidate preview is side-effect free. Canonical session state changes only through an explicit Apply,
-/// and Revert restores the exact original generated performance. When the original global quality assessment
-/// is supplied, every successful Apply recomputes only canonical-track-dependent quality evidence while
-/// preserving immutable source/model evidence. This boundary never persists to the library, schedules Roblox
-/// playback, or authorizes input.
+/// Candidate preview and candidate-quality recommendation are side-effect free. Canonical session state changes
+/// only through an explicit Apply, and Revert restores the exact original generated performance. When the original
+/// global quality assessment is supplied, every successful Apply recomputes only canonical-track-dependent quality
+/// evidence while preserving immutable source/model evidence. This boundary never persists to the library,
+/// schedules Roblox playback, or authorizes input.
 /// </summary>
 public sealed class AudioTranscriptionReviewRepairSession
 {
@@ -108,6 +108,58 @@ public sealed class AudioTranscriptionReviewRepairSession
             .SingleOrDefault(value => value.Kind == kind);
         return candidate ?? throw new InvalidOperationException(
             $"Repair kind {kind} does not produce a distinct deterministic candidate for the selected review region.");
+    }
+
+    public IReadOnlyList<AudioTranscriptionReviewRepairCandidateQuality> PreviewCandidateQualities(
+        AudioTranscriptionReviewRegion region,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var currentRegion = ResolveCurrentRegion(region);
+        var baselineQuality = currentQuality ?? throw new InvalidOperationException(
+            "Candidate quality preview requires an authoritative current quality assessment.");
+        var candidates = generator.Generate(
+            currentTrack,
+            sourceNotes,
+            currentRegion,
+            options.Repair,
+            cancellationToken);
+        if (candidates.Count == 0)
+            return Array.Empty<AudioTranscriptionReviewRepairCandidateQuality>();
+
+        var sessionRevision = revision;
+        var assessments = new List<AudioTranscriptionReviewRepairCandidateQuality>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidateRegions = Analyze(candidate.Track, cancellationToken);
+            var candidateQuality = ReevaluateQuality(candidate.Track, cancellationToken)
+                ?? throw new InvalidOperationException("Candidate quality preview lost the authoritative quality contract.");
+            var delta = AudioTranscriptionQualityDeltaEvaluator.Compare(baselineQuality, candidateQuality);
+            var selectedRegionResolved = !candidateRegions.Any(candidateRegion =>
+                candidateRegion.Start < currentRegion.End && candidateRegion.End > currentRegion.Start);
+
+            assessments.Add(new AudioTranscriptionReviewRepairCandidateQuality(
+                candidate,
+                candidateQuality,
+                delta,
+                candidateRegions,
+                selectedRegionResolved,
+                sessionRevision));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (revision != sessionRevision)
+            throw new InvalidOperationException("Repair session changed while candidate quality evidence was being evaluated.");
+        return assessments.AsReadOnly();
+    }
+
+    public AudioTranscriptionReviewRepairRecommendation RecommendCandidate(
+        AudioTranscriptionReviewRegion region,
+        CancellationToken cancellationToken = default)
+    {
+        var candidates = PreviewCandidateQualities(region, cancellationToken);
+        return AudioTranscriptionReviewRepairRecommendationEvaluator.Recommend(candidates, revision);
     }
 
     public AudioTranscriptionReviewRepairApplyResult Apply(
