@@ -64,11 +64,13 @@ internal static class AudioReviewDraftStorageMaintenanceRegression
             Require(result.ReviewIndexEntriesRebuilt == 1, "expected one valid source-to-draft index mapping");
             Require(index.TryResolve(sourcePath) == managedDraftPath, "cold-start maintenance rebuild should make valid draft directly resolvable");
 
+            var indexBytes = File.ReadAllBytes(index.IndexPath);
             var indexWriteTime = File.GetLastWriteTimeUtc(index.IndexPath);
             var second = AudioReviewDraftStorageMaintenance.RunBestEffort(root, now + TimeSpan.FromMinutes(1));
             Require(second.ReviewIndexEntriesRebuilt == 1, "repeat maintenance should deterministically rebuild the same mapping set");
             Require(index.TryResolve(sourcePath) == managedDraftPath, "repeat maintenance must preserve direct lookup behavior");
-            Require(File.GetLastWriteTimeUtc(index.IndexPath) >= indexWriteTime, "rebuilt index should remain a valid committed accelerator");
+            Require(indexBytes.SequenceEqual(File.ReadAllBytes(index.IndexPath)), "unchanged startup rebuild must preserve canonical index bytes");
+            Require(File.GetLastWriteTimeUtc(index.IndexPath) == indexWriteTime, "unchanged startup rebuild must perform zero committed index rewrites");
 
             var ambiguousRoot = Path.Combine(root, "ambiguous");
             Directory.CreateDirectory(ambiguousRoot);
