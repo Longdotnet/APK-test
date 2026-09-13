@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using RobloxPiano.App;
 using RobloxPiano.Audio;
 using RobloxPiano.Core;
@@ -7,7 +6,6 @@ namespace RobloxPiano.AudioUxTests;
 
 internal static class AudioReviewDraftStoreRegression
 {
-    [ModuleInitializer]
     internal static void Run()
         => RunAsync().GetAwaiter().GetResult();
 
@@ -16,7 +14,7 @@ internal static class AudioReviewDraftStoreRegression
         var root = Path.Combine(Path.GetTempPath(), "roblox-piano-audio-review-draft-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var sourcePath = Path.Combine(root, "owned-audio.wav");
-        await File.WriteAllBytesAsync(sourcePath, Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray());
+        await File.WriteAllBytesAsync(sourcePath, Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray()).ConfigureAwait(false);
 
         try
         {
@@ -77,22 +75,22 @@ internal static class AudioReviewDraftStoreRegression
                 baseQuality,
                 session,
                 queue,
-                selected);
+                selected).ConfigureAwait(false);
 
             True(File.Exists(draftPath), "checkpoint must be committed to its final path");
             Equal(0, Directory.GetFiles(Path.GetDirectoryName(draftPath)!, "*.tmp-*", SearchOption.TopDirectoryOnly).Length, "atomic temp files must be cleaned");
 
-            var restored = await store.RestoreAsync(draftPath);
+            var restored = await store.RestoreAsync(draftPath).ConfigureAwait(false);
             Equal(expectedFingerprint, PerformanceTrackFingerprint.ComputeSha256(restored.RepairSession.CurrentTrack), "restored canonical fingerprint");
             Equal(1, restored.ReviewQueue.AppliedDecisionCount, "applied decision history");
             Equal(Path.GetFullPath(sourcePath), restored.SourcePath, "source path");
             if (restored.RepairSession.ReviewRegions.Count > 0)
                 True(restored.SelectedRegionIndex >= 0 && restored.SelectedRegionIndex < restored.RepairSession.ReviewRegions.Count, "selected region must be bounded");
 
-            await File.AppendAllTextAsync(sourcePath, "changed");
+            await File.AppendAllTextAsync(sourcePath, "changed").ConfigureAwait(false);
             await ThrowsAsync<InvalidDataException>(
                 () => store.RestoreAsync(draftPath),
-                "changed source audio must fail closed");
+                "changed source audio must fail closed").ConfigureAwait(false);
         }
         finally
         {
@@ -114,7 +112,7 @@ internal static class AudioReviewDraftStoreRegression
     {
         try
         {
-            await action();
+            await action().ConfigureAwait(false);
         }
         catch (TException)
         {
