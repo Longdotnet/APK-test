@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using RobloxPiano.Audio;
 using RobloxPiano.Core;
 
@@ -33,13 +34,21 @@ internal sealed record AudioReviewDraftDocument(
     string SourceSha256,
     string EvidenceSha256,
     long SourceDurationTicks,
-    AudioReviewDraftNote[] Notes,
-    AudioReviewDraftTrack OriginalTrack,
-    AudioTranscriptionQualityAssessment BaseQuality,
+    AudioReviewDraftNote[]? Notes,
+    AudioReviewDraftTrack? OriginalTrack,
+    AudioTranscriptionQualityAssessment? BaseQuality,
     AudioReviewQueuePersistedState Queue,
     string CurrentTrackSha256,
     string? SelectedRegionKey,
     DateTimeOffset SavedAtUtc);
+
+internal sealed record AudioReviewEvidenceDocument(
+    int SchemaVersion,
+    string EvidenceSha256,
+    long SourceDurationTicks,
+    AudioReviewDraftNote[] Notes,
+    AudioReviewDraftTrack OriginalTrack,
+    AudioTranscriptionQualityAssessment BaseQuality);
 
 internal sealed record AudioReviewDraftRestoreResult(
     AudioTranscriptionReviewRepairSession RepairSession,
@@ -59,28 +68,40 @@ internal sealed record AudioReviewSourceIdentity(
     long LastWriteTimeUtcTicks,
     string Sha256);
 
+internal sealed record AudioReviewEvidence(
+    TimeSpan SourceDuration,
+    IReadOnlyList<BasicPitchTranscribedNote> SourceNotes,
+    PerformanceTrack OriginalTrack,
+    AudioTranscriptionQualityAssessment BaseQuality);
+
 /// <summary>
-/// Durable, local-only checkpoint for Audio-to-Piano review work. The checkpoint deliberately does not deserialize
-/// a repaired PerformanceTrack as playback truth. Restore rebuilds a fresh repair session from immutable Basic Pitch
-/// note evidence plus the original canonical track, replays explicit repair decisions deterministically, then requires
-/// the rebuilt current-track SHA-256 to equal the saved fingerprint before exposing the draft.
+/// Durable, local-only checkpoint for Audio-to-Piano review work. Schema v2 keeps immutable Basic Pitch evidence in a
+/// content-addressed snapshot and rewrites only the small mutable repair/queue checkpoint. Restore never trusts a
+/// serialized repaired PerformanceTrack: it full-verifies the source, validates immutable evidence, deterministically
+/// replays explicit repair decisions and requires the rebuilt canonical-track SHA-256 to equal the saved fingerprint.
+/// Legacy schema v1 checkpoints remain readable so existing client review work is not discarded during upgrade.
 /// </summary>
 internal sealed class AudioReviewDraftStore
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
+    public const int LegacySchemaVersion = 1;
+    private const int EvidenceSchemaVersion = 1;
     private const long MaximumDraftBytes = 32L * 1024L * 1024L;
+    private const long MaximumEvidenceBytes = 32L * 1024L * 1024L;
     private const int MaximumNotes = 250_000;
     private const int MaximumEvents = 500_000;
     private const int MaximumDiscoveryCandidates = 256;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = false
+        WriteIndented = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     private readonly string rootDirectory;
     private readonly object sourceIdentityGate = new();
     private readonly Dictionary<string, AudioReviewSourceIdentity> sourceIdentities = new(StringComparer.OrdinalIgnoreCase);
     private long sourceHashComputationCount;
+    private long evidenceSnapshotWriteCount;
 
     public AudioReviewDraftStore(string rootDirectory)
     {
@@ -90,6 +111,7 @@ internal sealed class AudioReviewDraftStore
     }
 
     internal long SourceHashComputationCount => Interlocked.Read(ref sourceHashComputationCount);
+    internal long EvidenceSnapshotWriteCount => Interlocked.Read(ref evidenceSnapshotWriteCount);
 
     public async Task<string> SaveAsync(
         string sourcePath,
@@ -110,10 +132,7 @@ internal sealed class AudioReviewDraftStore
         ArgumentNullException.ThrowIfNull(baseQuality);
         ArgumentNullException.ThrowIfNull(repairSession);
         ArgumentNullException.ThrowIfNull(reviewQueue);
-        if (sourceNotes.Count == 0 || sourceNotes.Count > MaximumNotes)
-            throw new InvalidDataException($"Review draft note evidence must contain between 1 and {MaximumNotes} notes.");
-        if (originalTrack.Events.Count > MaximumEvents)
-            throw new InvalidDataException($"Review draft original track exceeds the {MaximumEvents}-event safety bound.");
+        ValidateEvidenceBounds(sourceDuration.Ticks, sourceNotes.Count, originalTrack.Events.Count);
 
         var normalizedSourcePath = Path.GetFullPath(sourcePath);
         var sourceIdentity = await ResolveSourceIdentityAsync(
@@ -123,16 +142,24 @@ internal sealed class AudioReviewDraftStore
             cancellationToken).ConfigureAwait(false);
         var sourceSha256 = sourceIdentity.Sha256;
         var evidenceSha256 = ComputeEvidenceSha256(sourceDuration, sourceNotes, originalTrack, baseQuality);
+        await EnsureEvidenceSnapshotAsync(
+            evidenceSha256,
+            sourceDuration,
+            sourceNotes,
+            originalTrack,
+            baseQuality,
+            cancellationToken).ConfigureAwait(false);
+
         var currentTrackSha256 = PerformanceTrackFingerprint.ComputeSha256(repairSession.CurrentTrack);
         var document = new AudioReviewDraftDocument(
             SchemaVersion,
             normalizedSourcePath,
             sourceSha256,
             evidenceSha256,
-            sourceDuration.Ticks,
-            sourceNotes.Select(ToDraftNote).ToArray(),
-            ToDraftTrack(originalTrack),
-            baseQuality,
+            SourceDurationTicks: 0,
+            Notes: null,
+            OriginalTrack: null,
+            BaseQuality: null,
             reviewQueue.ExportState(),
             currentTrackSha256,
             selectedRegion is null ? null : AudioReviewQueue.GetRegionKey(selectedRegion),
@@ -140,32 +167,8 @@ internal sealed class AudioReviewDraftStore
 
         Directory.CreateDirectory(rootDirectory);
         var draftPath = GetDraftPath(sourceSha256);
-        var tempPath = draftPath + ".tmp-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-        try
-        {
-            await using (var stream = new FileStream(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 64 * 1024,
-                options: FileOptions.Asynchronous | FileOptions.WriteThrough))
-            {
-                await JsonSerializer.SerializeAsync(stream, document, JsonOptions, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                stream.Flush(flushToDisk: true);
-            }
-
-            var writtenLength = new FileInfo(tempPath).Length;
-            if (writtenLength <= 0 || writtenLength > MaximumDraftBytes)
-                throw new InvalidDataException($"Review draft size {writtenLength} bytes is outside the allowed bound.");
-            File.Move(tempPath, draftPath, overwrite: true);
-            return draftPath;
-        }
-        finally
-        {
-            TryDelete(tempPath);
-        }
+        await WriteAtomicJsonAsync(draftPath, document, MaximumDraftBytes, overwrite: true, cancellationToken).ConfigureAwait(false);
+        return draftPath;
     }
 
     /// <summary>
@@ -246,18 +249,22 @@ internal sealed class AudioReviewDraftStore
         if (!string.Equals(actualSourceIdentity.Sha256, document.SourceSha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Owned/local source audio changed after this review draft was saved. Regenerate instead of restoring stale review state.");
 
-        var sourceDuration = TimeSpan.FromTicks(document.SourceDurationTicks);
-        var notes = document.Notes.Select(FromDraftNote).ToArray();
-        var originalTrack = FromDraftTrack(document.OriginalTrack);
-        var evidenceSha256 = ComputeEvidenceSha256(sourceDuration, notes, originalTrack, document.BaseQuality);
+        var evidence = document.SchemaVersion == LegacySchemaVersion
+            ? RestoreLegacyEvidence(document)
+            : await ReadEvidenceSnapshotAsync(document.EvidenceSha256, cancellationToken).ConfigureAwait(false);
+        var evidenceSha256 = ComputeEvidenceSha256(
+            evidence.SourceDuration,
+            evidence.SourceNotes,
+            evidence.OriginalTrack,
+            evidence.BaseQuality);
         if (!string.Equals(evidenceSha256, document.EvidenceSha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Audio review draft evidence fingerprint does not match its persisted evidence.");
 
         var repairSession = new AudioTranscriptionReviewRepairSession(
-            sourceDuration,
-            notes,
-            originalTrack,
-            baseQuality: document.BaseQuality,
+            evidence.SourceDuration,
+            evidence.SourceNotes,
+            evidence.OriginalTrack,
+            baseQuality: evidence.BaseQuality,
             cancellationToken: cancellationToken);
 
         foreach (var decision in document.Queue.AppliedDecisions)
@@ -283,10 +290,10 @@ internal sealed class AudioReviewDraftStore
             selectedIndex,
             sourcePath,
             document.SavedAtUtc,
-            sourceDuration,
-            notes,
-            originalTrack,
-            document.BaseQuality,
+            evidence.SourceDuration,
+            evidence.SourceNotes,
+            evidence.OriginalTrack,
+            evidence.BaseQuality,
             normalizedDraftPath);
     }
 
@@ -296,7 +303,23 @@ internal sealed class AudioReviewDraftStore
         var normalizedDraftPath = NormalizeOwnedDraftPath(draftPath);
         if (!File.Exists(normalizedDraftPath))
             return false;
+
+        string? evidenceSha256 = null;
+        try
+        {
+            using var stream = new FileStream(normalizedDraftPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var document = JsonSerializer.Deserialize<AudioReviewDraftDocument>(stream, JsonOptions);
+            if (document?.SchemaVersion == SchemaVersion && IsSha256(document.EvidenceSha256))
+                evidenceSha256 = document.EvidenceSha256;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            // Cleanup must still remove a malformed owned checkpoint. Untrusted evidence is never followed from it.
+        }
+
         File.Delete(normalizedDraftPath);
+        if (evidenceSha256 is not null)
+            TryDeleteEvidenceIfUnreferenced(evidenceSha256);
         return true;
     }
 
@@ -305,6 +328,13 @@ internal sealed class AudioReviewDraftStore
         if (!IsSha256(sourceSha256))
             throw new ArgumentException("Expected a lowercase or uppercase SHA-256 hex digest.", nameof(sourceSha256));
         return Path.Combine(rootDirectory, sourceSha256.ToLowerInvariant() + ".review.json");
+    }
+
+    internal string GetEvidencePath(string evidenceSha256)
+    {
+        if (!IsSha256(evidenceSha256))
+            throw new ArgumentException("Expected a lowercase or uppercase SHA-256 hex digest.", nameof(evidenceSha256));
+        return Path.Combine(rootDirectory, evidenceSha256.ToLowerInvariant() + ".evidence.json");
     }
 
     internal static string ComputeEvidenceSha256(
@@ -331,6 +361,93 @@ internal sealed class AudioReviewDraftStore
             Append(hash, "\n");
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    private async Task EnsureEvidenceSnapshotAsync(
+        string evidenceSha256,
+        TimeSpan sourceDuration,
+        IReadOnlyList<BasicPitchTranscribedNote> sourceNotes,
+        PerformanceTrack originalTrack,
+        AudioTranscriptionQualityAssessment baseQuality,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(rootDirectory);
+        var evidencePath = GetEvidencePath(evidenceSha256);
+        if (File.Exists(evidencePath))
+            return;
+
+        var document = new AudioReviewEvidenceDocument(
+            EvidenceSchemaVersion,
+            evidenceSha256,
+            sourceDuration.Ticks,
+            sourceNotes.Select(ToDraftNote).ToArray(),
+            ToDraftTrack(originalTrack),
+            baseQuality);
+        var wrote = await WriteAtomicJsonAsync(
+            evidencePath,
+            document,
+            MaximumEvidenceBytes,
+            overwrite: false,
+            cancellationToken).ConfigureAwait(false);
+        if (wrote)
+            Interlocked.Increment(ref evidenceSnapshotWriteCount);
+    }
+
+    private async Task<AudioReviewEvidence> ReadEvidenceSnapshotAsync(
+        string evidenceSha256,
+        CancellationToken cancellationToken)
+    {
+        var evidencePath = GetEvidencePath(evidenceSha256);
+        var fileInfo = new FileInfo(evidencePath);
+        if (!fileInfo.Exists)
+            throw new InvalidDataException("Audio review draft immutable evidence snapshot is missing. Regenerate instead of restoring incomplete state.");
+        if (fileInfo.Length <= 0 || fileInfo.Length > MaximumEvidenceBytes)
+            throw new InvalidDataException("Audio review immutable evidence snapshot is empty or exceeds the safety bound.");
+
+        await using var stream = new FileStream(
+            evidencePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var document = await JsonSerializer.DeserializeAsync<AudioReviewEvidenceDocument>(stream, JsonOptions, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot could not be decoded.");
+        if (document.SchemaVersion != EvidenceSchemaVersion
+            || !IsSha256(document.EvidenceSha256)
+            || !string.Equals(document.EvidenceSha256, evidenceSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Audio review immutable evidence snapshot identity is malformed.");
+        }
+
+        var draftNotes = document.Notes
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot note evidence is missing.");
+        var draftOriginalTrack = document.OriginalTrack
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot original track is missing.");
+        var baseQuality = document.BaseQuality
+            ?? throw new InvalidDataException("Audio review immutable evidence snapshot base quality is missing.");
+        ValidateEvidenceBounds(document.SourceDurationTicks, draftNotes.Length, draftOriginalTrack.Events?.Length ?? -1);
+
+        var sourceDuration = TimeSpan.FromTicks(document.SourceDurationTicks);
+        var notes = draftNotes.Select(FromDraftNote).ToArray();
+        var originalTrack = FromDraftTrack(draftOriginalTrack);
+        var actualSha256 = ComputeEvidenceSha256(sourceDuration, notes, originalTrack, baseQuality);
+        if (!string.Equals(actualSha256, evidenceSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Audio review immutable evidence snapshot fingerprint does not match its content.");
+        return new AudioReviewEvidence(sourceDuration, notes, originalTrack, baseQuality);
+    }
+
+    private static AudioReviewEvidence RestoreLegacyEvidence(AudioReviewDraftDocument document)
+    {
+        if (document.Notes is null || document.OriginalTrack is null || document.BaseQuality is null)
+            throw new InvalidDataException("Legacy audio review draft immutable evidence is incomplete.");
+        ValidateEvidenceBounds(document.SourceDurationTicks, document.Notes.Length, document.OriginalTrack.Events?.Length ?? -1);
+        return new AudioReviewEvidence(
+            TimeSpan.FromTicks(document.SourceDurationTicks),
+            document.Notes.Select(FromDraftNote).ToArray(),
+            FromDraftTrack(document.OriginalTrack),
+            document.BaseQuality);
     }
 
     private async Task<AudioReviewSourceIdentity> ResolveSourceIdentityAsync(
@@ -443,20 +560,117 @@ internal sealed class AudioReviewDraftStore
 
     private static void ValidateDocument(AudioReviewDraftDocument document)
     {
-        if (document.SchemaVersion != SchemaVersion)
+        if (document.SchemaVersion is not (LegacySchemaVersion or SchemaVersion))
             throw new InvalidDataException($"Unsupported audio review draft schema {document.SchemaVersion}.");
-        if (string.IsNullOrWhiteSpace(document.SourcePath) || !IsSha256(document.SourceSha256) || !IsSha256(document.EvidenceSha256) || !IsSha256(document.CurrentTrackSha256))
+        if (string.IsNullOrWhiteSpace(document.SourcePath)
+            || !IsSha256(document.SourceSha256)
+            || !IsSha256(document.EvidenceSha256)
+            || !IsSha256(document.CurrentTrackSha256))
+        {
             throw new InvalidDataException("Audio review draft identity fields are malformed.");
-        if (document.SourceDurationTicks <= 0)
-            throw new InvalidDataException("Audio review draft source duration is invalid.");
-        if (document.Notes is null || document.Notes.Length == 0 || document.Notes.Length > MaximumNotes)
-            throw new InvalidDataException("Audio review draft note evidence is missing or exceeds the safety bound.");
-        if (document.OriginalTrack is null || document.OriginalTrack.Events is null || document.OriginalTrack.Events.Length > MaximumEvents)
-            throw new InvalidDataException("Audio review draft original track is missing or exceeds the safety bound.");
-        ArgumentNullException.ThrowIfNull(document.BaseQuality);
+        }
         ArgumentNullException.ThrowIfNull(document.Queue);
         ArgumentNullException.ThrowIfNull(document.Queue.AppliedDecisions);
         ArgumentNullException.ThrowIfNull(document.Queue.DeferredRegionKeys);
+
+        if (document.SchemaVersion == LegacySchemaVersion)
+        {
+            if (document.Notes is null || document.OriginalTrack is null || document.BaseQuality is null)
+                throw new InvalidDataException("Legacy audio review draft immutable evidence is incomplete.");
+            ValidateEvidenceBounds(document.SourceDurationTicks, document.Notes.Length, document.OriginalTrack.Events?.Length ?? -1);
+            return;
+        }
+
+        if (document.Notes is not null || document.OriginalTrack is not null || document.BaseQuality is not null)
+            throw new InvalidDataException("Audio review draft schema v2 must reference immutable evidence instead of embedding it.");
+    }
+
+    private static void ValidateEvidenceBounds(long sourceDurationTicks, int noteCount, int eventCount)
+    {
+        if (sourceDurationTicks <= 0)
+            throw new InvalidDataException("Audio review draft source duration is invalid.");
+        if (noteCount <= 0 || noteCount > MaximumNotes)
+            throw new InvalidDataException($"Review draft note evidence must contain between 1 and {MaximumNotes} notes.");
+        if (eventCount < 0 || eventCount > MaximumEvents)
+            throw new InvalidDataException($"Review draft original track exceeds the {MaximumEvents}-event safety bound.");
+    }
+
+    private async Task<bool> WriteAtomicJsonAsync<T>(
+        string destinationPath,
+        T document,
+        long maximumBytes,
+        bool overwrite,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(rootDirectory);
+        var tempPath = destinationPath + ".tmp-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        try
+        {
+            await using (var stream = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 64 * 1024,
+                options: FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await JsonSerializer.SerializeAsync(stream, document, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+
+            var writtenLength = new FileInfo(tempPath).Length;
+            if (writtenLength <= 0 || writtenLength > maximumBytes)
+                throw new InvalidDataException($"Audio review persistence artifact size {writtenLength} bytes is outside the allowed bound.");
+
+            if (!overwrite && File.Exists(destinationPath))
+                return false;
+            try
+            {
+                File.Move(tempPath, destinationPath, overwrite);
+                return true;
+            }
+            catch (IOException) when (!overwrite && File.Exists(destinationPath))
+            {
+                return false;
+            }
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
+    }
+
+    private void TryDeleteEvidenceIfUnreferenced(string evidenceSha256)
+    {
+        try
+        {
+            foreach (var candidate in Directory.EnumerateFiles(rootDirectory, "*.review.json", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    var info = new FileInfo(candidate);
+                    if (info.Length <= 0 || info.Length > MaximumDraftBytes)
+                        continue;
+                    using var stream = new FileStream(candidate, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    var other = JsonSerializer.Deserialize<AudioReviewDraftDocument>(stream, JsonOptions);
+                    if (other?.SchemaVersion == SchemaVersion
+                        && string.Equals(other.EvidenceSha256, evidenceSha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+                {
+                    // A malformed unrelated checkpoint cannot authorize retention or deletion of this snapshot.
+                }
+            }
+            TryDelete(GetEvidencePath(evidenceSha256));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort cleanup only; immutable evidence never becomes playback truth.
+        }
     }
 
     private static int ResolveSelectedRegionIndex(
@@ -492,15 +706,28 @@ internal sealed class AudioReviewDraftStore
 
     private static PerformanceTrack FromDraftTrack(AudioReviewDraftTrack track)
     {
-        if (string.IsNullOrWhiteSpace(track.Title) || !double.IsFinite(track.Bpm) || track.Bpm <= 0d || track.Subdivision <= 0 || track.StartDelayTicks < 0 || track.TimelineDurationTicks < 0)
+        if (string.IsNullOrWhiteSpace(track.Title)
+            || !double.IsFinite(track.Bpm)
+            || track.Bpm <= 0d
+            || track.Subdivision <= 0
+            || track.StartDelayTicks < 0
+            || track.TimelineDurationTicks < 0)
+        {
             throw new InvalidDataException("Audio review draft original track metadata is invalid.");
+        }
         var events = track.Events.Select(value =>
         {
             if (value.StartTicks < 0 || value.DurationTicks <= 0 || string.IsNullOrEmpty(value.Keys))
                 throw new InvalidDataException("Audio review draft contains an invalid performance event.");
             return new PerformanceEvent(TimeSpan.FromTicks(value.StartTicks), TimeSpan.FromTicks(value.DurationTicks), value.Keys.ToCharArray());
         }).ToArray();
-        return new PerformanceTrack(track.Title, track.Bpm, track.Subdivision, TimeSpan.FromTicks(track.StartDelayTicks), events, TimeSpan.FromTicks(track.TimelineDurationTicks));
+        return new PerformanceTrack(
+            track.Title,
+            track.Bpm,
+            track.Subdivision,
+            TimeSpan.FromTicks(track.StartDelayTicks),
+            events,
+            TimeSpan.FromTicks(track.TimelineDurationTicks));
     }
 
     private static bool IsSha256(string value)

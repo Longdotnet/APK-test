@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text.Json;
 using RobloxPiano.App;
 using RobloxPiano.Audio;
 using RobloxPiano.Core;
@@ -68,6 +70,12 @@ internal static class AudioReviewDraftStoreRegression
 
             var expectedFingerprint = PerformanceTrackFingerprint.ComputeSha256(session.CurrentTrack);
             var store = new AudioReviewDraftStore(Path.Combine(root, "drafts"));
+            var evidenceSha256 = AudioReviewDraftStore.ComputeEvidenceSha256(
+                TimeSpan.FromSeconds(5),
+                notes,
+                originalTrack,
+                baseQuality);
+            var evidencePath = store.GetEvidencePath(evidenceSha256);
             var draftPath = await store.SaveAsync(
                 sourcePath,
                 TimeSpan.FromSeconds(5),
@@ -79,6 +87,11 @@ internal static class AudioReviewDraftStoreRegression
                 selected).ConfigureAwait(false);
 
             Equal(1L, store.SourceHashComputationCount, "first checkpoint must establish one verified source hash");
+            Equal(1L, store.EvidenceSnapshotWriteCount, "first checkpoint must write immutable evidence exactly once");
+            True(File.Exists(evidencePath), "content-addressed immutable evidence snapshot must exist");
+            True(new FileInfo(draftPath).Length < new FileInfo(evidencePath).Length, "mutable checkpoint must be smaller than immutable evidence for the regression fixture");
+            var evidenceWriteTime = File.GetLastWriteTimeUtc(evidencePath);
+
             var repeatedDraftPath = await store.SaveAsync(
                 sourcePath,
                 TimeSpan.FromSeconds(5),
@@ -90,6 +103,8 @@ internal static class AudioReviewDraftStoreRegression
                 selected).ConfigureAwait(false);
             Equal(draftPath, repeatedDraftPath, "unchanged-source checkpoint path");
             Equal(1L, store.SourceHashComputationCount, "unchanged metadata must reuse the verified source identity without re-reading the full audio");
+            Equal(1L, store.EvidenceSnapshotWriteCount, "repeated checkpoint must not rewrite immutable evidence");
+            Equal(evidenceWriteTime, File.GetLastWriteTimeUtc(evidencePath), "immutable evidence write timestamp must remain stable across mutable checkpoints");
 
             var touchedTime = File.GetLastWriteTimeUtc(sourcePath).AddSeconds(2);
             File.SetLastWriteTimeUtc(sourcePath, touchedTime);
@@ -104,6 +119,7 @@ internal static class AudioReviewDraftStoreRegression
                 selected).ConfigureAwait(false);
             Equal(draftPath, touchedDraftPath, "metadata-only source change with identical bytes must keep the content-addressed draft path");
             Equal(2L, store.SourceHashComputationCount, "metadata change must force one full source re-verification");
+            Equal(1L, store.EvidenceSnapshotWriteCount, "source metadata change must not rewrite unchanged immutable evidence");
 
             await File.AppendAllTextAsync(sourcePath, "changed-before-checkpoint").ConfigureAwait(false);
             await ThrowsAsyncContaining<InvalidDataException>(
@@ -124,6 +140,14 @@ internal static class AudioReviewDraftStoreRegression
             True(File.Exists(draftPath), "checkpoint must be committed to its final path");
             Equal(0, Directory.GetFiles(Path.GetDirectoryName(draftPath)!, "*.tmp-*", SearchOption.TopDirectoryOnly).Length, "atomic temp files must be cleaned");
             Equal(draftPath, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "exact source lookup must find the saved draft");
+
+            var evidenceBackupPath = evidencePath + ".backup";
+            File.Move(evidencePath, evidenceBackupPath);
+            await ThrowsAsyncContaining<InvalidDataException>(
+                () => store.RestoreAsync(draftPath),
+                "evidence snapshot is missing",
+                "schema v2 restore must fail closed when immutable content-addressed evidence is missing").ConfigureAwait(false);
+            File.Move(evidenceBackupPath, evidencePath);
 
             var hashCountBeforeRestore = store.SourceHashComputationCount;
             var restored = await store.RestoreAsync(draftPath).ConfigureAwait(false);
@@ -150,6 +174,7 @@ internal static class AudioReviewDraftStoreRegression
                 clientRestored.RepairSession.ReviewRegions.Count == 0 ? null : clientRestored.RepairSession.ReviewRegions[clientRestored.SelectedRegionIndex]).ConfigureAwait(false);
             Equal(draftPath, checkpointAgain, "client checkpoint must update the source-identity draft atomically");
             Equal(hashesAfterClientRestore, store.SourceHashComputationCount, "post-resume review decisions must reuse the freshly verified source identity");
+            Equal(1L, store.EvidenceSnapshotWriteCount, "post-resume checkpoint must keep immutable evidence write-once");
 
             await File.AppendAllTextAsync(sourcePath, "changed").ConfigureAwait(false);
             Equal(draftPath, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "changed in-place source must still surface its old draft for an explicit stale-source verdict");
@@ -164,7 +189,20 @@ internal static class AudioReviewDraftStoreRegression
                 "draft cleanup must never delete outside its managed directory").ConfigureAwait(false);
             True(clientSession.Delete(draftPath), "explicit client draft cleanup");
             True(!File.Exists(draftPath), "explicit cleanup must remove only the managed checkpoint");
+            True(!File.Exists(evidencePath), "unreferenced immutable evidence must be cleaned with its final managed checkpoint");
             Equal<string?>(null, await store.FindForSourceAsync(sourcePath).ConfigureAwait(false), "source lookup after cleanup");
+
+            await VerifyLegacyV1RestoreAsync(
+                root,
+                store,
+                originalSourceBytes,
+                notes,
+                originalTrack,
+                baseQuality,
+                session,
+                queue,
+                selected,
+                expectedFingerprint).ConfigureAwait(false);
         }
         finally
         {
@@ -179,6 +217,69 @@ internal static class AudioReviewDraftStoreRegression
             {
             }
         }
+    }
+
+    private static async Task VerifyLegacyV1RestoreAsync(
+        string root,
+        AudioReviewDraftStore store,
+        byte[] sourceBytes,
+        IReadOnlyList<BasicPitchTranscribedNote> notes,
+        PerformanceTrack originalTrack,
+        AudioTranscriptionQualityAssessment baseQuality,
+        AudioTranscriptionReviewRepairSession session,
+        AudioReviewQueue queue,
+        AudioTranscriptionReviewRegion? selected,
+        string expectedFingerprint)
+    {
+        var legacySourcePath = Path.Combine(root, "legacy-owned-audio.wav");
+        await File.WriteAllBytesAsync(legacySourcePath, sourceBytes).ConfigureAwait(false);
+        var sourceSha256 = Convert.ToHexString(SHA256.HashData(sourceBytes)).ToLowerInvariant();
+        var evidenceSha256 = AudioReviewDraftStore.ComputeEvidenceSha256(
+            TimeSpan.FromSeconds(5),
+            notes,
+            originalTrack,
+            baseQuality);
+        var legacyDocument = new AudioReviewDraftDocument(
+            AudioReviewDraftStore.LegacySchemaVersion,
+            Path.GetFullPath(legacySourcePath),
+            sourceSha256,
+            evidenceSha256,
+            TimeSpan.FromSeconds(5).Ticks,
+            notes.Select(note => new AudioReviewDraftNote(
+                note.Start.Ticks,
+                note.End.Ticks,
+                note.MidiNote,
+                note.Amplitude,
+                note.PitchBendsThirdSemitones.ToArray())).ToArray(),
+            new AudioReviewDraftTrack(
+                originalTrack.Title,
+                originalTrack.Bpm,
+                originalTrack.Subdivision,
+                originalTrack.StartDelay.Ticks,
+                originalTrack.TimelineDuration.Ticks,
+                originalTrack.Events.Select(value => new AudioReviewDraftEvent(
+                    value.Start.Ticks,
+                    value.Duration.Ticks,
+                    new string(value.Keys.ToArray()))).ToArray()),
+            baseQuality,
+            queue.ExportState(),
+            expectedFingerprint,
+            selected is null ? null : AudioReviewQueue.GetRegionKey(selected),
+            DateTimeOffset.UtcNow);
+        var legacyPath = store.GetDraftPath(sourceSha256);
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
+        await using (var stream = new FileStream(legacyPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            await JsonSerializer.SerializeAsync(
+                stream,
+                legacyDocument,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)).ConfigureAwait(false);
+        }
+
+        var restored = await store.RestoreAsync(legacyPath).ConfigureAwait(false);
+        Equal(expectedFingerprint, PerformanceTrackFingerprint.ComputeSha256(restored.RepairSession.CurrentTrack), "schema v1 draft must remain restorable after schema v2 ships");
+        Equal(notes.Count, restored.SourceNotes.Count, "schema v1 note evidence compatibility");
+        True(store.Delete(legacyPath), "legacy draft cleanup");
     }
 
     private static async Task ThrowsAsync<TException>(Func<Task> action, string label)
