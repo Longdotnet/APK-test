@@ -9,6 +9,12 @@ Distribution: self-contained Windows x64 single executable
 Client dependencies: none required manually
 SHA256: `{{SHA256}}`
 
+## Client entrypoint and support contract
+
+- **Sheet Library** remains the normal client starting point; Create Piano Version keeps fingerprint-verified local review progress for owned/local audio.
+- **Support Bundle** remains the preferred way to preserve correlated Runtime Input and client diagnostic evidence when troubleshooting playback.
+- Legacy and **Legacy x2** remain protected regression/perceptual baselines.
+
 ## Audio-to-Piano OSS Phase 49 — rebuildable review draft lookup index
 
 - **Create Piano Version** now keeps a bounded local lookup accelerator for resumable owned/local audio review drafts instead of repeatedly opening recent checkpoint files for the same source path.
