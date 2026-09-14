@@ -17,7 +17,8 @@ public sealed record RobloxPianoArrangementOptions(
     TimeSpan? MelodyContinuityWindow = null,
     bool AdaptiveDensity = true,
     float AccompanimentActivationFloor = 0.18f,
-    float AccompanimentRelativeActivationFloor = 0.35f)
+    float AccompanimentRelativeActivationFloor = 0.35f,
+    float MelodyContinuityRelativeActivationFloor = 0.80f)
 {
     public MidiKeyboardProfile EffectiveKeyboardProfile => KeyboardProfile ?? MidiKeyboardProfile.RobloxClassic61;
 
@@ -47,6 +48,8 @@ public sealed record RobloxPianoArrangementOptions(
             throw new ArgumentOutOfRangeException(nameof(AccompanimentActivationFloor));
         if (!float.IsFinite(AccompanimentRelativeActivationFloor) || AccompanimentRelativeActivationFloor is <= 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(AccompanimentRelativeActivationFloor));
+        if (!float.IsFinite(MelodyContinuityRelativeActivationFloor) || MelodyContinuityRelativeActivationFloor is <= 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(MelodyContinuityRelativeActivationFloor));
         if (EffectiveKeyboardProfile.Keys.Length == 0)
             throw new ArgumentException("Roblox keyboard profile must contain at least one key.", nameof(KeyboardProfile));
     }
@@ -66,7 +69,8 @@ public sealed record RobloxPianoArrangementDiagnostics(
     float MeanActivation,
     int WeakSkylineRejects = 0,
     int MelodyContinuitySelections = 0,
-    int AdaptiveDensityDrops = 0)
+    int AdaptiveDensityDrops = 0,
+    int MelodyContinuityConfidenceRejects = 0)
 {
     public bool RequiresReview => DensityDrops > 0 || OutOfRangeDrops > 0 || LowActivationEvents > 0;
 }
@@ -162,6 +166,7 @@ public sealed class RobloxPianoArranger
         var weakSkylineRejects = 0;
         var melodyContinuitySelections = 0;
         var adaptiveDensityDrops = 0;
+        var melodyContinuityConfidenceRejects = 0;
         Candidate? previousMelody = null;
         var index = 0;
         while (index < normalized.Count)
@@ -189,11 +194,14 @@ public sealed class RobloxPianoArranger
                 anchor,
                 options,
                 out var weakSkylineRejected,
-                out var continuitySelected);
+                out var continuitySelected,
+                out var continuityConfidenceRejected);
             if (weakSkylineRejected)
                 weakSkylineRejects++;
             if (continuitySelected)
                 melodyContinuitySelections++;
+            if (continuityConfidenceRejected)
+                melodyContinuityConfidenceRejects++;
             previousMelody = melody;
 
             if (unique.Count > options.MaxSimultaneousNotes)
@@ -207,10 +215,12 @@ public sealed class RobloxPianoArranger
 
                 if (options.AdaptiveDensity)
                 {
-                    var strongestActivation = unique.Max(candidate => candidate.Amplitude);
+                    // Calibrate relative accompaniment confidence against accompaniment itself, not the protected
+                    // melody. A dominant vocal/melody activation must not starve quieter but coherent harmony.
+                    var strongestAccompanimentActivation = accompaniment.Max(candidate => candidate.Amplitude);
                     var accompanimentThreshold = Math.Max(
                         options.AccompanimentActivationFloor,
-                        strongestActivation * options.AccompanimentRelativeActivationFloor);
+                        strongestAccompanimentActivation * options.AccompanimentRelativeActivationFloor);
                     accompaniment = accompaniment
                         .Where(candidate => candidate.Amplitude >= accompanimentThreshold)
                         .ToList();
@@ -305,7 +315,8 @@ public sealed class RobloxPianoArranger
                 (float)meanActivation,
                 weakSkylineRejects,
                 melodyContinuitySelections,
-                adaptiveDensityDrops));
+                adaptiveDensityDrops,
+                melodyContinuityConfidenceRejects));
     }
 
     private static Candidate SelectMelodyCandidate(
@@ -314,7 +325,8 @@ public sealed class RobloxPianoArranger
         TimeSpan anchor,
         RobloxPianoArrangementOptions options,
         out bool weakSkylineRejected,
-        out bool continuitySelected)
+        out bool continuitySelected,
+        out bool continuityConfidenceRejected)
     {
         var highest = candidates
             .OrderByDescending(candidate => candidate.MappedPitch)
@@ -352,17 +364,28 @@ public sealed class RobloxPianoArranger
         if (!canUseContinuity)
         {
             continuitySelected = false;
+            continuityConfidenceRejected = false;
             return credibleSkyline;
         }
 
         var previousPitch = previousMelody!.MappedPitch;
-        var selected = credible
-            .OrderBy(candidate => Math.Abs(candidate.MappedPitch - previousPitch) > options.MelodyContinuityMaxLeapSemitones)
-            .ThenBy(candidate => Math.Abs(candidate.MappedPitch - previousPitch))
-            .ThenByDescending(candidate => candidate.Amplitude)
-            .ThenByDescending(candidate => candidate.Duration)
-            .ThenByDescending(candidate => candidate.MappedPitch)
-            .First();
+        static IOrderedEnumerable<Candidate> OrderForContinuity(IEnumerable<Candidate> source, int previousPitch, int maxLeap)
+            => source
+                .OrderBy(candidate => Math.Abs(candidate.MappedPitch - previousPitch) > maxLeap)
+                .ThenBy(candidate => Math.Abs(candidate.MappedPitch - previousPitch))
+                .ThenByDescending(candidate => candidate.Amplitude)
+                .ThenByDescending(candidate => candidate.Duration)
+                .ThenByDescending(candidate => candidate.MappedPitch);
+
+        var legacyContinuity = OrderForContinuity(credible, previousPitch, options.MelodyContinuityMaxLeapSemitones).First();
+        var continuityActivationThreshold = credibleSkyline.Amplitude * options.MelodyContinuityRelativeActivationFloor;
+        var continuityCandidates = credible
+            .Where(candidate => candidate.Amplitude >= continuityActivationThreshold)
+            .ToArray();
+        var selected = OrderForContinuity(continuityCandidates, previousPitch, options.MelodyContinuityMaxLeapSemitones).First();
+
+        continuityConfidenceRejected = !ReferenceEquals(legacyContinuity, selected) &&
+            legacyContinuity.Amplitude < continuityActivationThreshold;
         continuitySelected = !ReferenceEquals(selected, credibleSkyline);
         return selected;
     }
