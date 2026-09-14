@@ -22,7 +22,9 @@ internal static class AudioTranscriptionReviewRepairRegression
         var canonical = Track(before, Event(1.00, 0.60, 'a'), Event(1.00, 0.60, 's'), Event(1.00, 0.60, 'd'), Event(1.00, 0.60, 'f'), after);
         var originalSignature = Signature(canonical);
 
-        var candidates = Generate(canonical, notes, Region(0, 5));
+        // Keep both sentinels genuinely outside the repaired interval. The previous [0,5) fixture
+        // accidentally put the 0.20s event inside the target region while asserting it was outside.
+        var candidates = Generate(canonical, notes, Region(0.50, 5));
 
         Equal(2, candidates.Count);
         Equal(originalSignature, Signature(canonical));
