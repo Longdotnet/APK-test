@@ -19,7 +19,7 @@ public sealed record SectionAwareStemCompositionOptions(
     float BassBandMinimumFrequencyHz = 55f,
     float BassBandMaximumFrequencyHz = 146.83f,
     float MinimumLeadBandFrequencyHz = 146.83f,
-    float MinimumLeadToBassCorrelationRatio = 0.95f,
+    float MinimumLeadToBassCorrelationRatio = 0.80f,
     int MaximumLeadBoundaryLagSlack = 1)
 {
     public TimeSpan EffectiveWindowDuration => WindowDuration ?? TimeSpan.FromMilliseconds(400);
