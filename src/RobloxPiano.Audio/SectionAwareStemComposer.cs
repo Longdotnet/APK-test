@@ -19,7 +19,8 @@ public sealed record SectionAwareStemCompositionOptions(
     float BassBandMinimumFrequencyHz = 55f,
     float BassBandMaximumFrequencyHz = 146.83f,
     float MinimumLeadBandFrequencyHz = 146.83f,
-    float MinimumLeadToBassCorrelationRatio = 0.97f)
+    float MinimumLeadToBassCorrelationRatio = 0.95f,
+    int MaximumLeadBoundaryLagSlack = 1)
 {
     public TimeSpan EffectiveWindowDuration => WindowDuration ?? TimeSpan.FromMilliseconds(400);
     public TimeSpan EffectiveAttack => Attack ?? TimeSpan.FromMilliseconds(80);
@@ -45,6 +46,7 @@ public sealed record SectionAwareStemCompositionOptions(
         if (!float.IsFinite(MinimumLeadBandFrequencyHz) || MinimumLeadBandFrequencyHz < BassBandMaximumFrequencyHz) throw new ArgumentOutOfRangeException(nameof(MinimumLeadBandFrequencyHz));
         if (MinimumLeadBandFrequencyHz >= MaximumLeadFrequencyHz) throw new ArgumentOutOfRangeException(nameof(MinimumLeadBandFrequencyHz));
         if (!float.IsFinite(MinimumLeadToBassCorrelationRatio) || MinimumLeadToBassCorrelationRatio is < 0f or > 2f) throw new ArgumentOutOfRangeException(nameof(MinimumLeadToBassCorrelationRatio));
+        if (MaximumLeadBoundaryLagSlack is < 0 or > 8) throw new ArgumentOutOfRangeException(nameof(MaximumLeadBoundaryLagSlack));
     }
 }
 
@@ -70,8 +72,8 @@ public sealed record SectionAwareStemCompositionResult(NormalizedAudio Audio, Se
 /// <summary>
 /// Keeps the Spleeter vocal stem authoritative while recovering instrumental hooks from separated accompaniment
 /// only across sustained vocal-weak regions. Energy alone is insufficient: fallback must contain lead-band
-/// periodicity and must not be dominated by bass-band periodicity. Spleeter owns separation; Basic Pitch owns
-/// transcription; this class only selects the bounded source entering transcription.
+/// periodicity and must not be dominated by bass-band periodicity. Boundary autocorrelation peaks are treated as
+/// bass smoothness aliases rather than credible lead pitch. Spleeter owns separation; Basic Pitch owns transcription.
 /// </summary>
 public sealed class SectionAwareStemComposer
 {
@@ -172,25 +174,28 @@ public sealed class SectionAwareStemComposer
         if (decimatedCount < 8) return new MelodicWindowAnalysis(false, false);
 
         var leadMinimumFrequency = Math.Max(options.MinimumLeadFrequencyHz, options.MinimumLeadBandFrequencyHz);
-        var leadCorrelation = BestNormalizedAutocorrelation(samples, start, end, stride, effectiveRate, leadMinimumFrequency, nyquistSafeMaximum, decimatedCount, cancellationToken);
-        if (leadCorrelation < options.MinimumMelodicAutocorrelation) return new MelodicWindowAnalysis(false, false);
+        var leadPeak = BestNormalizedAutocorrelation(samples, start, end, stride, effectiveRate, leadMinimumFrequency, nyquistSafeMaximum, decimatedCount, cancellationToken);
+        if (leadPeak.Correlation < options.MinimumMelodicAutocorrelation) return new MelodicWindowAnalysis(false, false);
         if (!options.RejectBassDominatedFallback) return new MelodicWindowAnalysis(true, false);
 
         var bassMaximumFrequency = Math.Min(options.BassBandMaximumFrequencyHz, leadMinimumFrequency);
-        var bassCorrelation = BestNormalizedAutocorrelation(samples, start, end, stride, effectiveRate, options.BassBandMinimumFrequencyHz, bassMaximumFrequency, decimatedCount, cancellationToken);
-        var bassDominated = bassCorrelation >= options.MinimumMelodicAutocorrelation && leadCorrelation < bassCorrelation * options.MinimumLeadToBassCorrelationRatio;
+        var bassPeak = BestNormalizedAutocorrelation(samples, start, end, stride, effectiveRate, options.BassBandMinimumFrequencyHz, bassMaximumFrequency, decimatedCount, cancellationToken);
+        var boundaryAlias = leadPeak.Lag >= 0 && leadPeak.Lag <= leadPeak.MinimumLag + options.MaximumLeadBoundaryLagSlack;
+        var materiallyWeakerThanBass = leadPeak.Correlation < bassPeak.Correlation * options.MinimumLeadToBassCorrelationRatio;
+        var bassDominated = bassPeak.Correlation >= options.MinimumMelodicAutocorrelation && (boundaryAlias || materiallyWeakerThanBass);
         return new MelodicWindowAnalysis(!bassDominated, bassDominated);
     }
 
-    private static double BestNormalizedAutocorrelation(float[] samples, int start, int end, int stride, double effectiveRate, float minimumFrequencyHz, float maximumFrequencyHz, int decimatedCount, CancellationToken cancellationToken)
+    private static AutocorrelationPeak BestNormalizedAutocorrelation(float[] samples, int start, int end, int stride, double effectiveRate, float minimumFrequencyHz, float maximumFrequencyHz, int decimatedCount, CancellationToken cancellationToken)
     {
-        if (maximumFrequencyHz <= minimumFrequencyHz) return double.NegativeInfinity;
+        if (maximumFrequencyHz <= minimumFrequencyHz) return new AutocorrelationPeak(double.NegativeInfinity, -1, -1);
         var minimumLag = Math.Max(1, (int)Math.Floor(effectiveRate / maximumFrequencyHz));
         var maximumLag = Math.Max(minimumLag, (int)Math.Ceiling(effectiveRate / minimumFrequencyHz));
         maximumLag = Math.Min(maximumLag, Math.Max(1, decimatedCount / 2));
-        if (maximumLag < minimumLag) return double.NegativeInfinity;
+        if (maximumLag < minimumLag) return new AutocorrelationPeak(double.NegativeInfinity, -1, minimumLag);
 
         var bestCorrelation = double.NegativeInfinity;
+        var bestLag = -1;
         for (var lag = minimumLag; lag <= maximumLag; lag++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -208,9 +213,14 @@ public sealed class SectionAwareStemComposer
             }
             var denominator = Math.Sqrt(leftEnergy * rightEnergy);
             if (denominator <= 1e-12d) continue;
-            bestCorrelation = Math.Max(bestCorrelation, cross / denominator);
+            var correlation = cross / denominator;
+            if (correlation > bestCorrelation)
+            {
+                bestCorrelation = correlation;
+                bestLag = lag;
+            }
         }
-        return bestCorrelation;
+        return new AutocorrelationPeak(bestCorrelation, bestLag, minimumLag);
     }
 
     private static float RootMeanSquare(float[] samples, int start, int end)
@@ -242,4 +252,5 @@ public sealed class SectionAwareStemComposer
     private static float SmoothingAlpha(TimeSpan duration, int sampleRate) => duration <= TimeSpan.Zero ? 1f : (float)(1d - Math.Exp(-1d / (duration.TotalSeconds * sampleRate)));
     private static float Peak(float[] samples) { var peak = 0f; foreach (var sample in samples) peak = Math.Max(peak, Math.Abs(sample)); return peak; }
     private readonly record struct MelodicWindowAnalysis(bool Accepted, bool BassDominated);
+    private readonly record struct AutocorrelationPeak(double Correlation, int Lag, int MinimumLag);
 }
