@@ -1,5 +1,10 @@
 using RobloxPiano.Audio;
 
+// ModuleInitializer-based regressions run before top-level Main. Several legacy helpers report
+// failures through Environment.ExitCode instead of throwing. Capture that state before this
+// harness runs so the final `return 0` can never mask an earlier regression failure.
+var moduleInitializerExitCode = Environment.ExitCode;
+
 var tests = new (string Name, Action Run)[]
 {
     ("real Basic Pitch model produces canonical arranged events", RealModelSineProducesCanonicalPerformance),
@@ -24,9 +29,11 @@ foreach (var test in tests)
     }
 }
 
-if (failed != 0)
+if (failed != 0 || moduleInitializerExitCode != 0 || Environment.ExitCode != 0)
 {
-    Console.Error.WriteLine($"Audio-to-Piano pipeline harness failed: {failed}/{tests.Length} tests failed.");
+    Console.Error.WriteLine(
+        $"Audio-to-Piano pipeline harness failed: main={failed}/{tests.Length}, " +
+        $"moduleInitializerExitCode={moduleInitializerExitCode}, processExitCode={Environment.ExitCode}.");
     return 1;
 }
 
