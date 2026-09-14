@@ -9,6 +9,7 @@ internal static class DominantMelodyContinuityRegression
         Run("dominant melody continuity preserves a plausible instrumental contour", PlausibleContourRemainsEligible);
         Run("dominant melody continuity rejects erratic tonal jumps", ErraticTonalJumpsDoNotBecomeLeadTruth);
         Run("dominant melody continuity resets after a phrase gap", PhraseGapResetsContinuity);
+        Run("pitch-guided fallback isolates lead from bass and chord leakage", PitchGuidedFallbackIsolatesLead);
     }
 
     private static void PlausibleContourRemainsEligible()
@@ -22,6 +23,8 @@ internal static class DominantMelodyContinuityRegression
         Equal(0, result.Diagnostics.RejectedDiscontinuousLeadWindows);
         True(result.Diagnostics.FallbackWindows >= 4,
             $"Expected the E4-F4-G4-A4 contour to remain usable, got {result.Diagnostics.FallbackWindows} fallback windows.");
+        True(result.Diagnostics.PitchGuidedFallbackWindows >= 4,
+            $"Expected coherent instrumental windows to use isolated pitch guidance, got {result.Diagnostics.PitchGuidedFallbackWindows}.");
         True(result.Audio.Samples.Any(sample => Math.Abs(sample) > 0.01f),
             "A coherent instrumental hook should reach the melody-focused source.");
     }
@@ -39,6 +42,7 @@ internal static class DominantMelodyContinuityRegression
         True(result.Diagnostics.RejectedDiscontinuousLeadWindows >= 2,
             $"Expected discontinuous tonal candidates to be rejected, got {result.Diagnostics.RejectedDiscontinuousLeadWindows}.");
         Equal(0, result.Diagnostics.FallbackWindows);
+        Equal(0, result.Diagnostics.PitchGuidedFallbackWindows);
         True(ReferenceEquals(vocals, result.Audio),
             "Erratic per-window tonal peaks must not allocate or contaminate melody truth.");
     }
@@ -60,6 +64,40 @@ internal static class DominantMelodyContinuityRegression
             $"Two separate melodic phrases should both survive despite a large pitch change across silence; fallback={result.Diagnostics.FallbackWindows}.");
     }
 
+    private static void PitchGuidedFallbackIsolatesLead()
+    {
+        const int sampleRate = 8000;
+        const double durationSeconds = 1.6d;
+        var samples = new float[checked((int)Math.Round(sampleRate * durationSeconds))];
+        AddTone(samples, sampleRate, 64, 0d, durationSeconds, 0.30f); // E4 lead
+        AddTone(samples, sampleRate, 40, 0d, durationSeconds, 0.05f); // E2 bass leakage
+        AddTone(samples, sampleRate, 71, 0d, durationSeconds, 0.04f); // B4 chord leakage
+
+        var accompaniment = new NormalizedAudio(samples, sampleRate);
+        var result = new SectionAwareStemComposer().Compose(Silence(sampleRate, durationSeconds), accompaniment, Options());
+
+        True(result.Diagnostics.FallbackWindows >= 4,
+            $"Lead-over-restrained-bass fixture should remain eligible; fallback={result.Diagnostics.FallbackWindows}.");
+        Equal(result.Diagnostics.FallbackWindows, result.Diagnostics.PitchGuidedFallbackWindows);
+
+        var inputLead = MidiBandMagnitude(accompaniment.Samples, sampleRate, 64, 0.6d);
+        var inputBass = ToneMagnitude(accompaniment.Samples, sampleRate, MidiFrequency(40));
+        var inputChord = ToneMagnitude(accompaniment.Samples, sampleRate, MidiFrequency(71));
+        var outputLead = MidiBandMagnitude(result.Audio.Samples, sampleRate, 64, 0.6d);
+        var outputBass = ToneMagnitude(result.Audio.Samples, sampleRate, MidiFrequency(40));
+        var outputChord = ToneMagnitude(result.Audio.Samples, sampleRate, MidiFrequency(71));
+
+        True(inputBass > 0.01d && inputChord > 0.01d, "Fixture must contain measurable bass and chord leakage before isolation.");
+        True(outputLead > outputBass * 6d,
+            $"Pitch-guided fallback should keep lead clearly dominant over bass: lead={outputLead:F4} bass={outputBass:F4}.");
+        True(outputLead > outputChord * 6d,
+            $"Pitch-guided fallback should keep lead clearly dominant over chord leakage: lead={outputLead:F4} chord={outputChord:F4}.");
+        True((outputBass / Math.Max(outputLead, 1e-9d)) < (inputBass / inputLead) * 0.30d,
+            "Bass-to-lead spectral ratio should drop materially before Basic Pitch.");
+        True((outputChord / Math.Max(outputLead, 1e-9d)) < (inputChord / inputLead) * 0.30d,
+            "Chord-to-lead spectral ratio should drop materially before Basic Pitch.");
+    }
+
     private static SectionAwareStemCompositionOptions Options() => new(
         WindowDuration: TimeSpan.FromMilliseconds(400),
         MinimumConsecutiveFallbackWindows: 2,
@@ -74,7 +112,8 @@ internal static class DominantMelodyContinuityRegression
         MinimumMelodicAutocorrelation: 0.28f,
         RejectBassDominatedFallback: true,
         RequireLeadPitchContinuity: true,
-        MaximumAdjacentLeadJumpSemitones: 19f);
+        MaximumAdjacentLeadJumpSemitones: 19f,
+        UsePitchGuidedFallback: true);
 
     private static NormalizedAudio Silence(int sampleRate, double seconds) =>
         new(new float[checked((int)Math.Round(sampleRate * seconds))], sampleRate);
@@ -90,11 +129,38 @@ internal static class DominantMelodyContinuityRegression
         return new NormalizedAudio(samples, sampleRate);
     }
 
+    private static double MidiBandMagnitude(float[] samples, int sampleRate, int midi, double semitoneRadius)
+    {
+        var center = MidiFrequency(midi);
+        var minimum = center * Math.Pow(2d, -semitoneRadius / 12d);
+        var maximum = center * Math.Pow(2d, semitoneRadius / 12d);
+        var best = 0d;
+        for (var frequency = minimum; frequency <= maximum; frequency += 0.5d)
+            best = Math.Max(best, ToneMagnitude(samples, sampleRate, frequency));
+        return best;
+    }
+
+    private static double ToneMagnitude(float[] samples, int sampleRate, double frequency)
+    {
+        double cosine = 0d;
+        double sine = 0d;
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var phase = 2d * Math.PI * frequency * index / sampleRate;
+            cosine += samples[index] * Math.Cos(phase);
+            sine += samples[index] * Math.Sin(phase);
+        }
+        var scale = 2d / Math.Max(1, samples.Length);
+        return Math.Sqrt((cosine * scale * cosine * scale) + (sine * scale * sine * scale));
+    }
+
+    private static double MidiFrequency(int midi) => 440d * Math.Pow(2d, (midi - 69) / 12d);
+
     private static void AddTone(float[] samples, int sampleRate, int midi, double startSeconds, double endSeconds, float amplitude)
     {
         var start = Math.Max(0, checked((int)Math.Round(startSeconds * sampleRate)));
         var end = Math.Min(samples.Length, checked((int)Math.Round(endSeconds * sampleRate)));
-        var frequency = 440d * Math.Pow(2d, (midi - 69) / 12d);
+        var frequency = MidiFrequency(midi);
         var ramp = Math.Max(1, sampleRate / 200);
         for (var sample = start; sample < end; sample++)
         {
