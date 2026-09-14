@@ -9,6 +9,12 @@ Distribution: self-contained Windows x64 single executable
 Client dependencies: none required manually
 SHA256: `{{SHA256}}`
 
+## Client entrypoint and protected baselines
+
+- **Sheet Library** remains the normal client starting point.
+- **Support Bundle** remains the preferred privacy-safe playback support artifact; Create Piano Version now additionally has its own stage-by-stage diagnostic log for transcription failures.
+- Legacy and **Legacy x2** remain protected playback regression/perceptual baselines and are not changed by this audio hardening release.
+
 ## Create Piano Version production hardening
 
 - Long MP3 transcription now keeps Basic Pitch inference bounded to one audio window per ONNX call and disables ONNX CPU arena/memory-pattern retention for this desktop path.
