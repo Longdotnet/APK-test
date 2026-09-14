@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
-using System.Text.RegularExpressions;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
@@ -58,9 +57,9 @@ internal static class DemucsRsStemSeparator
     private const string ModelArchiveName = "sherpa-onnx-spleeter-2stems-fp16.tar.bz2";
     private const string ModelArchiveUrl =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/" + ModelArchiveName;
-    private const string ModelChecksumUrl =
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/checksum.txt";
     private const long ModelArchiveBytes = 35_271_738;
+    // GitHub release asset 257363398 currently serves these exact bytes; the upstream checksum.txt is stale.
+    private const string ModelArchiveSha256 = "D54561979BD2E08A51E7DBD99AC36BB47564E089EEFD403636DBCA93E811BBA2";
 
     private const int SeparatorSampleRate = 44_100;
     private const double TargetRealTimeFactor = 0.09d;
@@ -329,13 +328,11 @@ internal static class DemucsRsStemSeparator
             $"{ModelArchiveName}.{Guid.NewGuid():N}.tmp");
         try
         {
-            var expectedHash = await TryGetOfficialModelArchiveHashAsync(cancellationToken)
-                .ConfigureAwait(false);
             await DownloadToFileAsync(
                 ModelArchiveUrl,
                 archivePath,
                 ModelArchiveBytes,
-                expectedHash,
+                ModelArchiveSha256,
                 cancellationToken).ConfigureAwait(false);
 
             TryDeleteDirectory(root);
@@ -358,35 +355,6 @@ internal static class DemucsRsStemSeparator
         finally
         {
             TryDelete(archivePath);
-        }
-    }
-
-    private static async Task<string?> TryGetOfficialModelArchiveHashAsync(
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var text = await Http.GetStringAsync(ModelChecksumUrl, cancellationToken)
-                .ConfigureAwait(false);
-            var name = Regex.Escape(ModelArchiveName);
-            var match = Regex.Match(
-                text,
-                $@"(?im)(?<hash>[0-9a-f]{{64}})\s+\*?{name}\s*$");
-            if (!match.Success)
-            {
-                match = Regex.Match(
-                    text,
-                    $@"(?im){name}\s+(?<hash>[0-9a-f]{{64}})\s*$");
-            }
-
-            return match.Success ? match.Groups["hash"].Value : null;
-        }
-        catch
-        {
-            // GitHub currently exposes the model archive without an API digest.
-            // Exact byte length + extracted ONNX identities still guard truncation/corruption
-            // if the companion checksum asset is temporarily unavailable.
-            return null;
         }
     }
 

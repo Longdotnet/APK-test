@@ -236,26 +236,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 -------------------------------------------------------------------------------
-demucs-rs v0.3.4 / HTDemucs source separation
+sherpa-onnx v1.13.8 / Spleeter 2-stem FP16 source separation
 -------------------------------------------------------------------------------
-Source: https://github.com/nikhilunni/demucs-rs/tree/v0.3.4
-Runtime: pinned Windows x64 CLI downloaded on first source-separation use
-License: Apache License 2.0
+Runtime source: https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8
+Runtime license: Apache License 2.0
+Model lineage: https://github.com/deezer/spleeter
+Spleeter source-code license: MIT
 
-RobloxPiano invokes demucs-rs as a separate local process and verifies the
-pinned release archive before use. demucs-rs acknowledges the original Demucs
-project by Meta Research and demucs.cpp as implementation references.
+RobloxPiano invokes the sherpa-onnx source-separation CLI as a separate local
+Windows process. The release EXE does not embed the runtime or model archive;
+first use downloads them to the user's local cache and RobloxPiano verifies
+pinned byte identities before accepting separated output.
 
-HTDemucs model lineage:
-https://github.com/facebookresearch/demucs
-Original Demucs project license: MIT
+Pinned Spleeter FP16 archive identity:
+35,271,738 bytes
+SHA-256 D54561979BD2E08A51E7DBD99AC36BB47564E089EEFD403636DBCA93E811BBA2
 
-The RobloxPiano release EXE does not embed the demucs-rs executable or model;
-they are downloaded to the user's local application/model caches on first use
-and their expected identity is checked before separated stems are trusted.
+The companion checksum.txt currently published with the sherpa-onnx model
+release advertises different/stale bytes, so RobloxPiano pins the actual GitHub
+release asset bytes instead of silently accepting either identity.
 
-The Apache License 2.0 text applicable to demucs-rs is reproduced earlier in
-this notice file under Spotify Basic Pitch / nmp.onnx.
+The Apache License 2.0 text applicable to sherpa-onnx is reproduced earlier in
+this notice file. Spleeter attribution is retained because the shipped model is
+derived from Deezer's Spleeter source-separation work.
 -------------------------------------------------------------------------------
 Microsoft ONNX Runtime 1.29.0
 -------------------------------------------------------------------------------
