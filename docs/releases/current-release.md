@@ -9,6 +9,12 @@ Distribution: self-contained Windows x64 single executable
 Client dependencies: none required manually
 SHA256: `{{SHA256}}`
 
+## Client entrypoint and support contract
+
+- **Sheet Library** remains the normal client starting point.
+- **Support Bundle** remains the preferred playback/support evidence export path.
+- Legacy and **Legacy x2** remain protected regression/perceptual baselines.
+
 ## Create Piano Version stability and diagnostics
 
 - Long MP3 transcription now uses bounded one-window Basic Pitch inference by default instead of coarse multi-window production batching, reducing peak native ONNX Runtime memory pressure.
