@@ -77,7 +77,7 @@ internal static class RealModelFixedSlotIdentityValidationRegression
         var profile = ProductionOptions.EffectiveKeyboardProfile;
         var rootKey = MapPitchToKey(RootMidi, profile);
         var targetKey = MapPitchToKey(TargetMidi, profile);
-        var rootSlot = sourceEvent.Keys.IndexOf(rootKey);
+        var rootSlot = Array.IndexOf(sourceEvent.Keys.ToArray(), rootKey);
         Require(rootSlot >= 0,
             $"Expected Phase 73 displaced MIDI {RootMidi} was not present in event {eventIndex}.");
         Require(!sourceEvent.Keys.Contains(targetKey),
