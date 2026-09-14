@@ -65,14 +65,23 @@ internal static class RealModelMixedInstrumentStressRegression
             $"Mixed stress fixture recognized too little harmony evidence: {evidence.RecognizedHarmonyNotes}.");
         Require(evidence.MelodyRetention >= 0.85,
             $"Mixed stress arranger retained less than 85% of recognized melody: {evidence.MelodyRetention:F3}.");
-        Require(evidence.HarmonyRetention >= 0.65,
-            $"Mixed stress arranger retained less than 65% of recognized harmony: {evidence.HarmonyRetention:F3}.");
+        Require(evidence.HarmonyRetention >= 0.75,
+            $"Mixed stress arranger retained less than 75% of recognized harmony: {evidence.HarmonyRetention:F3}.");
         Require(evidence.MinimumSectionMelodyRetention >= 0.66,
             $"A mixed stress section retained less than two thirds of recognized melody: {evidence.MinimumSectionMelodyRetention:F3}.");
+        Require(evidence.ClutterSuppression >= 0.25,
+            $"Mixed stress arranger suppressed less than the Phase 61 clutter floor: {evidence.ClutterSuppression:F3}.");
         Require(!evidence.ArrangementAddedFalsePositives,
             $"Mixed stress arrangement increased unmatched events: source={evidence.SourceFalsePositives}, arranged={evidence.ArrangedFalsePositives}.");
         Require(evidence.EventRetentionRatio <= 1.000001,
             $"Mixed stress arrangement unexpectedly increased event count: {evidence.EventRetentionRatio:F3}.");
+
+        Require(evidence.Sections.TryGetValue("chorus", out var chorus),
+            "Mixed stress fixture must report chorus quality evidence.");
+        Require(chorus.RecognizedHarmonyNotes >= 4,
+            $"Mixed stress chorus recognized too little harmony evidence: {chorus.RecognizedHarmonyNotes}.");
+        Require(chorus.HarmonyRetention >= 0.75,
+            $"Dense chorus retained less than three quarters of recognized harmony: {chorus.RetainedHarmonyNotes}/{chorus.RecognizedHarmonyNotes} ({chorus.HarmonyRetention:F3}).");
 
         // A deterministic pass keeps source separation deferred. If future pinned-model evidence drops beneath the
         // stricter quality ceiling, CI prints BENCHMARK_NATIVE_SEPARATION before the ordinary hard regression floors
@@ -88,9 +97,13 @@ internal static class RealModelMixedInstrumentStressRegression
             return "INSUFFICIENT_EVIDENCE";
 
         var clutterCeiling = evidence.SourceFalsePositives >= 3 && evidence.ClutterSuppression < 0.10;
+        var chorusCeiling = evidence.Sections.TryGetValue("chorus", out var chorus)
+            && chorus.RecognizedHarmonyNotes >= 4
+            && chorus.HarmonyRetention < 0.75;
         var retentionCeiling = evidence.MelodyRetention < 0.85
-            || evidence.HarmonyRetention < 0.65
-            || evidence.MinimumSectionMelodyRetention < 0.66;
+            || evidence.HarmonyRetention < 0.75
+            || evidence.MinimumSectionMelodyRetention < 0.66
+            || chorusCeiling;
         return clutterCeiling || retentionCeiling ? "BENCHMARK_NATIVE_SEPARATION" : "DEFER";
     }
 
