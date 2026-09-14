@@ -373,6 +373,10 @@ public sealed class RobloxPianoArranger
             usedPitchClasses.Add(PitchClass(bassAnchor.MappedPitch));
         }
 
+        // Diversity may replace a pure-confidence slot only when it remains close to the weakest confidence-ranked
+        // baseline survivor. This prevents a weak transition voice from returning merely because it has a new pitch class.
+        var coverageActivationFloor = baseline[^1].Amplitude * options.HarmonyOctaveRepresentativeRelativeActivationFloor;
+
         // When Basic Pitch sees a dense full-song mixture, octave/harmonic duplicates can outrank a useful chord tone
         // by a tiny confidence margin. For each pitch class prefer the lower representative whenever its activation is
         // still close to the strongest octave representative, then fill distinct pitch classes before redundant octaves.
@@ -388,6 +392,7 @@ public sealed class RobloxPianoArranger
                     .ThenByDescending(candidate => candidate.Duration)
                     .First();
             })
+            .Where(candidate => candidate.Amplitude >= coverageActivationFloor)
             .OrderByDescending(candidate => candidate.Amplitude)
             .ThenByDescending(candidate => candidate.Duration)
             .ThenBy(candidate => candidate.MappedPitch)
