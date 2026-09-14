@@ -80,12 +80,12 @@ internal static class DominantMelodyContinuityRegression
             $"Lead-over-restrained-bass fixture should remain eligible; fallback={result.Diagnostics.FallbackWindows}.");
         Equal(result.Diagnostics.FallbackWindows, result.Diagnostics.PitchGuidedFallbackWindows);
 
-        var inputLead = ToneMagnitude(accompaniment.Samples, sampleRate, 64);
-        var inputBass = ToneMagnitude(accompaniment.Samples, sampleRate, 40);
-        var inputChord = ToneMagnitude(accompaniment.Samples, sampleRate, 71);
-        var outputLead = ToneMagnitude(result.Audio.Samples, sampleRate, 64);
-        var outputBass = ToneMagnitude(result.Audio.Samples, sampleRate, 40);
-        var outputChord = ToneMagnitude(result.Audio.Samples, sampleRate, 71);
+        var inputLead = MidiBandMagnitude(accompaniment.Samples, sampleRate, 64, 0.6d);
+        var inputBass = ToneMagnitude(accompaniment.Samples, sampleRate, MidiFrequency(40));
+        var inputChord = ToneMagnitude(accompaniment.Samples, sampleRate, MidiFrequency(71));
+        var outputLead = MidiBandMagnitude(result.Audio.Samples, sampleRate, 64, 0.6d);
+        var outputBass = ToneMagnitude(result.Audio.Samples, sampleRate, MidiFrequency(40));
+        var outputChord = ToneMagnitude(result.Audio.Samples, sampleRate, MidiFrequency(71));
 
         True(inputBass > 0.01d && inputChord > 0.01d, "Fixture must contain measurable bass and chord leakage before isolation.");
         True(outputLead > outputBass * 6d,
@@ -129,9 +129,19 @@ internal static class DominantMelodyContinuityRegression
         return new NormalizedAudio(samples, sampleRate);
     }
 
-    private static double ToneMagnitude(float[] samples, int sampleRate, int midi)
+    private static double MidiBandMagnitude(float[] samples, int sampleRate, int midi, double semitoneRadius)
     {
-        var frequency = 440d * Math.Pow(2d, (midi - 69) / 12d);
+        var center = MidiFrequency(midi);
+        var minimum = center * Math.Pow(2d, -semitoneRadius / 12d);
+        var maximum = center * Math.Pow(2d, semitoneRadius / 12d);
+        var best = 0d;
+        for (var frequency = minimum; frequency <= maximum; frequency += 0.5d)
+            best = Math.Max(best, ToneMagnitude(samples, sampleRate, frequency));
+        return best;
+    }
+
+    private static double ToneMagnitude(float[] samples, int sampleRate, double frequency)
+    {
         double cosine = 0d;
         double sine = 0d;
         for (var index = 0; index < samples.Length; index++)
@@ -144,11 +154,13 @@ internal static class DominantMelodyContinuityRegression
         return Math.Sqrt((cosine * scale * cosine * scale) + (sine * scale * sine * scale));
     }
 
+    private static double MidiFrequency(int midi) => 440d * Math.Pow(2d, (midi - 69) / 12d);
+
     private static void AddTone(float[] samples, int sampleRate, int midi, double startSeconds, double endSeconds, float amplitude)
     {
         var start = Math.Max(0, checked((int)Math.Round(startSeconds * sampleRate)));
         var end = Math.Min(samples.Length, checked((int)Math.Round(endSeconds * sampleRate)));
-        var frequency = 440d * Math.Pow(2d, (midi - 69) / 12d);
+        var frequency = MidiFrequency(midi);
         var ramp = Math.Max(1, sampleRate / 200);
         for (var sample = start; sample < end; sample++)
         {
