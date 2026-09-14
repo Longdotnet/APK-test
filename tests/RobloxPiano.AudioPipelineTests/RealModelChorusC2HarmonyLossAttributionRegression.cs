@@ -84,14 +84,16 @@ internal static class RealModelChorusC2HarmonyLossAttributionRegression
             "hard-density/voicing" => "TUNE_VOICING_SELECTION",
             _ => "INVESTIGATE_OTHER"
         };
+        var adaptiveCount = blockers.FirstOrDefault(item => item.Name == "adaptive-density").Count;
+        var representativeCount = blockers.FirstOrDefault(item => item.Name == "pitch-class-representative").Count;
+        var voicingCount = blockers.FirstOrDefault(item => item.Name == "hard-density/voicing").Count;
+        var dominantName = dominant.Name ?? "none";
 
         Console.WriteLine(
             $"REAL_MODEL_CHORUS_C2_ATTRIBUTION recognized={sourceEvaluation.MatchedNotes}/{referenceNotes.Length} " +
             $"retained={arrangedEvaluation.MatchedNotes}/{sourceEvaluation.MatchedNotes} " +
-            $"adaptive={blockers.FirstOrDefault(item => item.Name == \"adaptive-density\").Count} " +
-            $"representative={blockers.FirstOrDefault(item => item.Name == \"pitch-class-representative\").Count} " +
-            $"voicing={blockers.FirstOrDefault(item => item.Name == \"hard-density/voicing\").Count} " +
-            $"dominant={dominant.Name ?? \"none\"} decision={decision} " +
+            $"adaptive={adaptiveCount} representative={representativeCount} voicing={voicingCount} " +
+            $"dominant={dominantName} decision={decision} " +
             $"overallHarmony={quality.RetainedHarmonyNotes}/{quality.RecognizedHarmonyNotes} " +
             $"melody={quality.RetainedMelodyNotes}/{quality.RecognizedMelodyNotes} clutter={quality.ClutterSuppression:F3}");
 
