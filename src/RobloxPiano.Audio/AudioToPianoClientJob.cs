@@ -32,8 +32,8 @@ public sealed record AudioToPianoClientJobResult(
 
 /// <summary>
 /// Production boundary for a client-facing Create Piano Version operation.
-/// It owns job lifetime, progress and cancellation only. The deterministic transcription service
-/// remains authoritative for generated notes and the canonical PerformanceTrack.
+/// It owns job lifetime, progress, cancellation and crash-resilient diagnostics only. The deterministic
+/// transcription service remains authoritative for generated notes and the canonical PerformanceTrack.
 /// </summary>
 public sealed class AudioToPianoClientJob : IDisposable
 {
@@ -91,8 +91,10 @@ public sealed class AudioToPianoClientJob : IDisposable
         }
         progress?.Report(Snapshot);
 
+        using var diagnosticsLog = AudioToPianoDiagnostics.Start(fullPath);
         try
         {
+            diagnosticsLog.Checkpoint("model-check");
             if (!BasicPitchBundledModel.IsAvailable)
                 throw new InvalidOperationException("This build does not contain the pinned Basic Pitch model required by Create Piano Version.");
 
@@ -106,8 +108,13 @@ public sealed class AudioToPianoClientJob : IDisposable
                     null),
                 progress);
 
+            diagnosticsLog.Checkpoint("model-materialize-start");
             var modelPath = BasicPitchBundledModel.MaterializeToDefaultCache();
+            diagnosticsLog.Checkpoint("model-materialize-complete");
+
+            diagnosticsLog.Checkpoint("onnx-session-create-start");
             using var service = new AudioToPianoTranscriptionService(modelPath);
+            diagnosticsLog.Checkpoint("onnx-session-create-complete");
 
             PublishMonotonic(
                 new AudioToPianoClientJobSnapshot(
@@ -121,6 +128,7 @@ public sealed class AudioToPianoClientJob : IDisposable
 
             var bridge = new InlineProgress<AudioToPianoTranscriptionProgress>(value =>
             {
+                diagnosticsLog.Progress(value);
                 var next = new AudioToPianoClientJobSnapshot(
                     AudioToPianoClientJobState.Running,
                     value.Stage,
@@ -131,6 +139,7 @@ public sealed class AudioToPianoClientJob : IDisposable
                 PublishMonotonic(next, progress);
             });
 
+            diagnosticsLog.Checkpoint("transcription-start");
             var result = await Task.Run(
                 () => service.TranscribeFile(
                     fullPath,
@@ -141,40 +150,47 @@ public sealed class AudioToPianoClientJob : IDisposable
                 CancellationToken.None).ConfigureAwait(false);
 
             linked.Token.ThrowIfCancellationRequested();
-            var diagnostics = result.Diagnostics;
-            var quality = diagnostics.Quality;
-            var reviewSummary = FormatReviewSummary(diagnostics.ReviewRegions);
+            diagnosticsLog.Checkpoint("transcription-returned");
+            var resultDiagnostics = result.Diagnostics;
+            var quality = resultDiagnostics.Quality;
+            var reviewSummary = FormatReviewSummary(resultDiagnostics.ReviewRegions);
             var completed = new AudioToPianoClientJobSnapshot(
                 AudioToPianoClientJobState.Completed,
                 AudioToPianoTranscriptionStage.Completed,
                 1d,
-                diagnostics.RequiresReview
+                resultDiagnostics.RequiresReview
                     ? $"Piano version created — {quality.Readiness}. {reviewSummary} Preview these regions before adding it to your library."
                     : "Piano version created — Ready for preview and library review.",
                 fullPath,
                 null);
             PublishTerminal(completed, progress);
+            diagnosticsLog.Completed(result);
             return new(AudioToPianoClientJobState.Completed, result, null);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
+            var current = Snapshot;
+            diagnosticsLog.Cancelled(current.Stage, current.Fraction);
             var cancelled = new AudioToPianoClientJobSnapshot(
                 AudioToPianoClientJobState.Cancelled,
-                Snapshot.Stage,
-                Snapshot.Fraction,
+                current.Stage,
+                current.Fraction,
                 "Piano creation cancelled. No generated track was added or played.",
                 fullPath,
                 null);
             PublishTerminal(cancelled, progress);
             return new(AudioToPianoClientJobState.Cancelled, null, null);
         }
-        catch (Exception exception) when (IsRecoverableClientFailure(exception))
+        catch (Exception exception)
         {
-            var errorMessage = FormatClientFailure(exception);
+            var current = Snapshot;
+            diagnosticsLog.Failed(exception, current.Stage, current.Fraction);
+            var errorMessage = FormatClientFailure(exception) +
+                $" Diagnostic log: {AudioToPianoDiagnostics.LogPath}";
             var failed = new AudioToPianoClientJobSnapshot(
                 AudioToPianoClientJobState.Failed,
-                Snapshot.Stage,
-                Snapshot.Fraction,
+                current.Stage,
+                current.Fraction,
                 "Piano version could not be created. The application can continue safely.",
                 fullPath,
                 errorMessage);
@@ -233,20 +249,6 @@ public sealed class AudioToPianoClientJob : IDisposable
         progress?.Report(terminal);
     }
 
-    private static bool IsRecoverableClientFailure(Exception exception) => exception is
-        IOException
-        or UnauthorizedAccessException
-        or InvalidDataException
-        or ArgumentException
-        or InvalidOperationException
-        or OverflowException
-        or NotSupportedException
-        or TypeInitializationException
-        or DllNotFoundException
-        or BadImageFormatException
-        or Microsoft.ML.OnnxRuntime.OnnxRuntimeException
-        or NAudio.MmException;
-
     private static string FormatClientFailure(Exception exception) => exception switch
     {
         Microsoft.ML.OnnxRuntime.OnnxRuntimeException =>
@@ -255,7 +257,9 @@ public sealed class AudioToPianoClientJob : IDisposable
             $"The selected audio could not be decoded locally: {exception.Message}",
         DllNotFoundException or BadImageFormatException or TypeInitializationException =>
             $"The local audio/model runtime could not start correctly: {exception.Message}",
-        _ => exception.Message
+        OutOfMemoryException =>
+            "Create Piano Version ran out of available memory. Close memory-heavy applications and retry; the diagnostic log contains the last completed phase and memory checkpoints.",
+        _ => $"{exception.GetType().Name}: {exception.Message}"
     };
 
     private static string FormatReviewSummary(IReadOnlyList<AudioTranscriptionReviewRegion> regions)
