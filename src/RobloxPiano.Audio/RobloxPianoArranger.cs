@@ -377,15 +377,16 @@ public sealed class RobloxPianoArranger
                 .ThenByDescending(candidate => candidate.Duration)
                 .ThenByDescending(candidate => candidate.MappedPitch);
 
-        var legacyContinuity = OrderForContinuity(credible, previousPitch, options.MelodyContinuityMaxLeapSemitones).First();
         var continuityActivationThreshold = credibleSkyline.Amplitude * options.MelodyContinuityRelativeActivationFloor;
         var continuityCandidates = credible
             .Where(candidate => candidate.Amplitude >= continuityActivationThreshold)
             .ToArray();
         var selected = OrderForContinuity(continuityCandidates, previousPitch, options.MelodyContinuityMaxLeapSemitones).First();
 
-        continuityConfidenceRejected = !ReferenceEquals(legacyContinuity, selected) &&
-            legacyContinuity.Amplitude < continuityActivationThreshold;
+        continuityConfidenceRejected = credible.Any(candidate =>
+            !ReferenceEquals(candidate, selected) &&
+            candidate.Amplitude < continuityActivationThreshold &&
+            Math.Abs(candidate.MappedPitch - previousPitch) <= options.MelodyContinuityMaxLeapSemitones);
         continuitySelected = !ReferenceEquals(selected, credibleSkyline);
         return selected;
     }
