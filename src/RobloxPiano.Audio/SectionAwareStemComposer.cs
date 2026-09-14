@@ -22,7 +22,8 @@ public sealed record SectionAwareStemCompositionOptions(
     float MinimumLeadToBassCorrelationRatio = 0.80f,
     int MaximumLeadBoundaryLagSlack = 1,
     bool RequireLeadPitchContinuity = true,
-    float MaximumAdjacentLeadJumpSemitones = 19f)
+    float MaximumAdjacentLeadJumpSemitones = 19f,
+    bool UsePitchGuidedFallback = true)
 {
     public TimeSpan EffectiveWindowDuration => WindowDuration ?? TimeSpan.FromMilliseconds(400);
     public TimeSpan EffectiveAttack => Attack ?? TimeSpan.FromMilliseconds(80);
@@ -60,6 +61,7 @@ public sealed record SectionAwareStemCompositionDiagnostics(
     int RejectedBassDominatedWindows,
     int RejectedDiscontinuousLeadWindows,
     int FallbackWindows,
+    int PitchGuidedFallbackWindows,
     TimeSpan FallbackDuration,
     float AccompanimentGain,
     float PeakBeforeNormalization,
@@ -69,6 +71,7 @@ public sealed record SectionAwareStemCompositionDiagnostics(
     int OutputSamples)
 {
     public bool UsedAccompanimentFallback => FallbackWindows != 0;
+    public bool UsedPitchGuidedFallback => PitchGuidedFallbackWindows != 0;
 }
 
 public sealed record SectionAwareStemCompositionResult(NormalizedAudio Audio, SectionAwareStemCompositionDiagnostics Diagnostics);
@@ -77,8 +80,10 @@ public sealed record SectionAwareStemCompositionResult(NormalizedAudio Audio, Se
 /// Keeps the Spleeter vocal stem authoritative while recovering instrumental hooks from separated accompaniment
 /// only across sustained vocal-weak regions. Energy alone is insufficient: fallback must contain lead-band
 /// periodicity, must not be dominated by bass-band periodicity, and accepted lead pitches must form a locally
-/// plausible contour. Phrase gaps reset continuity so unrelated sections are not forced together. Spleeter owns
-/// separation; Basic Pitch owns transcription.
+/// plausible contour. When pitch-guided fallback is enabled, only the least-squares fundamental projection at
+/// the selected lead frequency is admitted rather than the raw accompaniment waveform, preventing residual
+/// chords, bass and percussion from becoming Basic Pitch note truth. Phrase gaps reset continuity so unrelated
+/// sections are not forced together. Spleeter owns separation; Basic Pitch owns transcription.
 /// </summary>
 public sealed class SectionAwareStemComposer
 {
@@ -139,8 +144,15 @@ public sealed class SectionAwareStemComposer
         {
             return new SectionAwareStemCompositionResult(vocals, new SectionAwareStemCompositionDiagnostics(
                 windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, rejectedDiscontinuousLeadWindows,
-                0, TimeSpan.Zero, options.AccompanimentGain, Peak(vocals.Samples), 1f, vocals.Samples.Length, accompaniment.Samples.Length, vocals.Samples.Length));
+                0, 0, TimeSpan.Zero, options.AccompanimentGain, Peak(vocals.Samples), 1f, vocals.Samples.Length, accompaniment.Samples.Length, vocals.Samples.Length));
         }
+
+        var projections = options.UsePitchGuidedFallback && options.RequireMelodicFallback
+            ? BuildLeadProjections(accompaniment.Samples, active, leadFrequencyHz, windowSamples, sampleRate, cancellationToken)
+            : new LeadProjection[windowCount];
+        var pitchGuidedFallbackWindows = options.UsePitchGuidedFallback && options.RequireMelodicFallback
+            ? active.Select((value, index) => value && projections[index].Available).Count(value => value)
+            : 0;
 
         var output = new float[vocals.Samples.Length];
         var attackAlpha = SmoothingAlpha(options.EffectiveAttack, sampleRate);
@@ -155,7 +167,14 @@ public sealed class SectionAwareStemComposer
             var alpha = targetGain > currentGain ? attackAlpha : releaseAlpha;
             currentGain += (targetGain - currentGain) * alpha;
             var vocal = vocals.Samples[index];
-            var fallback = index < accompaniment.Samples.Length ? accompaniment.Samples[index] : 0f;
+            var fallback = 0f;
+            if (index < accompaniment.Samples.Length)
+            {
+                var projection = projections[window];
+                fallback = active[window] && projection.Available
+                    ? projection.Sample(index, sampleRate)
+                    : accompaniment.Samples[index];
+            }
             var sample = vocal + fallback * currentGain;
             output[index] = sample;
             peak = Math.Max(peak, Math.Abs(sample));
@@ -173,8 +192,47 @@ public sealed class SectionAwareStemComposer
 
         return new SectionAwareStemCompositionResult(new NormalizedAudio(output, sampleRate), new SectionAwareStemCompositionDiagnostics(
             windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, rejectedDiscontinuousLeadWindows,
-            fallbackWindows, TimeSpan.FromSeconds(fallbackWindows * options.EffectiveWindowDuration.TotalSeconds), options.AccompanimentGain, peak,
+            fallbackWindows, pitchGuidedFallbackWindows, TimeSpan.FromSeconds(fallbackWindows * options.EffectiveWindowDuration.TotalSeconds), options.AccompanimentGain, peak,
             normalizationGain, vocals.Samples.Length, accompaniment.Samples.Length, output.Length));
+    }
+
+    private static LeadProjection[] BuildLeadProjections(
+        float[] samples,
+        bool[] active,
+        double[] leadFrequencyHz,
+        int windowSamples,
+        int sampleRate,
+        CancellationToken cancellationToken)
+    {
+        var projections = new LeadProjection[active.Length];
+        for (var window = 0; window < active.Length; window++)
+        {
+            if (!active[window] || leadFrequencyHz[window] <= 0d) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            var start = window * windowSamples;
+            var end = Math.Min(samples.Length, start + windowSamples);
+            if (end - start < 8) continue;
+
+            var frequency = leadFrequencyHz[window];
+            double cosine = 0d;
+            double sine = 0d;
+            var count = end - start;
+            for (var index = start; index < end; index++)
+            {
+                var phase = 2d * Math.PI * frequency * index / sampleRate;
+                var sample = samples[index];
+                cosine += sample * Math.Cos(phase);
+                sine += sample * Math.Sin(phase);
+            }
+
+            var scale = 2d / count;
+            var cosineCoefficient = cosine * scale;
+            var sineCoefficient = sine * scale;
+            var amplitude = Math.Sqrt((cosineCoefficient * cosineCoefficient) + (sineCoefficient * sineCoefficient));
+            if (amplitude <= 1e-6d) continue;
+            projections[window] = new LeadProjection(frequency, cosineCoefficient, sineCoefficient);
+        }
+        return projections;
     }
 
     private static MelodicWindowAnalysis AnalyzeMelodicWindow(float[] samples, int start, int end, int sampleRate, SectionAwareStemCompositionOptions options, CancellationToken cancellationToken)
@@ -306,4 +364,13 @@ public sealed class SectionAwareStemComposer
     private static float Peak(float[] samples) { var peak = 0f; foreach (var sample in samples) peak = Math.Max(peak, Math.Abs(sample)); return peak; }
     private readonly record struct MelodicWindowAnalysis(bool Accepted, bool BassDominated, double LeadFrequencyHz);
     private readonly record struct AutocorrelationPeak(double Correlation, int Lag, int MinimumLag);
+    private readonly record struct LeadProjection(double FrequencyHz, double CosineCoefficient, double SineCoefficient)
+    {
+        public bool Available => FrequencyHz > 0d;
+        public float Sample(int sampleIndex, int sampleRate)
+        {
+            var phase = 2d * Math.PI * FrequencyHz * sampleIndex / sampleRate;
+            return (float)((CosineCoefficient * Math.Cos(phase)) + (SineCoefficient * Math.Sin(phase)));
+        }
+    }
 }
