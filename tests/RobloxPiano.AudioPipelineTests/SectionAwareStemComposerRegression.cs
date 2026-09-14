@@ -116,13 +116,10 @@ internal static class SectionAwareStemComposerRegression
         var vocalSamples = new float[length];
         var accompanimentSamples = new float[length];
 
-        // Vocal-led body: three-note melodic identity.
         AddTone(vocalSamples, sampleRate, midi: 69, startSeconds: 1.25d, endSeconds: 1.85d, amplitude: 0.46f);
         AddTone(vocalSamples, sampleRate, midi: 71, startSeconds: 2.00d, endSeconds: 2.60d, amplitude: 0.46f);
         AddTone(vocalSamples, sampleRate, midi: 72, startSeconds: 2.75d, endSeconds: 3.35d, amplitude: 0.46f);
 
-        // Instrumental identity around the vocal section. Continuous note coverage deliberately spans
-        // multiple 400 ms windows so short drum-like bursts cannot satisfy the fallback contract.
         AddTone(accompanimentSamples, sampleRate, midi: 64, startSeconds: 0.05d, endSeconds: 0.62d, amplitude: 0.48f);
         AddTone(accompanimentSamples, sampleRate, midi: 67, startSeconds: 0.62d, endSeconds: 1.18d, amplitude: 0.48f);
         AddTone(accompanimentSamples, sampleRate, midi: 67, startSeconds: 3.45d, endSeconds: 4.05d, amplitude: 0.48f);
@@ -169,6 +166,9 @@ internal static class SectionAwareStemComposerRegression
             $"fallbackSeconds={composition.Diagnostics.FallbackDuration.TotalSeconds:F1}");
     }
 
+    // These tests exercise section duration, gain, smoothing and normalization mechanics. Melodic eligibility
+    // has dedicated tonal/noise/bass fixtures and the real Basic Pitch A/B above, so keep synthetic DC fixtures
+    // out of that classification layer.
     private static SectionAwareStemCompositionOptions Options() => new(
         WindowDuration: TimeSpan.FromMilliseconds(400),
         MinimumConsecutiveFallbackWindows: 2,
@@ -178,7 +178,8 @@ internal static class SectionAwareStemComposerRegression
         AccompanimentGain: 0.24f,
         MaximumPeak: 0.98f,
         Attack: TimeSpan.Zero,
-        Release: TimeSpan.Zero);
+        Release: TimeSpan.Zero,
+        RequireMelodicFallback: false);
 
     private static NormalizedAudio Constant(int sampleRate, int seconds, float amplitude)
     {
