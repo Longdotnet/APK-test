@@ -1,6 +1,8 @@
 namespace RobloxPiano.Audio;
 
-public sealed record AudioSourceSeparationOptions(bool Enabled = true);
+public sealed record AudioSourceSeparationOptions(
+    bool Enabled = true,
+    SectionAwareStemCompositionOptions? SectionAwareComposition = null);
 
 public sealed record AudioToPianoTranscriptionOptions(
     AudioIngestOptions? Ingest = null,
@@ -64,6 +66,7 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     public TimeSpan ReviewElapsed { get; init; }
     public TimeSpan SeparationElapsed { get; init; }
     public string InputStrategy { get; init; } = "full-mix";
+    public SectionAwareStemCompositionDiagnostics? StemComposition { get; init; }
     public bool RequiresReview => Quality.RequiresReview || ReviewRegions.Count != 0;
     public int NotesAfterSuppression => HarmonicSuppression.RetainedNotes;
     public TimeSpan TotalElapsed => SeparationElapsed + IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed + ReviewElapsed;
@@ -78,9 +81,9 @@ public sealed record AudioToPianoTranscriptionResult(
 
 /// <summary>
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
-/// Full-song MP3 input is separated before pitch transcription by default so drums/bass/accompaniment
-/// do not compete with the lead melody. Basic Pitch remains authoritative only for the pitched stem it
-/// receives; note decoding/arrangement and Roblox playback truth remain deterministic RobloxPiano code.
+/// Full-song MP3/WAV input is separated before pitch transcription by default. The vocal stem stays authoritative,
+/// while sustained vocal-weak sections may admit restrained separated accompaniment so instrumental hooks are not
+/// erased. Basic Pitch and deterministic RobloxPiano post-processing still own note/performance truth.
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
@@ -89,6 +92,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
 
     private readonly BasicPitchInferenceService inference;
     private readonly AudioIngestService ingest = new();
+    private readonly SectionAwareStemComposer sectionAwareStemComposer = new();
     private readonly BasicPitchNoteDecoder decoder = new();
     private readonly BasicPitchHarmonicSuppressor harmonicSuppressor = new();
     private readonly RobloxPianoArranger arranger = new();
@@ -123,9 +127,9 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         options ??= new AudioToPianoTranscriptionOptions();
 
         DemucsSeparatedStems? separated = null;
-        var ingestPath = path;
         var inputStrategy = "full-mix";
         var separationElapsed = TimeSpan.Zero;
+        SectionAwareStemCompositionDiagnostics? stemComposition = null;
         try
         {
             if (ShouldUseSourceSeparation(path, options))
@@ -138,20 +142,46 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
                     message => Report(progress, AudioToPianoTranscriptionStage.SourceSeparation, 0.08d, message),
                     cancellationToken);
                 separationElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(separationStarted);
-                ingestPath = separated.VocalsPath;
-                inputStrategy = $"spleeter/{DemucsRsStemSeparator.EngineVersion}:{DemucsRsStemSeparator.ModelId}:vocals-only";
                 Report(progress, AudioToPianoTranscriptionStage.SourceSeparation, 0.10d,
-                    "Lead-vocal stem separated. Building the piano melody from the cleaner source...");
+                    "Separated vocal and accompaniment stems are ready. Recovering melody-bearing instrumental sections conservatively...");
             }
 
             Report(progress, AudioToPianoTranscriptionStage.Ingest, separated is null ? 0d : 0.10d,
-                separated is null ? "Decoding and normalizing audio..." : "Decoding separated lead-vocal stem...");
+                separated is null
+                    ? "Decoding and normalizing audio..."
+                    : "Decoding separated vocals and accompaniment for section-aware lead selection...");
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             var ingestOptions = NormalizeIngestOptions(options.Ingest);
-            var audio = ingest.DecodeFile(ingestPath, ingestOptions, cancellationToken);
+            NormalizedAudio audio;
+            if (separated is null)
+            {
+                audio = ingest.DecodeFile(path, ingestOptions, cancellationToken);
+            }
+            else
+            {
+                var vocals = ingest.DecodeFile(separated.VocalsPath, ingestOptions, cancellationToken);
+                var accompanimentPath = ResolveSeparatedAccompanimentPath(separated);
+                var accompaniment = ingest.DecodeFile(accompanimentPath, ingestOptions, cancellationToken);
+                var composition = sectionAwareStemComposer.Compose(
+                    vocals,
+                    accompaniment,
+                    options.SourceSeparation?.SectionAwareComposition,
+                    cancellationToken);
+                audio = composition.Audio;
+                stemComposition = composition.Diagnostics;
+                inputStrategy =
+                    $"spleeter/{DemucsRsStemSeparator.EngineVersion}:{DemucsRsStemSeparator.ModelId}:" +
+                    $"vocal-priority+section-fallback@{composition.Diagnostics.AccompanimentGain:0.00}:" +
+                    $"{composition.Diagnostics.FallbackWindows}/{composition.Diagnostics.Windows}-windows";
+            }
+
             var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction,
-                separated is null ? "Audio normalized for transcription." : "Lead-vocal stem normalized for transcription.");
+                separated is null
+                    ? "Audio normalized for transcription."
+                    : stemComposition?.UsedAccompanimentFallback == true
+                        ? $"Lead source ready; recovered about {stemComposition.FallbackDuration.TotalSeconds:0.0}s of sustained instrumental sections."
+                        : "Lead-vocal stem is strong across the song; accompaniment fallback was not needed.");
             return TranscribeNormalizedCore(
                 audio,
                 title ?? Path.GetFileNameWithoutExtension(path),
@@ -160,7 +190,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
                 progress,
                 cancellationToken,
                 inputStrategy,
-                separationElapsed);
+                separationElapsed,
+                stemComposition);
         }
         finally
         {
@@ -200,7 +231,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             progress,
             cancellationToken,
             "stream",
-            TimeSpan.Zero);
+            TimeSpan.Zero,
+            stemComposition: null);
     }
 
     public AudioToPianoTranscriptionResult TranscribeNormalized(
@@ -229,7 +261,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             progress,
             cancellationToken,
             "normalized-input",
-            TimeSpan.Zero);
+            TimeSpan.Zero,
+            stemComposition: null);
     }
 
     private AudioToPianoTranscriptionResult TranscribeNormalizedCore(
@@ -240,7 +273,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         IProgress<AudioToPianoTranscriptionProgress>? progress,
         CancellationToken cancellationToken,
         string inputStrategy,
-        TimeSpan separationElapsed)
+        TimeSpan separationElapsed,
+        SectionAwareStemCompositionDiagnostics? stemComposition)
     {
         if (audio.SampleRate != BasicPitchInferenceService.RequiredSampleRate)
             throw new ArgumentException($"Audio-to-Piano requires {BasicPitchInferenceService.RequiredSampleRate} Hz normalized audio.", nameof(audio));
@@ -248,7 +282,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         Report(progress, AudioToPianoTranscriptionStage.Inference, InferenceStartFraction,
             inputStrategy.StartsWith("spleeter/", StringComparison.Ordinal)
-                ? "Listening for the lead melody in the separated vocal stem..."
+                ? "Listening for the lead melody in the vocal-priority, section-aware source..."
                 : "Listening for notes with Basic Pitch...");
         var inferenceProgress = progress is null
             ? null
@@ -335,7 +369,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             ReviewRegions = reviewRegions,
             ReviewElapsed = reviewElapsed,
             SeparationElapsed = separationElapsed,
-            InputStrategy = inputStrategy
+            InputStrategy = inputStrategy,
+            StemComposition = stemComposition
         };
         var result = new AudioToPianoTranscriptionResult(arrangement, diagnostics)
         {
@@ -348,6 +383,18 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         };
         Report(progress, AudioToPianoTranscriptionStage.Completed, 1d, "Piano version created.");
         return result;
+    }
+
+    private static string ResolveSeparatedAccompanimentPath(DemucsSeparatedStems separated)
+    {
+        var path = Path.Combine(separated.WorkingDirectory, "accompaniment.wav");
+        if (!File.Exists(path))
+        {
+            throw new InvalidDataException(
+                "Spleeter completed without the expected accompaniment stem required for section-aware melody recovery.");
+        }
+
+        return path;
     }
 
     private static bool ShouldUseSourceSeparation(string path, AudioToPianoTranscriptionOptions options)
@@ -369,10 +416,12 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             return true;
         }
 
-        // Keep deterministic/offline CI fixtures unchanged while making the normal desktop MP3 path
-        // melody-first. WAV remains available for synthetic/reference fixtures unless explicitly enabled.
+        // Keep deterministic/offline CI fixtures unchanged. Normal desktop full-song MP3/WAV input is
+        // separation-first so client behavior matches the Create Piano product contract.
         var isCi = Environment.GetEnvironmentVariable("CI")?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
-        return !isCi && Path.GetExtension(path).Equals(".mp3", StringComparison.OrdinalIgnoreCase);
+        var extension = Path.GetExtension(path);
+        return !isCi && (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".wav", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string FormatReviewRegionReason(AudioTranscriptionReviewRegion region)
