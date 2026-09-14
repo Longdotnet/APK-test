@@ -83,7 +83,8 @@ internal static class BassDominanceFallbackRegression
         BassBandMinimumFrequencyHz: 55f,
         BassBandMaximumFrequencyHz: 146.83f,
         MinimumLeadBandFrequencyHz: 146.83f,
-        MinimumLeadToBassCorrelationRatio: 0.97f);
+        MinimumLeadToBassCorrelationRatio: 0.95f,
+        MaximumLeadBoundaryLagSlack: 1);
 
     private static void AddTone(float[] samples, int sampleRate, int midi, double startSeconds, double endSeconds, float amplitude)
     {
