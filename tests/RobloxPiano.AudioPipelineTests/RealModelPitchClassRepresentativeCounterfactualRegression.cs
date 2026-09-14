@@ -37,8 +37,7 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
             production.Track,
             options: EvaluationOptions);
 
-        Require(productionQuality.Sections.TryGetValue(TargetSection, out var productionTarget) && productionTarget is not null,
-            $"Missing {TargetSection} production evidence.");
+        var productionTarget = productionQuality.Sections[TargetSection];
         Require(productionTarget.RecognizedHarmonyNotes >= 4,
             $"{TargetSection} recognized too little harmony evidence: {productionTarget.RecognizedHarmonyNotes}.");
 
@@ -51,7 +50,7 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
         foreach (var candidate in candidates)
         {
             Console.WriteLine(
-                $"REAL_MODEL_REPRESENTATIVE_AB policy={candidate.Policy} rewrites={candidate.Rewrites} collisions={candidate.Collisions} " +
+                $"REAL_MODEL_REPRESENTATIVE_AB policy={candidate.Policy} opportunities={candidate.Opportunities} rewrites={candidate.Rewrites} collisions={candidate.Collisions} " +
                 $"target={candidate.TargetRetained}/{candidate.TargetRecognized} targetDelta={candidate.TargetDelta:+0;-0;0} " +
                 $"harmony={candidate.Quality.RetainedHarmonyNotes}/{candidate.Quality.RecognizedHarmonyNotes} harmonyDelta={candidate.HarmonyDelta:+0;-0;0} " +
                 $"melody={candidate.Quality.RetainedMelodyNotes}/{candidate.Quality.RecognizedMelodyNotes} " +
@@ -60,8 +59,8 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
                 $"events={candidate.Quality.ArrangedNotes} promotable={candidate.Promotable}");
         }
 
-        Require(candidates.Any(candidate => candidate.Rewrites > 0),
-            "Representative A/B did not exercise any octave/pitch-class counterfactual.");
+        Require(candidates.Any(candidate => candidate.Opportunities > 0),
+            "Representative A/B found no accompaniment pitch class with multiple recognized octave candidates.");
 
         var winner = candidates
             .Where(candidate => candidate.Promotable)
@@ -92,14 +91,19 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
         IReadOnlyList<AudioArrangementReferenceNote> reference,
         AudioArrangementQualityEvidenceEvaluator evaluator)
     {
-        var counterfactual = BuildCounterfactualTrack(productionTrack, decoded, policy, out var rewrites, out var collisions);
+        var counterfactual = BuildCounterfactualTrack(
+            productionTrack,
+            decoded,
+            policy,
+            out var opportunities,
+            out var rewrites,
+            out var collisions);
         var quality = evaluator.Evaluate(
             reference,
             decoded,
             counterfactual,
             options: EvaluationOptions);
-        Require(quality.Sections.TryGetValue(TargetSection, out var target) && target is not null,
-            $"Missing {TargetSection} evidence for {policy}.");
+        var target = quality.Sections[TargetSection];
         var productionTarget = productionQuality.Sections[TargetSection];
         var sectionWins = 0;
         var sectionLosses = 0;
@@ -131,6 +135,7 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
         return new CandidateResult(
             policy,
             quality,
+            opportunities,
             rewrites,
             collisions,
             target.RecognizedHarmonyNotes,
@@ -147,12 +152,14 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
         PerformanceTrack production,
         IReadOnlyList<BasicPitchTranscribedNote> decoded,
         RepresentativePolicy policy,
+        out int opportunities,
         out int rewrites,
         out int collisions)
     {
         var profile = ProductionOptions.EffectiveKeyboardProfile;
         var clusterWindow = ProductionOptions.OnsetClusterWindow ?? TimeSpan.FromMilliseconds(18);
         var centerPitch = (profile.LowestMidiNote + profile.HighestMidiNote) / 2.0;
+        opportunities = 0;
         rewrites = 0;
         var events = new List<PerformanceEvent>(production.Events.Count);
 
@@ -193,6 +200,7 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
                     continue;
                 }
 
+                opportunities++;
                 var strongest = samePitchClass.Max(item => item.Note.Amplitude);
                 MappedSource desired = policy switch
                 {
@@ -319,6 +327,7 @@ internal static class RealModelPitchClassRepresentativeCounterfactualRegression
     private sealed record CandidateResult(
         RepresentativePolicy Policy,
         AudioArrangementQualityEvidence Quality,
+        int Opportunities,
         int Rewrites,
         int Collisions,
         int TargetRecognized,
