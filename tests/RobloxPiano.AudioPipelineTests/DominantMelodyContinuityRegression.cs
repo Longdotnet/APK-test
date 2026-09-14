@@ -74,7 +74,7 @@ internal static class DominantMelodyContinuityRegression
         MinimumMelodicAutocorrelation: 0.28f,
         RejectBassDominatedFallback: true,
         RequireLeadPitchContinuity: true,
-        MaximumAdjacentLeadJumpSemitones: 12f);
+        MaximumAdjacentLeadJumpSemitones: 19f);
 
     private static NormalizedAudio Silence(int sampleRate, double seconds) =>
         new(new float[checked((int)Math.Round(sampleRate * seconds))], sampleRate);
