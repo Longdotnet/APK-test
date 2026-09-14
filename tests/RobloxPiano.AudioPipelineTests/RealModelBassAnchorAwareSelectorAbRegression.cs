@@ -28,7 +28,7 @@ internal static class RealModelBassAnchorAwareSelectorAbRegression
                 "repeated-progression")
         };
 
-        var promotable = true;
+        var promotionSafe = true;
         foreach (var fixture in cases)
         {
             // One pinned-model inference per corpus; production and candidate consume identical decoded notes.
@@ -56,32 +56,52 @@ internal static class RealModelBassAnchorAwareSelectorAbRegression
                 candidate.Sections.TryGetValue(pair.Key, out var other) &&
                 other.RetainedHarmonyNotes < pair.Value.RetainedHarmonyNotes);
 
-            var caseSafe =
+            Require(production.MelodyRetention >= 0.85,
+                $"{fixture.Name} production melody baseline regressed: {production.MelodyRetention:F3}.");
+            Require(production.HarmonyRetention >= 0.65,
+                $"{fixture.Name} production harmony baseline regressed: {production.HarmonyRetention:F3}.");
+            Require(!production.ArrangementAddedFalsePositives,
+                $"{fixture.Name} production added false-positive canonical events.");
+
+            // A calibration candidate may legitimately fail to improve quality. It may not silently make the
+            // production evidence worse; that would indicate the proposed rule is unsafe rather than merely ineffective.
+            var candidateBounded =
                 candidate.RetainedHarmonyNotes >= production.RetainedHarmonyNotes &&
                 candidate.RetainedMelodyNotes >= production.RetainedMelodyNotes &&
                 sectionLosses == 0 &&
                 !candidate.ArrangementAddedFalsePositives &&
                 candidate.ArrangedNotes == production.ArrangedNotes &&
                 candidate.ClutterSuppression >= production.ClutterSuppression - 0.02;
+            Require(candidateBounded,
+                $"{fixture.Name} candidate selector regressed bounded production quality; reject the rule.");
 
+            var casePromotable = candidateBounded;
             if (fixture.Name == "repeated-progression")
             {
                 var productionTarget = production.Sections[TargetSection];
                 var candidateTarget = candidate.Sections[TargetSection];
-                caseSafe &=
-                    substitutions > 0 &&
+                casePromotable &=
+                    substitutions.Count > 0 &&
                     candidateTarget.RetainedHarmonyNotes >= 3 &&
                     candidateTarget.RetainedHarmonyNotes > productionTarget.RetainedHarmonyNotes &&
                     candidate.RetainedHarmonyNotes > production.RetainedHarmonyNotes;
             }
 
-            promotable &= caseSafe;
+            promotionSafe &= casePromotable;
             Console.WriteLine(
-                $"REAL_MODEL_BASS_ANCHOR_SELECTOR corpus={fixture.Name} safe={caseSafe} substitutions={substitutions} " +
+                $"REAL_MODEL_BASS_ANCHOR_SELECTOR corpus={fixture.Name} bounded={candidateBounded} promotable={casePromotable} substitutions={substitutions.Count} " +
                 $"melody={production.RetainedMelodyNotes}/{production.RecognizedMelodyNotes}->{candidate.RetainedMelodyNotes}/{candidate.RecognizedMelodyNotes} " +
                 $"harmony={production.RetainedHarmonyNotes}/{production.RecognizedHarmonyNotes}->{candidate.RetainedHarmonyNotes}/{candidate.RecognizedHarmonyNotes} " +
                 $"clutter={production.ClutterSuppression:F3}->{candidate.ClutterSuppression:F3} " +
                 $"sectionLosses={sectionLosses} events={production.ArrangedNotes}/{candidate.ArrangedNotes}");
+
+            foreach (var substitution in substitutions)
+            {
+                Console.WriteLine(
+                    $"REAL_MODEL_BASS_ANCHOR_SELECTOR_SUBSTITUTION corpus={fixture.Name} event={substitution.EventIndex} " +
+                    $"startMs={substitution.Start.TotalMilliseconds:F0} from={substitution.FromMidi} to={substitution.ToMidi} " +
+                    $"sourceActivation={substitution.FromActivation:F3} candidateActivation={substitution.ToActivation:F3}");
+            }
 
             if (fixture.Name == "repeated-progression")
             {
@@ -92,23 +112,20 @@ internal static class RealModelBassAnchorAwareSelectorAbRegression
                     $"harmony={productionTarget.RetainedHarmonyNotes}/{productionTarget.RecognizedHarmonyNotes}->" +
                     $"{candidateTarget.RetainedHarmonyNotes}/{candidateTarget.RecognizedHarmonyNotes}");
             }
-
-            Require(caseSafe, $"{fixture.Name} bass-anchor-aware selector failed promotion contract.");
         }
 
         Console.WriteLine(
-            $"REAL_MODEL_BASS_ANCHOR_SELECTOR_DECISION decision={(promotable ? "PROMOTION_SAFE" : "KEEP_PRODUCTION")} corpora={cases.Length}");
-        Require(promotable, "Bass-anchor-aware selector did not satisfy the cross-corpus promotion contract.");
+            $"REAL_MODEL_BASS_ANCHOR_SELECTOR_DECISION decision={(promotionSafe ? "PROMOTION_SAFE" : "KEEP_PRODUCTION")} corpora={cases.Length}");
     }
 
     private static PerformanceTrack ApplyBassAnchorAwareSelector(
         PerformanceTrack production,
         IReadOnlyList<BasicPitchTranscribedNote> decoded,
         MidiKeyboardProfile profile,
-        out int substitutions)
+        out IReadOnlyList<Substitution> substitutions)
     {
         var events = production.Events.ToArray();
-        substitutions = 0;
+        var applied = new List<Substitution>();
 
         for (var eventIndex = 0; eventIndex < events.Length; eventIndex++)
         {
@@ -167,9 +184,16 @@ internal static class RealModelBassAnchorAwareSelectorAbRegression
                 continue;
 
             events[eventIndex] = current with { Keys = new[] { replacementKey } };
-            substitutions++;
+            applied.Add(new Substitution(
+                eventIndex,
+                current.Start,
+                currentMidi,
+                alternate.MidiNote,
+                currentEvidence.Amplitude,
+                alternate.Amplitude));
         }
 
+        substitutions = applied;
         return production with { Events = events };
     }
 
@@ -240,4 +264,12 @@ internal static class RealModelBassAnchorAwareSelectorAbRegression
         string Name,
         float[] Samples,
         IReadOnlyList<AudioArrangementReferenceNote> Reference);
+
+    private sealed record Substitution(
+        int EventIndex,
+        TimeSpan Start,
+        int FromMidi,
+        int ToMidi,
+        float FromActivation,
+        float ToActivation);
 }
