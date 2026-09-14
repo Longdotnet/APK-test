@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.71
+version: 0.40.72
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -17,20 +17,16 @@ SHA256: `{{SHA256}}`
 
 ## Full-song MP3 -> recognizable piano
 
-- Normal desktop MP3 Create Piano Version now uses the pinned native `demucs-rs v0.3.4` / `htdemucs` separator before Basic Pitch instead of treating the complete mixed spectrum as note truth.
-- The lead/vocal stem remains dominant while the separated `other` stem is reintroduced at a restrained deterministic `0.22` gain so useful chord identity can survive without letting drums or bass dominate the melody.
-- The separated bass stem is not fed into Basic Pitch, and the production separator does not request the drums stem for transcription.
-- The stem mix applies deterministic peak protection before the existing Basic Pitch, harmonic suppression, Roblox density/range reduction and canonical `PerformanceTrack` stages.
-- First source-separation use downloads the pinned Windows separator and HTDemucs model into local caches; RobloxPiano verifies their expected identities. No Python, PyTorch, Node, Visual Studio, .NET SDK or manual model setup is required.
-- Corrected the HTDemucs provenance pin to the actual upstream 84,030,696-byte model with SHA-256 `8193504cdfb3943adaf039b8acb524a46e87ebf232c383ac7a32c80a6578423e`, preventing a successful separator run from being rejected afterward.
-- Embedded third-party notices now include the separator and HTDemucs/Demucs model lineage.
-
+- Normal desktop MP3 Create Piano Version now uses `sherpa-onnx v1.13.8` with the Spleeter 2-stem FP16 vocal model before Basic Pitch, replacing the multi-minute CPU HTDemucs path.
+- Separated vocals are fed directly into Basic Pitch; accompaniment is not reintroduced into lead-note truth, so drums/bass cannot dominate the generated melody.
+- First use downloads the pinned Windows sherpa-onnx runtime and Spleeter FP16 model archive into local caches. No Python, PyTorch, Node, Visual Studio, .NET SDK or manual model setup is required.
+- The Spleeter archive is fail-closed pinned to the actual GitHub release asset: 35,271,738 bytes / SHA-256 `d54561979bd2e08a51e7dbd99ac36bb47564e089eefd403636dbca93e811bba2`.
+- This release fixes a first-run blocker where sherpa-onnx's companion `checksum.txt` advertises stale bytes (`c6c5...`) that no longer match the official release asset served by GitHub.
 ## Quality evidence
 
-- Pinned Basic Pitch A/B preserves the three lead notes from the vocals-only control and recovers all three tested accompaniment chord tones after restrained stem fusion.
-- The A/B decoded-note count is bounded at `7 -> 14`, demonstrating added harmony without returning to unconstrained full-mix note spray.
-- Audio OSS regression coverage includes deterministic stem balance, clipping protection, cancellation-safe bounded mixing and the existing decode/arrange pipeline.
-
+- On a real 17.3-second CC0 mixed-song fixture from Free Music Archive, raw full-mix Basic Pitch produced 20 events and 3 low-activation review regions.
+- Warm-cache Spleeter vocals-first reduced that to 1 review region while preserving the full 17.3-second timeline, with 28 decoded/events in the vocals-only path.
+- Spleeter separation measured about 2-5 seconds on the local 8-logical-CPU Windows machine, versus about 108 seconds for CPU HTDemucs on the same song. The production separator therefore stays in the practical client latency class while still improving the low-confidence signal over raw full mix.
 ## Validation
 
 - Audio OSS gate validates pinned Basic Pitch model readiness, stem fusion, decode/arrange regressions, generated MIDI parity and real-model quality evidence.
