@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.77
+version: 0.40.78
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -18,44 +18,42 @@ SHA256: `{{SHA256}}`
 ## Full-song MP3/WAV -> recognizable piano
 
 - Normal desktop MP3/WAV Create Piano Version uses `sherpa-onnx v1.13.8` with the Spleeter 2-stem FP16 model before Basic Pitch.
-- The vocal stem remains authoritative for lead melody. Separated accompaniment is admitted only across sustained vocal-weak regions so instrumental intros, outros and hooks are less likely to disappear.
+- The vocal stem remains authoritative for lead melody. Sustained vocal-weak sections may recover a pitch-guided instrumental lead, but raw accompaniment never replaces melody truth.
 - Section fallback still uses 400 ms windows and requires at least two consecutive eligible windows (about 0.8 seconds), with 80 ms attack, 140 ms release and 0.98 peak protection.
-- Melodic-periodicity, bass-dominance and dominant-contour continuity gates continue to decide whether an accompaniment section is credible lead material.
-- v0.40.77 changes what happens after a section passes those gates: production no longer feeds the entire accompaniment waveform into Basic Pitch. Each accepted window becomes a deterministic monophonic lead guide at the detected pitch, snapped to the nearest equal-tempered piano semitone and scaled from that window's accompaniment RMS.
-- The pitch guide removes residual chord, bass and percussion waveform before the existing Basic Pitch pass while preserving section timing. This matches Roblox piano's discrete semitone output domain instead of quantizing timing or section boundaries.
-- If an active pitch-guided window has no credible lead pitch, it fails closed instead of reverting to raw accompaniment.
-- Phrase gaps still reset contour continuity, so later instrumental phrases may legitimately restart in another register.
-- Basic Pitch still runs once over the vocal-plus-guided-lead source; canonical `PerformanceTrack` remains playback truth.
-- First use downloads the pinned Windows sherpa-onnx runtime and Spleeter FP16 model archive into local caches. No Python, PyTorch, Node, Visual Studio, .NET SDK or manual model setup is required.
+- Melodic-periodicity, bass-dominance and dominant-contour continuity gates continue to decide whether an accompaniment section is credible lead material. Accepted instrumental windows become a monophonic equal-tempered pitch guide rather than raw accompaniment waveform.
+- v0.40.78 adds a separate harmony path after lead identity is locked. The separated accompaniment is analyzed by the already-packaged Basic Pitch model with stricter note thresholds, Melodia recovery disabled and pitch bends disabled.
+- Harmony evidence is then reduced deterministically around protected lead onsets: at most two harmony notes per lead onset, distinct pitch classes, 3-24 semitones below the lead, minimum duration/confidence gates, and output activation capped below the lead activation.
+- Selected harmony enters the existing deterministic Roblox arranger only after lead transcription and harmonic suppression. Existing harmony voicing, bass-anchor, continuity and density policy remain authoritative; canonical `PerformanceTrack` remains playback truth.
+- The second accompaniment pass deliberately trades additional transcription time for chord identity without mixing drums/bass back into the lead inference source. It introduces no new model/runtime/package dependency.
+- First use still downloads the pinned Windows sherpa-onnx runtime and Spleeter FP16 model archive into local caches. No Python, PyTorch, Node, Visual Studio, .NET SDK or manual model setup is required.
 - The Spleeter archive remains fail-closed pinned to 35,271,738 bytes / SHA-256 `d54561979bd2e08a51e7dbd99ac36bb47564e089eefd403636dbca93e811bba2`.
 
 ## Musical quality evidence
 
-- The protected real Basic Pitch A/B keeps vocal melody identity at **3/3 -> 3/3** and instrumental hook recovery at **0/2 -> 2/2** after the pitch-guided production change.
-- The pitch-guided real-model path remains bounded rather than spraying notes; exact-head CI is required to preserve the fixture's note-budget contract and full 4.8-second timeline.
-- A new deterministic mixed fixture contains a clear E4 lead plus measurable E2 bass and B4 chord leakage. Before Basic Pitch, the pitch-guided production source must keep the selected lead dominant while materially suppressing the bass/chord components instead of passing their original waveform through.
+- Existing protected real Basic Pitch A/B must continue to keep vocal melody identity at **3/3 -> 3/3** and instrumental hook recovery at **0/2 -> 2/2** after the pitch-guided production change.
+- New sparse-harmony regressions require accompaniment to remain below the protected lead, cap each lead onset to at most two support notes, deduplicate octave-equivalent pitch classes, and reject accompaniment that does not coincide with lead timing.
 - Existing coherent-contour, discontinuous-contour, phrase-gap reset, bass-only rejection, lead-over-restrained-bass and broadband/percussion regressions remain protected.
 - Existing real 17.3-second CC0 mixed-song evidence remains protected: the Spleeter-first path previously reduced low-activation review regions from 3 to 1 while preserving the full timeline.
 - Spleeter separation remains roughly 2-5 seconds warm-cache on the measured 8-logical-CPU Windows machine, versus roughly 108 seconds for the earlier CPU HTDemucs path.
 
 ## Diagnostics and cost
 
-- Stem-composition diagnostics now expose `PitchGuidedFallbackWindows` in addition to energy-eligible, non-melodic, bass-dominated, discontinuous and active fallback counts. No raw private audio is logged.
-- Pitch guidance reuses the dominant frequency already produced by bounded decimated autocorrelation and the existing accompaniment window RMS. It adds no separator/model/runtime download and no additional Basic Pitch inference.
-- The equal-tempered guide frequency is computed once per active window; synthesis remains O(sample count) within the already allocated composition output buffer.
-- Per-section state remains O(window count). At 400 ms windows, a four-minute song has about 600 windows, so the added frequency/RMS arrays remain only a few KiB.
-- Full-song managed PCM architecture remains unchanged: at 22,050 Hz mono float, each four-minute full-length buffer is about 20 MiB. No-fallback composition reuses the vocal buffer; active fallback needs the existing additional output buffer.
+- Create Piano diagnostics now expose accompaniment `HarmonyDecodedNotes`, sparse-harmony selection diagnostics, and separate harmony inference/decode/suppression/selection elapsed times. No raw private audio is logged.
+- Sparse-harmony selection reports protected lead count, accompaniment count, candidate/selected counts, above-lead or out-of-window rejection, low-confidence rejection, duplicate-pitch-class drops and lead onsets receiving harmony.
+- The harmony selector is bounded by decoded-note evidence and keeps at most two support notes per lead onset. It does not allocate another full-song PCM output buffer beyond the already decoded separated accompaniment.
+- The material runtime cost is one additional Basic Pitch inference over the separated accompaniment on the normal full-song separation path. This is intentional for Phase 0 quality and is observable separately from lead inference.
+- No additional model, separator runtime or downloadable asset is introduced, so release/package model footprint remains unchanged apart from application code.
 
 ## Validation
 
-- Audio OSS gate validates pinned Basic Pitch readiness, decode/arrange regressions, generated MIDI parity, anti-percussion gating, bass-dominance rejection, dominant-melody contour continuity, pitch-guide isolation and the real-model vocal/hook A/B.
-- Production gate validates deterministic regressions, Windows client build, self-contained single-EXE publish, clean-machine smoke, STA UI startup, Windows input ABI and packaged Basic Pitch/ONNX smoke tests.
+- Audio OSS gate must validate pinned Basic Pitch readiness, decode/arrange regressions, generated MIDI parity, anti-percussion gating, bass-dominance rejection, dominant-melody contour continuity, pitch-guide isolation, sparse-harmony selection and the real-model vocal/hook A/B.
+- Production gate must validate deterministic regressions, Windows client build, self-contained single-EXE publish, clean-machine smoke, STA UI startup, Windows input ABI and packaged Basic Pitch/ONNX smoke tests.
 - Merge remains fail-closed on exact-head CI and current-main drift; client-impacting release is created only from validated `main`.
 
 ## Remaining Phase-0 quality gap
 
-Phase 0 is still not complete. Pitch-guided fallback prevents an accepted instrumental section from carrying its full chord/bass/percussion waveform into melody truth, but broader legally usable weak-vocal, dense-accompaniment and fully instrumental corpus evidence with reference contour/onset scoring is still required. The next direct quality step is multi-song section-level lead scoring plus sparse harmony extraction after lead identity is stable.
+Phase 0 is still not complete. The production path now separates lead truth from supporting harmony, but broader legally usable weak-vocal, dense-accompaniment, bass-heavy and fully instrumental corpus evidence with reference contour/onset scoring is still required. The next direct quality step is multi-song section-level scoring of melody recall, rhythm/onset identity, false-note rate and whether sparse harmony improves recognition without exceeding Roblox density budgets.
 
 ## Troubleshooting
 
-Source-separation or accompaniment-source failures remain fail-visible instead of silently reverting to dense raw-full-mix transcription.
+Source-separation, accompaniment-analysis or harmony-selection failures remain fail-visible instead of silently reverting to dense raw-full-mix transcription.
