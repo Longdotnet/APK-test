@@ -18,7 +18,9 @@ public sealed record RobloxPianoArrangementOptions(
     bool AdaptiveDensity = true,
     float AccompanimentActivationFloor = 0.18f,
     float AccompanimentRelativeActivationFloor = 0.35f,
-    float MelodyContinuityRelativeActivationFloor = 0.80f)
+    float MelodyContinuityRelativeActivationFloor = 0.80f,
+    float HarmonyBassAnchorRelativeActivationFloor = 0.55f,
+    float HarmonyOctaveRepresentativeRelativeActivationFloor = 0.85f)
 {
     public MidiKeyboardProfile EffectiveKeyboardProfile => KeyboardProfile ?? MidiKeyboardProfile.RobloxClassic61;
 
@@ -50,6 +52,10 @@ public sealed record RobloxPianoArrangementOptions(
             throw new ArgumentOutOfRangeException(nameof(AccompanimentRelativeActivationFloor));
         if (!float.IsFinite(MelodyContinuityRelativeActivationFloor) || MelodyContinuityRelativeActivationFloor is <= 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(MelodyContinuityRelativeActivationFloor));
+        if (!float.IsFinite(HarmonyBassAnchorRelativeActivationFloor) || HarmonyBassAnchorRelativeActivationFloor is <= 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(HarmonyBassAnchorRelativeActivationFloor));
+        if (!float.IsFinite(HarmonyOctaveRepresentativeRelativeActivationFloor) || HarmonyOctaveRepresentativeRelativeActivationFloor is <= 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(HarmonyOctaveRepresentativeRelativeActivationFloor));
         if (EffectiveKeyboardProfile.Keys.Length == 0)
             throw new ArgumentException("Roblox keyboard profile must contain at least one key.", nameof(KeyboardProfile));
     }
@@ -70,7 +76,8 @@ public sealed record RobloxPianoArrangementDiagnostics(
     int WeakSkylineRejects = 0,
     int MelodyContinuitySelections = 0,
     int AdaptiveDensityDrops = 0,
-    int MelodyContinuityConfidenceRejects = 0)
+    int MelodyContinuityConfidenceRejects = 0,
+    int HarmonyVoicingSelections = 0)
 {
     public bool RequiresReview => DensityDrops > 0 || OutOfRangeDrops > 0 || LowActivationEvents > 0;
 }
@@ -167,6 +174,7 @@ public sealed class RobloxPianoArranger
         var melodyContinuitySelections = 0;
         var adaptiveDensityDrops = 0;
         var melodyContinuityConfidenceRejects = 0;
+        var harmonyVoicingSelections = 0;
         Candidate? previousMelody = null;
         var index = 0;
         while (index < normalized.Count)
@@ -226,8 +234,16 @@ public sealed class RobloxPianoArranger
                         .ToList();
                 }
 
-                var keep = accompaniment
-                    .Take(options.MaxSimultaneousNotes - 1)
+                var accompanimentSlots = options.MaxSimultaneousNotes - 1;
+                var voicedAccompaniment = SelectAccompanimentVoicing(
+                    accompaniment,
+                    accompanimentSlots,
+                    options,
+                    out var harmonyVoicingSelected);
+                if (harmonyVoicingSelected)
+                    harmonyVoicingSelections++;
+
+                var keep = voicedAccompaniment
                     .Append(melody)
                     .Distinct()
                     .OrderBy(candidate => candidate.Start)
@@ -316,8 +332,97 @@ public sealed class RobloxPianoArranger
                 weakSkylineRejects,
                 melodyContinuitySelections,
                 adaptiveDensityDrops,
-                melodyContinuityConfidenceRejects));
+                melodyContinuityConfidenceRejects,
+                harmonyVoicingSelections));
     }
+
+    private static IReadOnlyList<Candidate> SelectAccompanimentVoicing(
+        IReadOnlyList<Candidate> accompaniment,
+        int slots,
+        RobloxPianoArrangementOptions options,
+        out bool harmonyVoicingSelected)
+    {
+        if (slots <= 0 || accompaniment.Count == 0)
+        {
+            harmonyVoicingSelected = false;
+            return [];
+        }
+
+        var confidenceOrder = accompaniment
+            .OrderByDescending(candidate => candidate.Amplitude)
+            .ThenByDescending(candidate => candidate.Duration)
+            .ThenByDescending(candidate => candidate.MappedPitch)
+            .ToArray();
+        var baseline = confidenceOrder.Take(slots).ToArray();
+        if (!options.AdaptiveDensity || accompaniment.Count <= slots)
+        {
+            harmonyVoicingSelected = false;
+            return baseline;
+        }
+
+        var selected = new List<Candidate>(slots);
+        var usedPitchClasses = new HashSet<int>();
+        var strongestActivation = confidenceOrder[0].Amplitude;
+        var bassAnchor = accompaniment
+            .OrderBy(candidate => candidate.MappedPitch)
+            .ThenByDescending(candidate => candidate.Amplitude)
+            .First();
+        if (bassAnchor.Amplitude >= strongestActivation * options.HarmonyBassAnchorRelativeActivationFloor)
+        {
+            selected.Add(bassAnchor);
+            usedPitchClasses.Add(PitchClass(bassAnchor.MappedPitch));
+        }
+
+        // Diversity may replace a pure-confidence slot only when it remains close to the weakest confidence-ranked
+        // baseline survivor. This prevents a weak transition voice from returning merely because it has a new pitch class.
+        var coverageActivationFloor = baseline[^1].Amplitude * options.HarmonyOctaveRepresentativeRelativeActivationFloor;
+
+        // When Basic Pitch sees a dense full-song mixture, octave/harmonic duplicates can outrank a useful chord tone
+        // by a tiny confidence margin. For each pitch class prefer the lower representative whenever its activation is
+        // still close to the strongest octave representative, then fill distinct pitch classes before redundant octaves.
+        var representatives = accompaniment
+            .GroupBy(candidate => PitchClass(candidate.MappedPitch))
+            .Select(group =>
+            {
+                var strongest = group.Max(candidate => candidate.Amplitude);
+                return group
+                    .Where(candidate => candidate.Amplitude >= strongest * options.HarmonyOctaveRepresentativeRelativeActivationFloor)
+                    .OrderBy(candidate => candidate.MappedPitch)
+                    .ThenByDescending(candidate => candidate.Amplitude)
+                    .ThenByDescending(candidate => candidate.Duration)
+                    .First();
+            })
+            .Where(candidate => candidate.Amplitude >= coverageActivationFloor)
+            .OrderByDescending(candidate => candidate.Amplitude)
+            .ThenByDescending(candidate => candidate.Duration)
+            .ThenBy(candidate => candidate.MappedPitch)
+            .ToArray();
+
+        foreach (var candidate in representatives)
+        {
+            if (selected.Count >= slots)
+                break;
+            var pitchClass = PitchClass(candidate.MappedPitch);
+            if (!usedPitchClasses.Add(pitchClass) || selected.Contains(candidate))
+                continue;
+            selected.Add(candidate);
+        }
+
+        foreach (var candidate in confidenceOrder)
+        {
+            if (selected.Count >= slots)
+                break;
+            if (!selected.Contains(candidate))
+                selected.Add(candidate);
+        }
+
+        var selectedSet = selected.ToHashSet();
+        var baselineSet = baseline.ToHashSet();
+        harmonyVoicingSelected = !selectedSet.SetEquals(baselineSet);
+        return selected;
+    }
+
+    private static int PitchClass(int midiNote) => ((midiNote % 12) + 12) % 12;
 
     private static Candidate SelectMelodyCandidate(
         IReadOnlyList<Candidate> candidates,
