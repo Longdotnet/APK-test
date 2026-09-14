@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using NAudio.Wave;
 
 namespace RobloxPiano.Audio;
 
@@ -8,18 +9,16 @@ internal sealed class DemucsSeparatedStems : IDisposable
 {
     private bool disposed;
 
-    public DemucsSeparatedStems(string workingDirectory, string vocalsPath, string otherPath, string bassPath)
+    public DemucsSeparatedStems(string workingDirectory, string vocalsPath, string otherPath)
     {
         WorkingDirectory = workingDirectory;
         VocalsPath = vocalsPath;
         OtherPath = otherPath;
-        BassPath = bassPath;
     }
 
     public string WorkingDirectory { get; }
     public string VocalsPath { get; }
     public string OtherPath { get; }
-    public string BassPath { get; }
 
     public void Dispose()
     {
@@ -33,25 +32,30 @@ internal sealed class DemucsSeparatedStems : IDisposable
         }
         catch
         {
-            // Best-effort cleanup. A locked temporary stem must never mask the transcription result.
+            // Best-effort cleanup must never hide a completed transcription result.
         }
     }
 }
 
 /// <summary>
-/// Production adapter around the official demucs-rs Windows CLI release.
-/// RobloxPiano owns orchestration and canonical note truth; demucs-rs owns only source separation.
+/// Compatibility-named production adapter that now uses the CPU-only demucs-native-rs Windows build.
+/// The previous demucs-rs Vulkan release stalled for more than 30 minutes on a real client machine
+/// without producing a stem, so production deliberately avoids Vulkan here.
 /// </summary>
 internal static class DemucsRsStemSeparator
 {
-    internal const string EngineVersion = "0.3.4";
+    internal const string EngineVersion = "cpu-native-0.1.0-rc3";
     internal const string ModelId = "htdemucs";
-    internal const string EngineArchiveSha256 = "67E77186295A00758DF0B760F3345FD0B9081B328F923ECC35307F6190F472D1";
+    internal const string EngineArchiveSha256 = "B7806BD39A9ABEB39E2F9254A91539B80EF9A0B148B95DE405ED6683E4A13394";
     internal const string ModelSha256 = "8193504CDFB3943ADAF039B8ACB524A46E87EBF232C383AC7A32C80A6578423E";
     internal const long ModelBytes = 84_030_696;
-    private const string EngineArchiveUrl = "https://github.com/nikhilunni/demucs-rs/releases/download/v0.3.4/demucs-x86_64-pc-windows-msvc.zip";
+
+    private const string EngineArchiveUrl = "https://github.com/eclipse005/demucs-native-rs/releases/download/v0.1.0-rc3/demucs-native-v0.1.0-rc3-windows-x64-cpu.zip";
+    private const string ModelUrl = "https://huggingface.co/set-soft/audio_separation/resolve/main/Demucs/htdemucs.safetensors";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(5) };
     private static readonly SemaphoreSlim InstallGate = new(1, 1);
+    private static readonly TimeSpan MaximumSeparationRuntime = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan MaximumNoCpuProgress = TimeSpan.FromMinutes(2);
 
     public static DemucsSeparatedStems Separate(
         string sourcePath,
@@ -68,20 +72,24 @@ internal static class DemucsRsStemSeparator
         var fullPath = Path.GetFullPath(sourcePath);
         if (!File.Exists(fullPath))
             throw new FileNotFoundException("Audio selected for source separation was not found.", fullPath);
-        if (!OperatingSystem.IsWindows())
-            throw new PlatformNotSupportedException("The current production source-separation adapter requires Windows x64.");
+        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
+            throw new PlatformNotSupportedException("CPU source separation requires Windows x64.");
 
-        status?.Invoke("Preparing the local Demucs stem separator...");
+        status?.Invoke("Preparing the CPU-only Demucs separator...");
         var executable = await EnsureEngineAsync(status, cancellationToken).ConfigureAwait(false);
-        PrepareModelCache(status);
+        var modelPath = await EnsureModelAsync(status, cancellationToken).ConfigureAwait(false);
 
-        var work = Path.Combine(Path.GetTempPath(), "RobloxPiano", "demucs", Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(Path.GetTempPath(), "RobloxPiano", "demucs-cpu", Guid.NewGuid().ToString("N"));
+        var inputWav = Path.Combine(work, "input.wav");
         var output = Path.Combine(work, "stems");
         Directory.CreateDirectory(output);
 
         try
         {
-            status?.Invoke("Separating vocals, accompaniment and bass with Demucs...");
+            status?.Invoke("Decoding the song to a local WAV for CPU separation...");
+            WriteInputWav(fullPath, inputWav, cancellationToken);
+
+            status?.Invoke("Loading HTDemucs on CPU...");
             var start = new ProcessStartInfo(executable)
             {
                 UseShellExecute = false,
@@ -90,30 +98,59 @@ internal static class DemucsRsStemSeparator
                 CreateNoWindow = true,
                 WorkingDirectory = work
             };
-            start.ArgumentList.Add(fullPath);
-            start.ArgumentList.Add("-m");
-            start.ArgumentList.Add(ModelId);
-            start.ArgumentList.Add("-s");
-            start.ArgumentList.Add("vocals,other,bass");
+            start.ArgumentList.Add("-i");
+            start.ArgumentList.Add(inputWav);
             start.ArgumentList.Add("-o");
             start.ArgumentList.Add(output);
+            start.ArgumentList.Add("-m");
+            start.ArgumentList.Add(ModelId);
+            start.ArgumentList.Add("--model-dir");
+            start.ArgumentList.Add(Path.GetDirectoryName(modelPath)!);
+            start.ArgumentList.Add("--device");
+            start.ArgumentList.Add("cpu");
+            start.ArgumentList.Add("-s");
+            start.ArgumentList.Add("vocals,other");
 
             using var process = Process.Start(start)
-                ?? throw new InvalidOperationException("Could not start the local Demucs separator process.");
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            using var registration = cancellationToken.Register(() =>
+                ?? throw new InvalidOperationException("Could not start the CPU Demucs separator process.");
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            using var registration = cancellationToken.Register(() => KillProcessTreeBestEffort(process));
+
+            var stopwatch = Stopwatch.StartNew();
+            var lastCpu = TryGetCpu(process);
+            var lastCpuProgressAt = stopwatch.Elapsed;
+            status?.Invoke("CPU stem separation started...");
+
+            while (!process.HasExited)
             {
-                try
+                cancellationToken.ThrowIfCancellationRequested();
+                if (stopwatch.Elapsed >= MaximumSeparationRuntime)
                 {
-                    if (!process.HasExited)
-                        process.Kill(entireProcessTree: true);
+                    KillProcessTreeBestEffort(process);
+                    throw new TimeoutException(
+                        $"CPU source separation exceeded {MaximumSeparationRuntime.TotalMinutes:0} minutes and was stopped.");
                 }
-                catch
+
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                if (process.HasExited)
+                    break;
+
+                var currentCpu = TryGetCpu(process);
+                if (currentCpu > lastCpu + TimeSpan.FromMilliseconds(100))
                 {
-                    // Cancellation remains authoritative even if the process already ended.
+                    lastCpu = currentCpu;
+                    lastCpuProgressAt = stopwatch.Elapsed;
                 }
-            });
+                else if (stopwatch.Elapsed - lastCpuProgressAt >= MaximumNoCpuProgress)
+                {
+                    KillProcessTreeBestEffort(process);
+                    throw new TimeoutException(
+                        "CPU source separation stopped consuming CPU for two minutes and was terminated as stalled.");
+                }
+
+                status?.Invoke($"CPU stem separation is active - elapsed {FormatElapsed(stopwatch.Elapsed)}...");
+            }
 
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
             var stdout = await stdoutTask.ConfigureAwait(false);
@@ -124,22 +161,19 @@ internal static class DemucsRsStemSeparator
             {
                 var detail = Tail(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr, 6000);
                 throw new InvalidOperationException(
-                    $"Demucs source separation failed with exit code {process.ExitCode}. {detail}".Trim());
+                    $"CPU Demucs source separation failed with exit code {process.ExitCode}. {detail}".Trim());
             }
-
-            VerifyModelCache();
 
             var vocals = Path.Combine(output, "vocals.wav");
             var other = Path.Combine(output, "other.wav");
-            var bass = Path.Combine(output, "bass.wav");
-            if (!File.Exists(vocals) || !File.Exists(other) || !File.Exists(bass))
+            if (!File.Exists(vocals) || !File.Exists(other))
             {
                 throw new InvalidDataException(
-                    "Demucs completed without producing the expected vocals/other/bass stems.");
+                    "CPU Demucs completed without producing the expected vocals/other stems.");
             }
 
-            status?.Invoke("Demucs stems ready. Transcribing the separated lead melody...");
-            return new DemucsSeparatedStems(work, vocals, other, bass);
+            status?.Invoke("CPU stems ready. Building the piano melody...");
+            return new DemucsSeparatedStems(work, vocals, other);
         }
         catch
         {
@@ -156,14 +190,29 @@ internal static class DemucsRsStemSeparator
         }
     }
 
+    private static void WriteInputWav(string sourcePath, string targetPath, CancellationToken cancellationToken)
+    {
+        using var reader = new AudioFileReader(sourcePath);
+        using var writer = new WaveFileWriter(targetPath, reader.WaveFormat);
+        var buffer = new byte[128 * 1024];
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = reader.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+                break;
+            writer.Write(buffer, 0, read);
+        }
+    }
+
     private static async Task<string> EnsureEngineAsync(Action<string>? status, CancellationToken cancellationToken)
     {
-        var overridePath = Environment.GetEnvironmentVariable("ROBLOXPIANO_DEMUCS_EXE");
+        var overridePath = Environment.GetEnvironmentVariable("ROBLOXPIANO_DEMUCS_CPU_EXE");
         if (!string.IsNullOrWhiteSpace(overridePath))
         {
             var fullOverride = Path.GetFullPath(overridePath);
             if (!File.Exists(fullOverride))
-                throw new FileNotFoundException("ROBLOXPIANO_DEMUCS_EXE points to a missing executable.", fullOverride);
+                throw new FileNotFoundException("ROBLOXPIANO_DEMUCS_CPU_EXE points to a missing executable.", fullOverride);
             return fullOverride;
         }
 
@@ -171,9 +220,9 @@ internal static class DemucsRsStemSeparator
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RobloxPiano",
             "tools",
-            "demucs-rs",
+            "demucs-native",
             $"v{EngineVersion}");
-        var executable = Path.Combine(root, "demucs.exe");
+        var executable = Path.Combine(root, "demucs-native.exe");
         if (File.Exists(executable))
             return executable;
 
@@ -184,24 +233,24 @@ internal static class DemucsRsStemSeparator
                 return executable;
 
             Directory.CreateDirectory(root);
-            status?.Invoke("Downloading the pinned Demucs Windows engine (one-time setup)...");
+            status?.Invoke("Downloading the pinned CPU separator (one-time setup)...");
             var archiveBytes = await Http.GetByteArrayAsync(EngineArchiveUrl, cancellationToken).ConfigureAwait(false);
             var actualHash = Convert.ToHexString(SHA256.HashData(archiveBytes));
             if (!actualHash.Equals(EngineArchiveSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException(
-                    $"Demucs engine provenance check failed. Expected SHA-256 {EngineArchiveSha256}, got {actualHash}.");
+                    $"CPU separator provenance check failed. Expected SHA-256 {EngineArchiveSha256}, got {actualHash}.");
             }
 
-            var archivePath = Path.Combine(root, $"demucs-{Guid.NewGuid():N}.zip");
-            var temporaryExe = Path.Combine(root, $"demucs-{Guid.NewGuid():N}.exe");
+            var archivePath = Path.Combine(root, $"demucs-native-{Guid.NewGuid():N}.zip");
+            var temporaryExe = Path.Combine(root, $"demucs-native-{Guid.NewGuid():N}.exe");
             try
             {
                 await File.WriteAllBytesAsync(archivePath, archiveBytes, cancellationToken).ConfigureAwait(false);
                 using var archive = ZipFile.OpenRead(archivePath);
                 var entry = archive.Entries.SingleOrDefault(item =>
-                    item.FullName.Equals("demucs.exe", StringComparison.OrdinalIgnoreCase))
-                    ?? throw new InvalidDataException("Pinned Demucs archive does not contain demucs.exe.");
+                    Path.GetFileName(item.FullName).Equals("demucs-native.exe", StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidDataException("Pinned CPU separator archive does not contain demucs-native.exe.");
                 entry.ExtractToFile(temporaryExe, overwrite: true);
                 File.Move(temporaryExe, executable, overwrite: true);
             }
@@ -219,37 +268,45 @@ internal static class DemucsRsStemSeparator
         }
     }
 
-    private static string ModelCachePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "demucs-rs",
-        "htdemucs.safetensors");
-
-    private static void PrepareModelCache(Action<string>? status)
+    private static async Task<string> EnsureModelAsync(Action<string>? status, CancellationToken cancellationToken)
     {
-        var path = ModelCachePath;
-        if (!File.Exists(path))
-        {
-            status?.Invoke("The pinned Demucs model will download once on first separation...");
-            return;
-        }
-
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "demucs-rs");
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "htdemucs.safetensors");
         if (HasExpectedModelIdentity(path))
-            return;
+            return path;
 
-        status?.Invoke("Cached Demucs model failed provenance validation; refreshing it...");
-        File.Delete(path);
-    }
-
-    private static void VerifyModelCache()
-    {
-        var path = ModelCachePath;
-        if (!File.Exists(path))
-            throw new InvalidDataException("Demucs completed without leaving the expected cached htdemucs model.");
-        if (!HasExpectedModelIdentity(path))
+        TryDelete(path);
+        var temporary = Path.Combine(root, $"htdemucs-{Guid.NewGuid():N}.tmp");
+        status?.Invoke("Downloading the pinned HTDemucs model (one-time setup)...");
+        try
         {
-            TryDelete(path);
-            throw new InvalidDataException(
-                $"Demucs model provenance check failed. Expected {ModelBytes} bytes / SHA-256 {ModelSha256}.");
+            await using (var source = await Http.GetStreamAsync(ModelUrl, cancellationToken).ConfigureAwait(false))
+            await using (var destination = new FileStream(
+                temporary,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                128 * 1024,
+                useAsync: true))
+            {
+                await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!HasExpectedModelIdentity(temporary))
+            {
+                throw new InvalidDataException(
+                    $"HTDemucs model provenance check failed. Expected {ModelBytes} bytes / SHA-256 {ModelSha256}.");
+            }
+
+            File.Move(temporary, path, overwrite: true);
+            return path;
+        }
+        finally
+        {
+            TryDelete(temporary);
         }
     }
 
@@ -258,7 +315,7 @@ internal static class DemucsRsStemSeparator
         try
         {
             var info = new FileInfo(path);
-            if (info.Length != ModelBytes)
+            if (!info.Exists || info.Length != ModelBytes)
                 return false;
             using var stream = File.OpenRead(path);
             var actual = Convert.ToHexString(SHA256.HashData(stream));
@@ -269,6 +326,36 @@ internal static class DemucsRsStemSeparator
             return false;
         }
     }
+
+    private static TimeSpan TryGetCpu(Process process)
+    {
+        try
+        {
+            process.Refresh();
+            return process.TotalProcessorTime;
+        }
+        catch
+        {
+            return TimeSpan.Zero;
+        }
+    }
+
+    private static void KillProcessTreeBestEffort(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed) =>
+        elapsed.TotalHours >= 1d
+            ? elapsed.ToString(@"h\:mm\:ss")
+            : elapsed.ToString(@"m\:ss");
 
     private static string Tail(string text, int maximumCharacters)
     {
@@ -289,7 +376,6 @@ internal static class DemucsRsStemSeparator
         }
         catch
         {
-            // Best effort; future setup can overwrite stale temporary files safely.
         }
     }
 }
