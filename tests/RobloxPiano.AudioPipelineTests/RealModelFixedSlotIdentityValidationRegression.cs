@@ -179,7 +179,7 @@ internal static class RealModelFixedSlotIdentityValidationRegression
         return result.ToArray();
     }
 
-    private static string MapPitchToKey(int midiNote, MidiKeyboardProfile profile)
+    private static char MapPitchToKey(int midiNote, MidiKeyboardProfile profile)
     {
         var pitch = midiNote;
         if (ProductionOptions.FoldOctavesToRange)
