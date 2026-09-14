@@ -99,7 +99,7 @@ internal readonly record struct KeyboardStrokeMapping(
 
 internal sealed class WindowsKeyboardInputSink : IInputSink
 {
-    internal const string BackendName = "keybd_event";
+    internal const string BackendName = "SendInputScanCode";
     internal static readonly TimeSpan MinimumPhysicalKeyHold = TimeSpan.FromMilliseconds(50);
 
     private const byte ShiftModifier = 0x01;
@@ -120,7 +120,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
     {
         _mappingStrategy = mappingStrategy;
         ClientDiagnostics.Log(
-            $"Keyboard input backend initialized: {BackendName} (PowerShell field baseline), " +
+            $"Keyboard input backend initialized: {BackendName} (field-proven physical scan path), " +
             $"mappingStrategy={_mappingStrategy}, processPid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}, " +
             $"minimumPhysicalHoldMs={MinimumPhysicalKeyHold.TotalMilliseconds:0}.");
     }
@@ -250,7 +250,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
             $"0x{stroke.VirtualKey:X2}/m{stroke.Modifiers:X2}/hkl0x{stroke.KeyboardLayout.ToInt64():X}/tid{stroke.KeyboardThreadId}"));
         ClientDiagnostics.Log(
             $"Input dispatch #{sequence} {action}: chars='{new string(keys.ToArray())}', vk=[{virtualKeys}], mappingStrategy={_mappingStrategy}, " +
-            $"thread={Environment.CurrentManagedThreadId}, fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}, fgTid={foregroundThreadId}.");
+            $"backend={BackendName}, thread={Environment.CurrentManagedThreadId}, fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}, fgTid={foregroundThreadId}.");
     }
 
     private void LogReleaseAll()
@@ -258,7 +258,7 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
         var foreground = NativeMethods.GetForegroundWindow();
         NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
         ClientDiagnostics.Log(
-            $"Input release-all: held={_heldKeys.Count}, mappingStrategy={_mappingStrategy}, thread={Environment.CurrentManagedThreadId}, " +
+            $"Input release-all: held={_heldKeys.Count}, mappingStrategy={_mappingStrategy}, backend={BackendName}, thread={Environment.CurrentManagedThreadId}, " +
             $"fgHwnd=0x{foreground.ToInt64():X}, fgPid={foregroundPid}.");
     }
 
@@ -371,20 +371,87 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 
     private static void SendVirtualKey(ushort virtualKey, bool keyUp)
     {
-        var keyEvent = BuildFieldBaselineKeyEvent(virtualKey, keyUp);
-        NativeMethods.KeybdEvent(
-            keyEvent.VirtualKey,
-            scanCode: 0,
-            keyEvent.Flags,
-            UIntPtr.Zero);
+        var keyEvent = BuildSendInputScanEvent(virtualKey, keyUp);
+        var input = new NativeMethods.Input
+        {
+            Type = NativeMethods.InputKeyboard,
+            Data = new NativeMethods.InputUnion
+            {
+                Keyboard = new NativeMethods.KeyboardInput
+                {
+                    VirtualKey = 0,
+                    ScanCode = keyEvent.ScanCode,
+                    Flags = keyEvent.Flags,
+                    Time = 0,
+                    ExtraInfo = UIntPtr.Zero
+                }
+            }
+        };
+
+        var inserted = NativeMethods.SendInput(
+            1,
+            new[] { input },
+            Marshal.SizeOf<NativeMethods.Input>());
+        if (inserted != 1)
+        {
+            var error = Marshal.GetLastWin32Error();
+            throw new WindowsInputInjectionException(
+                $"SendInput scan-code backend inserted {inserted}/1 keyboard events (Win32={error}). " +
+                "A privilege/integrity boundary may have blocked Roblox input.");
+        }
     }
 
+    internal static SendInputScanEvent BuildSendInputScanEvent(ushort virtualKey, bool keyUp)
+    {
+        if (virtualKey == 0 || virtualKey > byte.MaxValue)
+        {
+            throw new WindowsInputInjectionException(
+                $"Virtual key 0x{virtualKey:X4} cannot be emitted by the SendInput scan-code backend.");
+        }
+
+        var keyboardLayout = NativeMethods.GetKeyboardLayout(0);
+        var mappedScanCode = NativeMethods.MapVirtualKeyExW(
+            virtualKey,
+            NativeMethods.MapVirtualKeyVkToVscEx,
+            keyboardLayout);
+        if (mappedScanCode == 0)
+        {
+            throw new WindowsInputInjectionException(
+                $"Windows could not resolve a physical scan code for virtual key 0x{virtualKey:X2}.");
+        }
+
+        var extended = (mappedScanCode & 0xFF00u) is 0xE000u or 0xE100u;
+        var normalizedScanCode = mappedScanCode & 0xFFu;
+        if (normalizedScanCode == 0)
+        {
+            throw new WindowsInputInjectionException(
+                $"Windows returned unsupported scan-code value 0x{mappedScanCode:X} for virtual key 0x{virtualKey:X2}.");
+        }
+
+        var flags = NativeMethods.KeyEventFScanCode;
+        if (extended)
+        {
+            flags |= NativeMethods.KeyEventFExtendedKey;
+        }
+
+        if (keyUp)
+        {
+            flags |= NativeMethods.KeyEventFKeyUp;
+        }
+
+        return new SendInputScanEvent(virtualKey, checked((ushort)normalizedScanCode), flags);
+    }
+
+    internal readonly record struct SendInputScanEvent(ushort VirtualKey, ushort ScanCode, uint Flags);
+
+    // Retained for compatibility with the existing diagnostic regression helpers. Production
+    // dispatch no longer uses this zero-scan keybd_event representation.
     internal static FieldBaselineKeyEvent BuildFieldBaselineKeyEvent(ushort virtualKey, bool keyUp)
     {
         if (virtualKey > byte.MaxValue)
         {
             throw new WindowsInputInjectionException(
-                $"Virtual key 0x{virtualKey:X4} cannot be emitted by the field-proven keybd_event backend.");
+                $"Virtual key 0x{virtualKey:X4} cannot be emitted by the legacy keybd_event representation.");
         }
 
         return new FieldBaselineKeyEvent(
@@ -398,6 +465,49 @@ internal sealed class WindowsKeyboardInputSink : IInputSink
 internal static class NativeMethods
 {
     internal const uint KeyEventKeyUp = 0x0002;
+    internal const uint KeyEventFExtendedKey = 0x0001;
+    internal const uint KeyEventFKeyUp = 0x0002;
+    internal const uint KeyEventFScanCode = 0x0008;
+    internal const uint InputKeyboard = 1;
+    internal const uint MapVirtualKeyVkToVscEx = 4;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Input
+    {
+        public uint Type;
+        public InputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct InputUnion
+    {
+        [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
+        public KeyboardInput Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        public int Dx;
+        public int Dy;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KeyboardInput
+    {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetForegroundWindow();
@@ -413,6 +523,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern short VkKeyScanExW(char character, IntPtr keyboardLayout);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern uint MapVirtualKeyExW(uint code, uint mapType, IntPtr keyboardLayout);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
 
     [DllImport("user32.dll", EntryPoint = "keybd_event")]
     internal static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
