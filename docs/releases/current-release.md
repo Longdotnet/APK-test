@@ -18,7 +18,7 @@ SHA256: `{{SHA256}}`
 ## Audio-to-Piano OSS Phase 59 — section-aware quality calibration
 
 - Melody continuity across adjacent onset clusters now has a relative confidence guard: a nearby but materially weaker voice cannot capture the protected melody solely because it is closer in pitch to the previous section.
-- The continuity guard remains permissive enough for credible melodic motion and exposes `MelodyContinuityConfidenceRejects` when the confidence gate changes the old proximity-only choice.
+- The continuity guard remains permissive enough for credible melodic motion and exposes `MelodyContinuityConfidenceRejects` when a nearby credible continuity candidate is rejected by the confidence floor.
 - Adaptive accompaniment density is now calibrated against the strongest non-melody accompaniment rather than the protected melody. A dominant vocal/melody activation can no longer raise the relative threshold so high that moderate but coherent harmony is discarded.
 - A deterministic full-song section corpus covers sparse verse, arpeggio/transition, dense chorus, dominant-melody harmony and weak mixed-audio clutter. The gate requires complete labeled melody retention, complete labeled strong-harmony retention and complete labeled clutter suppression for the fixture.
 - Existing hard density caps, sparse-section no-thinning behavior, octave/range policy, note timing/duration, same-key ownership repair and canonical `PerformanceTrack` output remain deterministic.
