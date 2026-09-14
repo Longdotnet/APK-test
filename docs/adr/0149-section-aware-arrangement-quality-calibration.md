@@ -20,7 +20,7 @@ Spotify Basic Pitch is polyphonic and instrument-agnostic but documents that it 
 - melody continuity candidates must satisfy the existing absolute/cluster confidence policy and additionally reach 80% of the credible skyline activation before pitch-proximity continuity may override that skyline;
 - adaptive accompaniment density computes its relative activation threshold from the strongest non-melody accompaniment candidate, not from the protected melody activation.
 
-The new continuity relative floor is bounded to `(0, 1]`, configurable for controlled evaluation, and fails closed when invalid. `MelodyContinuityConfidenceRejects` records cases where the new confidence guard changes the old proximity-only continuity choice.
+The new continuity relative floor is bounded to `(0, 1]`, configurable for controlled evaluation, and fails closed when invalid. `MelodyContinuityConfidenceRejects` records cases where a nearby credible candidate is excluded from continuity consideration by the new confidence floor.
 
 ## Quality corpus
 
