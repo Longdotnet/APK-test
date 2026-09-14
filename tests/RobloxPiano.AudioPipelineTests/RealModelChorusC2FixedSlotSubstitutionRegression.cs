@@ -37,8 +37,8 @@ internal static class RealModelChorusC2FixedSlotSubstitutionRegression
             production.Track,
             options: EvaluationOptions);
 
-        Require(productionQuality.Sections.TryGetValue(TargetSection, out var productionTarget) && productionTarget is not null,
-            $"Missing {TargetSection} section evidence.");
+        if (!productionQuality.Sections.TryGetValue(TargetSection, out var productionTarget) || productionTarget is null)
+            throw new InvalidOperationException($"Missing {TargetSection} section evidence.");
 
         var targetReferences = fixture.Reference
             .Where(item => string.Equals(item.Section, TargetSection, StringComparison.Ordinal) &&
