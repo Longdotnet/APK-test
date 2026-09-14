@@ -22,14 +22,17 @@ internal static class RobloxPianoArrangerRegression
 
     // Kept under the original harness entrypoint name so the Phase-06 regression runner remains stable.
     // The contract is intentionally stronger now: skyline pitch is protected only when it is credible,
-    // adjacent clusters may protect a near-contour melody, and dense weak accompaniment is not kept only
-    // to fill the hard Roblox chord cap.
+    // adjacent clusters may protect a near-contour melody, dense weak accompaniment is not kept only
+    // to fill the hard Roblox chord cap, and section transitions cannot be captured by a weak continuity voice.
     public static void DensityLimitAlwaysKeepsHighestMelodyPitch()
     {
         DensityLimitRejectsWeakSkylineOvertone();
         DensityLimitUsesMelodyContinuityAcrossClusters();
+        SectionTransitionRejectsWeakContinuityCapture();
         AdaptiveDensityPreservesSparseSectionAndDropsWeakDenseClutter();
         AdaptiveDensityKeepsStrongHarmonyAtHardCap();
+        DominantMelodyDoesNotStarveModerateHarmony();
+        FullSongSectionCorpusMeetsQualityContract();
         AdaptiveDensityCanBeDisabledForFixedCapParity();
         MelodyPolicyFailsClosedOnInvalidThresholds();
     }
@@ -81,7 +84,36 @@ internal static class RobloxPianoArrangerRegression
         True(!secondCluster.Contains(MidiKeyboardProfile.RobloxClassic61.Map(84)), "A higher competing voice must not displace a credible continuous melody solely through skyline pitch.");
         Equal(1, result.Diagnostics.DensityDrops);
         Equal(1, result.Diagnostics.MelodyContinuitySelections);
+        Equal(0, result.Diagnostics.MelodyContinuityConfidenceRejects);
         Equal(0, result.Diagnostics.AdaptiveDensityDrops);
+    }
+
+    public static void SectionTransitionRejectsWeakContinuityCapture()
+    {
+        var notes = new[]
+        {
+            Note(0, 500, 60, 0.72f),
+            Note(550, 1050, 62, 0.70f),
+            Note(1100, 1600, 64, 0.68f),
+            Note(1650, 2150, 65, 0.52f),
+            Note(1650, 2150, 60, 0.86f),
+            Note(1650, 2150, 67, 0.80f),
+            Note(1650, 2150, 72, 0.78f),
+            Note(1650, 2150, 76, 0.90f),
+            Note(1650, 2150, 79, 0.18f),
+            Note(1650, 2150, 84, 0.12f)
+        };
+        var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 4);
+
+        var result = new RobloxPianoArranger().Arrange("section-transition", notes, options);
+        var chorus = result.Track.Events
+            .Where(item => item.Start == TimeSpan.FromMilliseconds(1650))
+            .Select(item => item.Keys.Single())
+            .ToHashSet();
+
+        True(chorus.Contains(MidiKeyboardProfile.RobloxClassic61.Map(76)), "Strong chorus melody must win when the near-contour transition voice is materially weaker.");
+        True(!chorus.Contains(MidiKeyboardProfile.RobloxClassic61.Map(65)), "Weak transition voice must not capture melody continuity solely by pitch proximity.");
+        Equal(1, result.Diagnostics.MelodyContinuityConfidenceRejects);
     }
 
     public static void AdaptiveDensityPreservesSparseSectionAndDropsWeakDenseClutter()
@@ -137,6 +169,100 @@ internal static class RobloxPianoArrangerRegression
         Equal(4, result.Track.Events.Count);
         Equal(3, result.Diagnostics.DensityDrops);
         Equal(0, result.Diagnostics.AdaptiveDensityDrops);
+    }
+
+    public static void DominantMelodyDoesNotStarveModerateHarmony()
+    {
+        var notes = new[]
+        {
+            Note(0, 500, 60, 0.34f),
+            Note(0, 500, 64, 0.30f),
+            Note(0, 500, 67, 0.28f),
+            Note(0, 500, 72, 0.98f),
+            Note(0, 500, 76, 0.12f),
+            Note(0, 500, 79, 0.10f),
+            Note(0, 500, 84, 0.08f)
+        };
+        var options = new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 4);
+
+        var result = new RobloxPianoArranger().Arrange("dominant-melody", notes, options);
+        var keys = result.Track.Events.Select(item => item.Keys.Single()).ToHashSet();
+
+        Equal(4, result.Track.Events.Count);
+        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(72)), "Dominant melody must survive.");
+        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(60)), "Moderate harmony must be calibrated against accompaniment, not the dominant melody.");
+        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(64)), "Moderate harmony must survive dominant-melody sections.");
+        True(keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(67)), "Moderate harmony must survive dominant-melody sections.");
+        Equal(3, result.Diagnostics.DensityDrops);
+        Equal(0, result.Diagnostics.AdaptiveDensityDrops);
+    }
+
+    public static void FullSongSectionCorpusMeetsQualityContract()
+    {
+        var notes = new List<BasicPitchTranscribedNote>();
+        var expectedMelody = new Dictionary<int, int>();
+        var expectedHarmony = new Dictionary<int, int[]>();
+        var expectedClutter = new Dictionary<int, int[]>();
+
+        AddSection(0, 72, 0.82f, [60, 64], [0.72f, 0.66f], []);
+        AddSection(500, 74, 0.80f, [62, 67], [0.70f, 0.64f], []);
+        AddSection(1000, 76, 0.78f, [64, 69], [0.68f, 0.62f], []);
+        AddSection(1500, 65, 0.52f, [60, 67, 72], [0.86f, 0.80f, 0.78f], [79, 84]);
+        expectedMelody[1500] = 76;
+        notes.Add(Note(1500, 1950, 76, 0.90f));
+        AddSection(2200, 77, 0.96f, [60, 64, 69], [0.34f, 0.31f, 0.29f], [81, 84, 88]);
+        AddSection(2700, 79, 0.94f, [62, 67, 71], [0.36f, 0.32f, 0.28f], [83, 86, 91]);
+
+        var result = new RobloxPianoArranger().Arrange(
+            "section-corpus",
+            notes,
+            new RobloxPianoArrangementOptions(MaxSimultaneousNotes: 4));
+
+        var melodyHits = 0;
+        var harmonyHits = 0;
+        var harmonyTotal = 0;
+        var clutterDrops = 0;
+        var clutterTotal = 0;
+        foreach (var (startMs, melodyPitch) in expectedMelody)
+        {
+            var keys = result.Track.Events
+                .Where(item => item.Start == TimeSpan.FromMilliseconds(startMs))
+                .Select(item => item.Keys.Single())
+                .ToHashSet();
+            if (keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(melodyPitch)))
+                melodyHits++;
+
+            foreach (var harmonyPitch in expectedHarmony[startMs])
+            {
+                harmonyTotal++;
+                if (keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(harmonyPitch)))
+                    harmonyHits++;
+            }
+
+            foreach (var clutterPitch in expectedClutter[startMs])
+            {
+                clutterTotal++;
+                if (!keys.Contains(MidiKeyboardProfile.RobloxClassic61.Map(clutterPitch)))
+                    clutterDrops++;
+            }
+        }
+
+        Equal(expectedMelody.Count, melodyHits);
+        Equal(harmonyTotal, harmonyHits);
+        Equal(clutterTotal, clutterDrops);
+        True(result.Diagnostics.MelodyContinuityConfidenceRejects >= 1, "Corpus must exercise section-boundary continuity rejection.");
+
+        void AddSection(int startMs, int melodyPitch, float melodyActivation, int[] harmonyPitches, float[] harmonyActivations, int[] clutterPitches)
+        {
+            expectedMelody[startMs] = melodyPitch;
+            expectedHarmony[startMs] = harmonyPitches;
+            expectedClutter[startMs] = clutterPitches;
+            notes.Add(Note(startMs, startMs + 450, melodyPitch, melodyActivation));
+            for (var i = 0; i < harmonyPitches.Length; i++)
+                notes.Add(Note(startMs, startMs + 450, harmonyPitches[i], harmonyActivations[i]));
+            foreach (var clutterPitch in clutterPitches)
+                notes.Add(Note(startMs, startMs + 450, clutterPitch, 0.10f));
+        }
     }
 
     public static void AdaptiveDensityCanBeDisabledForFixedCapParity()
@@ -233,6 +359,10 @@ internal static class RobloxPianoArrangerRegression
             "invalid-accompaniment-relative-floor",
             notes,
             new RobloxPianoArrangementOptions(AccompanimentRelativeActivationFloor: 0f)));
+        Throws<ArgumentOutOfRangeException>(() => new RobloxPianoArranger().Arrange(
+            "invalid-continuity-confidence-floor",
+            notes,
+            new RobloxPianoArrangementOptions(MelodyContinuityRelativeActivationFloor: 0f)));
     }
 
     public static void PreCancelledArrangementStopsBeforeMutation()
