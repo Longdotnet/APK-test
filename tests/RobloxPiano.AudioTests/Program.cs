@@ -7,6 +7,8 @@ var tests = new (string Name, Action Run)[]
     ("44.1 kHz PCM is resampled to Basic Pitch rate", ResamplesToBasicPitchRate),
     ("duration bound fails closed instead of truncating", DurationBoundFailsClosed),
     ("empty decoded audio fails closed", EmptyAudioFailsClosed),
+    ("separated stem mixer keeps vocals dominant and excludes bass/drums", SeparatedStemMixerKeepsLeadDominant),
+    ("separated stem mixer bounds clipping deterministically", SeparatedStemMixerBoundsPeak),
     ("pre-cancelled ingest exits deterministically", CancellationIsHonored),
     ("Basic Pitch chunk plan matches Spotify overlap contract", BasicPitchChunkPlanMatchesReference),
     ("Basic Pitch ONNX inference returns bounded canonical raw tensors", BasicPitchOnnxInference),
@@ -182,6 +184,31 @@ static void BasicPitchOnnxInference()
     True(result.Contours.Values.All(value => value is >= 0f and <= 1f), "Contour activations must be probabilities.");
 }
 
+static void SeparatedStemMixerKeepsLeadDominant()
+{
+    var vocals = new NormalizedAudio([0.5f, -0.5f, 0.25f], 22_050);
+    var other = new NormalizedAudio([0.5f, 0.5f, -0.5f], 22_050);
+
+    var result = new SeparatedStemMixer().Mix(vocals, other);
+
+    Nearly(0.61f, result.Audio.Samples[0], 0.0001f);
+    Nearly(-0.39f, result.Audio.Samples[1], 0.0001f);
+    Nearly(0.14f, result.Audio.Samples[2], 0.0001f);
+    Nearly(0.22f, result.Diagnostics.OtherGain, 0.0001f);
+    Equal(3, result.Diagnostics.OutputSamples);
+}
+
+static void SeparatedStemMixerBoundsPeak()
+{
+    var vocals = new NormalizedAudio([1f, -1f], 22_050);
+    var other = new NormalizedAudio([1f, -1f], 22_050);
+
+    var result = new SeparatedStemMixer().Mix(vocals, other);
+
+    True(result.Audio.Samples.All(sample => Math.Abs(sample) <= 0.98001f), "Stem fusion must not clip beyond the configured peak.");
+    True(result.Diagnostics.AppliedNormalizationGain < 1f, "Peak protection should engage for an over-unity lead+other mix.");
+    Nearly(0.98f, result.Audio.Samples[0], 0.0001f);
+}
 static byte[] BuildPcm16Wave(int sampleRate, IReadOnlyList<(short Left, short Right)> frames)
 {
     const short channels = 2;

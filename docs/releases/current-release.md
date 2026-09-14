@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.70
+version: 0.40.71
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,21 +15,27 @@ SHA256: `{{SHA256}}`
 - **Support Bundle** remains the preferred playback/support evidence export path.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Create Piano Version stability and diagnostics
+## Full-song MP3 -> recognizable piano
 
-- Long MP3 transcription now uses bounded one-window Basic Pitch inference by default instead of coarse multi-window production batching, reducing peak native ONNX Runtime memory pressure.
-- The production CPU ONNX session keeps graph optimization while disabling CPU memory arena and memory-pattern allocation for more predictable desktop memory usage.
-- Recoverable ONNX Runtime, NAudio and native-runtime startup failures are contained inside the Create Piano client job and return a visible Failed state instead of escaping the workflow.
-- Unexpected managed failures at the Create Piano job boundary are logged and contained so the rest of the client can continue whenever the process itself is still alive.
-- Create Piano writes durable phase diagnostics to `%LOCALAPPDATA%\RobloxPiano\diagnostics\create-piano.log`, including operation id, phase/progress checkpoints, elapsed time and memory observations. The log is flushed at each checkpoint and rotated at 4 MiB.
-- Diagnostic source evidence records the file name and size rather than the user's full selected-audio path.
+- Normal desktop MP3 Create Piano Version now uses the pinned native `demucs-rs v0.3.4` / `htdemucs` separator before Basic Pitch instead of treating the complete mixed spectrum as note truth.
+- The lead/vocal stem remains dominant while the separated `other` stem is reintroduced at a restrained deterministic `0.22` gain so useful chord identity can survive without letting drums or bass dominate the melody.
+- The separated bass stem is not fed into Basic Pitch, and the production separator does not request the drums stem for transcription.
+- The stem mix applies deterministic peak protection before the existing Basic Pitch, harmonic suppression, Roblox density/range reduction and canonical `PerformanceTrack` stages.
+- First source-separation use downloads the pinned Windows separator and HTDemucs model into local caches; RobloxPiano verifies their expected identities. No Python, PyTorch, Node, Visual Studio, .NET SDK or manual model setup is required.
+- Corrected the HTDemucs provenance pin to the actual upstream 84,030,696-byte model with SHA-256 `8193504cdfb3943adaf039b8acb524a46e87ebf232c383ac7a32c80a6578423e`, preventing a successful separator run from being rejected afterward.
+- Embedded third-party notices now include the separator and HTDemucs/Demucs model lineage.
+
+## Quality evidence
+
+- Pinned Basic Pitch A/B preserves the three lead notes from the vocals-only control and recovers all three tested accompaniment chord tones after restrained stem fusion.
+- The A/B decoded-note count is bounded at `7 -> 14`, demonstrating added harmony without returning to unconstrained full-mix note spray.
+- Audio OSS regression coverage includes deterministic stem balance, clipping protection, cancellation-safe bounded mixing and the existing decode/arrange pipeline.
 
 ## Validation
 
-- Audio OSS gate covers pinned Basic Pitch model readiness, audio ingest, ONNX inference, decoding, arranging, generated MIDI parity and real-model Audio-to-Piano end-to-end execution.
+- Audio OSS gate validates pinned Basic Pitch model readiness, stem fusion, decode/arrange regressions, generated MIDI parity and real-model quality evidence.
 - Production gate validates the Windows client build, self-contained single-EXE publish, STA UI startup, Windows input ABI and packaged audio model/ONNX runtime smoke tests.
 
 ## Troubleshooting
 
-If Create Piano Version does not complete, send `%LOCALAPPDATA%\RobloxPiano\diagnostics\create-piano.log`.
-The final checkpoint and memory values are designed to remain useful even when a native failure terminates the process before WinForms can display an error.
+Create Piano Version diagnostics report the input strategy and separation elapsed time without logging private audio. If source separation fails, the operation remains fail-visible instead of silently reverting to dense raw-full-mix transcription.

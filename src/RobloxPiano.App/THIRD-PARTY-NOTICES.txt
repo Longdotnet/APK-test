@@ -236,6 +236,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 -------------------------------------------------------------------------------
+demucs-rs v0.3.4 / HTDemucs source separation
+-------------------------------------------------------------------------------
+Source: https://github.com/nikhilunni/demucs-rs/tree/v0.3.4
+Runtime: pinned Windows x64 CLI downloaded on first source-separation use
+License: Apache License 2.0
+
+RobloxPiano invokes demucs-rs as a separate local process and verifies the
+pinned release archive before use. demucs-rs acknowledges the original Demucs
+project by Meta Research and demucs.cpp as implementation references.
+
+HTDemucs model lineage:
+https://github.com/facebookresearch/demucs
+Original Demucs project license: MIT
+
+The RobloxPiano release EXE does not embed the demucs-rs executable or model;
+they are downloaded to the user's local application/model caches on first use
+and their expected identity is checked before separated stems are trusted.
+
+The Apache License 2.0 text applicable to demucs-rs is reproduced earlier in
+this notice file under Spotify Basic Pitch / nmp.onnx.
+-------------------------------------------------------------------------------
 Microsoft ONNX Runtime 1.29.0
 -------------------------------------------------------------------------------
 Source: https://github.com/microsoft/onnxruntime/tree/v1.29.0

@@ -8,6 +8,7 @@ var moduleInitializerExitCode = Environment.ExitCode;
 var tests = new (string Name, Action Run)[]
 {
     ("real Basic Pitch model produces canonical arranged events", RealModelSineProducesCanonicalPerformance),
+    ("lead-first stem fusion preserves melody and admits restrained harmony", LeadFirstStemFusionPreservesMelodyAndAddsHarmony),
     ("review regions promote local warnings into client-visible readiness", ReviewRegionsPromoteClientVisibleReadiness),
     ("pinned Basic Pitch model meets redistributable audio corpus baseline", RealModelCorpusMeetsQualityBaseline),
     ("pipeline rejects wrong normalized sample rate before inference", WrongNormalizedRateFailsBeforeInference),
@@ -61,6 +62,42 @@ static void RealModelSineProducesCanonicalPerformance()
     True(result.Diagnostics.TotalElapsed > TimeSpan.Zero);
 }
 
+static void LeadFirstStemFusionPreservesMelodyAndAddsHarmony()
+{
+    var modelPath = RequireModelPath();
+    using var inference = new BasicPitchInferenceService(modelPath, new BasicPitchInferenceOptions(MaxChunksPerBatch: 2));
+    var decoder = new BasicPitchNoteDecoder();
+    var decoderOptions = PipelineOptions().Decoder;
+
+    var vocalFixture = BuildFixture("lead", 2.4,
+        new NoteSpec(69, 0.25, 0.85),
+        new NoteSpec(71, 0.95, 1.55),
+        new NoteSpec(72, 1.65, 2.20));
+    var otherFixture = BuildFixture("harmony", 2.4,
+        new NoteSpec(60, 0.25, 0.85),
+        new NoteSpec(64, 0.95, 1.55),
+        new NoteSpec(67, 1.65, 2.20));
+
+    var vocals = new NormalizedAudio(vocalFixture.Samples, BasicPitchInferenceService.RequiredSampleRate);
+    var other = new NormalizedAudio(otherFixture.Samples, BasicPitchInferenceService.RequiredSampleRate);
+    var mixed = new SeparatedStemMixer().Mix(vocals, other).Audio;
+
+    var vocalNotes = decoder.Decode(inference.Infer(vocals), decoderOptions);
+    var mixedNotes = decoder.Decode(inference.Infer(mixed), decoderOptions);
+    var leadPitches = new[] { 69, 71, 72 };
+    foreach (var pitch in leadPitches)
+    {
+        True(vocalNotes.Any(note => note.MidiNote == pitch), $"Vocals-only control must recognize melody MIDI {pitch}.");
+        True(mixedNotes.Any(note => note.MidiNote == pitch), $"Lead-first mix must preserve melody MIDI {pitch}.");
+    }
+
+    var harmonyHits = new[] { 60, 64, 67 }.Count(pitch => mixedNotes.Any(note => note.MidiNote == pitch));
+    True(harmonyHits >= 2, $"Lead-first mix should retain useful accompaniment evidence; harmony hits={harmonyHits}/3.");
+    True(mixedNotes.Count <= vocalNotes.Count + 12,
+        $"Restrained accompaniment must not create note spray: vocals={vocalNotes.Count}, mixed={mixedNotes.Count}.");
+
+    Console.WriteLine($"STEM_FUSION_AB vocalsNotes={vocalNotes.Count} mixedNotes={mixedNotes.Count} harmonyHits={harmonyHits}/3 otherGain=0.22");
+}
 static void ReviewRegionsPromoteClientVisibleReadiness()
 {
     var modelPath = RequireModelPath();

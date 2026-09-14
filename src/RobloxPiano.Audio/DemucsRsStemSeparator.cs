@@ -47,8 +47,8 @@ internal static class DemucsRsStemSeparator
     internal const string EngineVersion = "0.3.4";
     internal const string ModelId = "htdemucs";
     internal const string EngineArchiveSha256 = "67E77186295A00758DF0B760F3345FD0B9081B328F923ECC35307F6190F472D1";
-    internal const string ModelSha256 = "CA38614BEC948773A30AD406B4CF415FEA45B8843AB317D02DACDD21623E741B";
-    internal const long ModelBytes = 84_030_352;
+    internal const string ModelSha256 = "8193504CDFB3943ADAF039B8ACB524A46E87EBF232C383AC7A32C80A6578423E";
+    internal const long ModelBytes = 84_030_696;
     private const string EngineArchiveUrl = "https://github.com/nikhilunni/demucs-rs/releases/download/v0.3.4/demucs-x86_64-pc-windows-msvc.zip";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(5) };
     private static readonly SemaphoreSlim InstallGate = new(1, 1);
