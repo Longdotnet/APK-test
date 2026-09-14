@@ -20,7 +20,9 @@ public sealed record RobloxPianoArrangementOptions(
     float AccompanimentRelativeActivationFloor = 0.35f,
     float MelodyContinuityRelativeActivationFloor = 0.80f,
     float HarmonyBassAnchorRelativeActivationFloor = 0.55f,
-    float HarmonyOctaveRepresentativeRelativeActivationFloor = 0.85f)
+    float HarmonyOctaveRepresentativeRelativeActivationFloor = 0.85f,
+    TimeSpan? HarmonyContinuityWindow = null,
+    float HarmonyContinuityRelativeActivationFloor = 0.90f)
 {
     public MidiKeyboardProfile EffectiveKeyboardProfile => KeyboardProfile ?? MidiKeyboardProfile.RobloxClassic61;
 
@@ -56,6 +58,10 @@ public sealed record RobloxPianoArrangementOptions(
             throw new ArgumentOutOfRangeException(nameof(HarmonyBassAnchorRelativeActivationFloor));
         if (!float.IsFinite(HarmonyOctaveRepresentativeRelativeActivationFloor) || HarmonyOctaveRepresentativeRelativeActivationFloor is <= 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(HarmonyOctaveRepresentativeRelativeActivationFloor));
+        if (HarmonyContinuityWindow is { } harmonyContinuity && (harmonyContinuity <= TimeSpan.Zero || harmonyContinuity > TimeSpan.FromSeconds(10)))
+            throw new ArgumentOutOfRangeException(nameof(HarmonyContinuityWindow));
+        if (!float.IsFinite(HarmonyContinuityRelativeActivationFloor) || HarmonyContinuityRelativeActivationFloor is <= 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(HarmonyContinuityRelativeActivationFloor));
         if (EffectiveKeyboardProfile.Keys.Length == 0)
             throw new ArgumentException("Roblox keyboard profile must contain at least one key.", nameof(KeyboardProfile));
     }
@@ -77,7 +83,8 @@ public sealed record RobloxPianoArrangementDiagnostics(
     int MelodyContinuitySelections = 0,
     int AdaptiveDensityDrops = 0,
     int MelodyContinuityConfidenceRejects = 0,
-    int HarmonyVoicingSelections = 0)
+    int HarmonyVoicingSelections = 0,
+    int HarmonyContinuitySelections = 0)
 {
     public bool RequiresReview => DensityDrops > 0 || OutOfRangeDrops > 0 || LowActivationEvents > 0;
 }
@@ -95,6 +102,7 @@ public sealed class RobloxPianoArranger
     private static readonly TimeSpan DefaultClusterWindow = TimeSpan.FromMilliseconds(18);
     private static readonly TimeSpan DefaultMinimumDuration = TimeSpan.FromMilliseconds(35);
     private static readonly TimeSpan DefaultMelodyContinuityWindow = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan DefaultHarmonyContinuityWindow = TimeSpan.FromMilliseconds(1800);
 
     public RobloxPianoArrangementResult Arrange(
         string? title,
@@ -175,7 +183,11 @@ public sealed class RobloxPianoArranger
         var adaptiveDensityDrops = 0;
         var melodyContinuityConfidenceRejects = 0;
         var harmonyVoicingSelections = 0;
+        var harmonyContinuitySelections = 0;
         Candidate? previousMelody = null;
+        IReadOnlyList<Candidate> previousHarmony = [];
+        TimeSpan? previousHarmonyEnd = null;
+        var harmonyContinuityWindow = options.HarmonyContinuityWindow ?? DefaultHarmonyContinuityWindow;
         var index = 0;
         while (index < normalized.Count)
         {
@@ -212,6 +224,10 @@ public sealed class RobloxPianoArranger
                 melodyContinuityConfidenceRejects++;
             previousMelody = melody;
 
+            var harmonyContext = previousHarmonyEnd is { } priorEnd && anchor - priorEnd <= harmonyContinuityWindow
+                ? previousHarmony
+                : [];
+
             if (unique.Count > options.MaxSimultaneousNotes)
             {
                 var accompaniment = unique
@@ -239,9 +255,18 @@ public sealed class RobloxPianoArranger
                     accompaniment,
                     accompanimentSlots,
                     options,
-                    out var harmonyVoicingSelected);
+                    harmonyContext,
+                    out var harmonyVoicingSelected,
+                    out var harmonyContinuitySelected);
                 if (harmonyVoicingSelected)
                     harmonyVoicingSelections++;
+                if (harmonyContinuitySelected)
+                    harmonyContinuitySelections++;
+
+                previousHarmony = voicedAccompaniment;
+                previousHarmonyEnd = voicedAccompaniment.Count > 0
+                    ? voicedAccompaniment.Max(candidate => candidate.End)
+                    : null;
 
                 var keep = voicedAccompaniment
                     .Append(melody)
@@ -253,6 +278,15 @@ public sealed class RobloxPianoArranger
                 densityDrops += unique.Count - keep.Count;
                 adaptiveDensityDrops += Math.Max(0, hardCapKeepCount - keep.Count);
                 unique = keep;
+            }
+            else
+            {
+                previousHarmony = unique
+                    .Where(candidate => !ReferenceEquals(candidate, melody))
+                    .ToArray();
+                previousHarmonyEnd = previousHarmony.Count > 0
+                    ? previousHarmony.Max(candidate => candidate.End)
+                    : null;
             }
 
             selected.AddRange(unique);
@@ -333,18 +367,22 @@ public sealed class RobloxPianoArranger
                 melodyContinuitySelections,
                 adaptiveDensityDrops,
                 melodyContinuityConfidenceRejects,
-                harmonyVoicingSelections));
+                harmonyVoicingSelections,
+                harmonyContinuitySelections));
     }
 
     private static IReadOnlyList<Candidate> SelectAccompanimentVoicing(
         IReadOnlyList<Candidate> accompaniment,
         int slots,
         RobloxPianoArrangementOptions options,
-        out bool harmonyVoicingSelected)
+        IReadOnlyList<Candidate> previousHarmony,
+        out bool harmonyVoicingSelected,
+        out bool harmonyContinuitySelected)
     {
         if (slots <= 0 || accompaniment.Count == 0)
         {
             harmonyVoicingSelected = false;
+            harmonyContinuitySelected = false;
             return [];
         }
 
@@ -357,6 +395,7 @@ public sealed class RobloxPianoArranger
         if (!options.AdaptiveDensity || accompaniment.Count <= slots)
         {
             harmonyVoicingSelected = false;
+            harmonyContinuitySelected = false;
             return baseline;
         }
 
@@ -393,7 +432,20 @@ public sealed class RobloxPianoArranger
                     .First();
             })
             .Where(candidate => candidate.Amplitude >= coverageActivationFloor)
-            .OrderByDescending(candidate => candidate.Amplitude)
+            .ToArray();
+
+        var previousPitchClasses = previousHarmony
+            .Select(candidate => PitchClass(candidate.MappedPitch))
+            .ToHashSet();
+        var strongestRepresentativeActivation = representatives.Length == 0
+            ? 0f
+            : representatives.Max(candidate => candidate.Amplitude);
+        var continuityActivationFloor = strongestRepresentativeActivation * options.HarmonyContinuityRelativeActivationFloor;
+        representatives = representatives
+            .OrderByDescending(candidate =>
+                previousPitchClasses.Contains(PitchClass(candidate.MappedPitch)) &&
+                candidate.Amplitude >= continuityActivationFloor)
+            .ThenByDescending(candidate => candidate.Amplitude)
             .ThenByDescending(candidate => candidate.Duration)
             .ThenBy(candidate => candidate.MappedPitch)
             .ToArray();
@@ -419,6 +471,9 @@ public sealed class RobloxPianoArranger
         var selectedSet = selected.ToHashSet();
         var baselineSet = baseline.ToHashSet();
         harmonyVoicingSelected = !selectedSet.SetEquals(baselineSet);
+        harmonyContinuitySelected = previousPitchClasses.Count > 0 && selected.Any(candidate =>
+            previousPitchClasses.Contains(PitchClass(candidate.MappedPitch)) &&
+            !baselineSet.Contains(candidate));
         return selected;
     }
 

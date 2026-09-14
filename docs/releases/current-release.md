@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.67
+version: 0.40.68
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,24 +15,25 @@ SHA256: `{{SHA256}}`
 - **Support Bundle** remains the preferred way to preserve correlated Runtime Input and client diagnostic evidence when troubleshooting playback.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Audio-to-Piano OSS Phase 63 — mixed-song chorus harmony retention
+## Audio-to-Piano OSS Phase 64 — cross-section harmony continuity
 
-- Dense mixed-song clusters now reserve a credible low harmony anchor before filling scarce Roblox chord slots, so bass/root evidence is not discarded solely because an upper artifact has slightly higher Basic Pitch activation.
-- Accompaniment selection now prefers pitch-class coverage before redundant octave doubles. When two octave representatives of the same pitch class have close confidence, the lower representative wins, reducing high harmonic/overtone clutter without increasing the hard simultaneous-note cap.
-- Melody priority, continuity confidence, adaptive accompaniment confidence thresholds, note timing/duration, octave/range policy and same-key ownership repair remain deterministic.
-- `HarmonyVoicingSelections` surfaces when the new voicing policy changes the pure activation-ranked baseline.
-- Real-model mixed-instrument stress now requires at least 75% overall recognized-harmony retention, at least 75% chorus recognized-harmony retention, the existing melody floor, and at least 25% clutter suppression. Source separation remains deferred only while those measurable floors hold.
+- Dense accompaniment can now use recent sparse/dense harmony as a bounded tie-break, reducing avoidable chord-tone or octave jumps when a verse, pre-chorus or outro flows into a denser section.
+- Continuity never creates notes and cannot rescue evidence already rejected by adaptive-density or weak-note confidence policy. A prior pitch class is eligible only while its current Basic Pitch activation remains within the configured confidence floor.
+- Harmony context expires after a bounded window, so later unrelated sections return to current-section evidence instead of carrying stale chord bias indefinitely.
+- Phase 63 bass/root reservation, pitch-class coverage, melody priority, timing/duration, octave/range policy and same-key ownership remain deterministic.
+- `HarmonyContinuitySelections` surfaces when recent harmony context changes the pure-confidence survivor set.
+- Real-model mixed-instrument stress, generated-MIDI parity and production smoke remain release gates; source separation stays deferred while those measurable quality floors hold.
 
 ## OSS / packaging boundary
 
 - Spotify Basic Pitch remains the transcription/model-semantics source. Its documented mixed/polyphonic behavior is handled through deterministic post-processing rather than assuming every simultaneous activation belongs in the Roblox piano voicing.
 - Microsoft ONNX Runtime, NAudio and DryWetMIDI boundaries remain unchanged.
-- Phase 63 adds no database, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime, and introduces no new third-party license or NOTICE obligation.
+- Phase 64 adds no database, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime, and introduces no new third-party license or NOTICE obligation.
 
 ## Authority and quality contract
 
-- Harmony voicing only chooses among already-decoded Basic Pitch notes under the existing hard density cap; `RobloxPiano.Core.PerformanceTrack` remains canonical playback truth.
-- Generated piano targets recognizable melody, useful harmony, original timing/sections and Roblox-playable density; it does not claim waveform-perfect equivalence to a mixed recording.
+- Harmony continuity only chooses among already-decoded, currently credible Basic Pitch notes under the existing hard density cap; `RobloxPiano.Core.PerformanceTrack` remains canonical playback truth.
+- Generated piano targets recognizable melody, useful and stable harmony, original timing/sections and Roblox-playable density; it does not claim waveform-perfect equivalence to a mixed recording.
 - Low-confidence/lossy arrangements continue to surface review diagnostics instead of silently claiming high confidence.
 - Real-model Basic Pitch mixed-song evidence, generated-MIDI parity, review persistence integrity and production smoke coverage remain gates.
 
@@ -44,6 +45,6 @@ SHA256: `{{SHA256}}`
 ## Client procedure
 
 1. Open **Create Piano Version** and choose owned/local audio you are authorized to use.
-2. Transcribe and preview normally. Dense chorus sections now prefer chord-tone coverage and credible low harmony over near-confidence octave clutter while preserving melody priority.
+2. Transcribe and preview normally. Closely connected sections can now keep credible harmonic continuity instead of switching chord-tone/octave representatives solely on tiny confidence differences.
 3. Review any surfaced low-confidence/lossy regions and Apply / Defer / Resume repairs as needed.
 4. Add the generated result to **Sheet Library** when satisfied. Roblox playback remains subject to the separate Runtime Input field gate.
