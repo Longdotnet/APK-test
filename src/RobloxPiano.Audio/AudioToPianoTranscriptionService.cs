@@ -89,6 +89,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
 
     private readonly BasicPitchInferenceService inference;
     private readonly AudioIngestService ingest = new();
+    private readonly SeparatedStemMixer separatedStemMixer = new();
     private readonly BasicPitchNoteDecoder decoder = new();
     private readonly BasicPitchHarmonicSuppressor harmonicSuppressor = new();
     private readonly RobloxPianoArranger arranger = new();
@@ -143,14 +144,26 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
                 Report(progress, AudioToPianoTranscriptionStage.SourceSeparation, 0.10d,
                     "Lead-vocal stem separated. Building the piano melody from the cleaner source...");
             }
-
             Report(progress, AudioToPianoTranscriptionStage.Ingest, separated is null ? 0d : 0.10d,
-                separated is null ? "Decoding and normalizing audio..." : "Decoding and normalizing the separated lead stem...");
+                separated is null ? "Decoding and normalizing audio..." : "Decoding separated lead and accompaniment stems...");
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
-            var audio = ingest.DecodeFile(ingestPath, NormalizeIngestOptions(options.Ingest), cancellationToken);
+            var ingestOptions = NormalizeIngestOptions(options.Ingest);
+            NormalizedAudio audio;
+            if (separated is null)
+            {
+                audio = ingest.DecodeFile(ingestPath, ingestOptions, cancellationToken);
+            }
+            else
+            {
+                var vocals = ingest.DecodeFile(separated.VocalsPath, ingestOptions, cancellationToken);
+                var other = ingest.DecodeFile(separated.OtherPath, ingestOptions, cancellationToken);
+                var mix = separatedStemMixer.Mix(vocals, other, cancellationToken: cancellationToken);
+                audio = mix.Audio;
+                inputStrategy = $"demucs-rs/{DemucsRsStemSeparator.EngineVersion}:{DemucsRsStemSeparator.ModelId}:vocals+other@{mix.Diagnostics.OtherGain:0.00}";
+            }
             var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction,
-                separated is null ? "Audio normalized for transcription." : "Separated lead stem normalized for transcription.");
+                separated is null ? "Audio normalized for transcription." : "Lead-first stem mix normalized for transcription.");
             return TranscribeNormalizedCore(
                 audio,
                 title ?? Path.GetFileNameWithoutExtension(path),
