@@ -44,8 +44,16 @@ internal static class AudioTranscriptionReviewRepairSessionRegression
         True(Signature(session.CurrentTrack) != original);
         True(Signature(result.PreviousTrack) == original);
         Equal(Signature(session.CurrentTrack), Signature(result.CurrentTrack));
-        Equal(0, session.ReviewRegions.Count);
-        Equal(0, result.ReviewRegions.Count);
+
+        // Melody-priority repair resolves the local polyphony warning, but intentionally keeps one
+        // canonical melody event from four decoded source notes. Re-analysis must therefore preserve
+        // the independent LOCAL_RETENTION_LOW warning instead of pretending the region is fully clean.
+        Equal(1, session.ReviewRegions.Count);
+        Equal(1, result.ReviewRegions.Count);
+        var remaining = session.ReviewRegions.Single();
+        True(remaining.Reasons.Contains("LOCAL_RETENTION_LOW", StringComparer.Ordinal));
+        True(!remaining.Reasons.Contains("LOCAL_POLYPHONY_HIGH", StringComparer.Ordinal));
+        Equal(string.Join('|', remaining.Reasons), string.Join('|', result.ReviewRegions.Single().Reasons));
     }
 
     private static void StaleRegionFailsClosed()
