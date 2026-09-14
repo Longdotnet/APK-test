@@ -22,7 +22,7 @@ public sealed record SectionAwareStemCompositionOptions(
     float MinimumLeadToBassCorrelationRatio = 0.80f,
     int MaximumLeadBoundaryLagSlack = 1,
     bool RequireLeadPitchContinuity = true,
-    float MaximumAdjacentLeadJumpSemitones = 12f)
+    float MaximumAdjacentLeadJumpSemitones = 19f)
 {
     public TimeSpan EffectiveWindowDuration => WindowDuration ?? TimeSpan.FromMilliseconds(400);
     public TimeSpan EffectiveAttack => Attack ?? TimeSpan.FromMilliseconds(80);
