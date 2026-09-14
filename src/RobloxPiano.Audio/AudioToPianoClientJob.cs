@@ -85,7 +85,7 @@ public sealed class AudioToPianoClientJob : IDisposable
                 AudioToPianoClientJobState.Running,
                 AudioToPianoTranscriptionStage.Ingest,
                 0d,
-                "Preparing audio...",
+                "Preparing audio locally...",
                 fullPath,
                 null);
         }
@@ -96,8 +96,29 @@ public sealed class AudioToPianoClientJob : IDisposable
             if (!BasicPitchBundledModel.IsAvailable)
                 throw new InvalidOperationException("This build does not contain the pinned Basic Pitch model required by Create Piano Version.");
 
+            PublishMonotonic(
+                new AudioToPianoClientJobSnapshot(
+                    AudioToPianoClientJobState.Running,
+                    AudioToPianoTranscriptionStage.Ingest,
+                    0d,
+                    "Loading the local Basic Pitch model...",
+                    fullPath,
+                    null),
+                progress);
+
             var modelPath = BasicPitchBundledModel.MaterializeToDefaultCache();
             using var service = new AudioToPianoTranscriptionService(modelPath);
+
+            PublishMonotonic(
+                new AudioToPianoClientJobSnapshot(
+                    AudioToPianoClientJobState.Running,
+                    AudioToPianoTranscriptionStage.Ingest,
+                    0d,
+                    "Local piano model ready. Decoding audio...",
+                    fullPath,
+                    null),
+                progress);
+
             var bridge = new InlineProgress<AudioToPianoTranscriptionProgress>(value =>
             {
                 var next = new AudioToPianoClientJobSnapshot(
@@ -147,21 +168,18 @@ public sealed class AudioToPianoClientJob : IDisposable
             PublishTerminal(cancelled, progress);
             return new(AudioToPianoClientJobState.Cancelled, null, null);
         }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or InvalidDataException
-            or ArgumentException
-            or InvalidOperationException)
+        catch (Exception exception) when (IsRecoverableClientFailure(exception))
         {
+            var errorMessage = FormatClientFailure(exception);
             var failed = new AudioToPianoClientJobSnapshot(
                 AudioToPianoClientJobState.Failed,
                 Snapshot.Stage,
                 Snapshot.Fraction,
-                "Piano version could not be created.",
+                "Piano version could not be created. The application can continue safely.",
                 fullPath,
-                exception.Message);
+                errorMessage);
             PublishTerminal(failed, progress);
-            return new(AudioToPianoClientJobState.Failed, null, exception.Message);
+            return new(AudioToPianoClientJobState.Failed, null, errorMessage);
         }
         finally
         {
@@ -214,6 +232,31 @@ public sealed class AudioToPianoClientJob : IDisposable
         }
         progress?.Report(terminal);
     }
+
+    private static bool IsRecoverableClientFailure(Exception exception) => exception is
+        IOException
+        or UnauthorizedAccessException
+        or InvalidDataException
+        or ArgumentException
+        or InvalidOperationException
+        or OverflowException
+        or NotSupportedException
+        or TypeInitializationException
+        or DllNotFoundException
+        or BadImageFormatException
+        or Microsoft.ML.OnnxRuntime.OnnxRuntimeException
+        or NAudio.MmException;
+
+    private static string FormatClientFailure(Exception exception) => exception switch
+    {
+        Microsoft.ML.OnnxRuntime.OnnxRuntimeException =>
+            $"The local Basic Pitch model failed during inference: {exception.Message}",
+        NAudio.MmException =>
+            $"The selected audio could not be decoded locally: {exception.Message}",
+        DllNotFoundException or BadImageFormatException or TypeInitializationException =>
+            $"The local audio/model runtime could not start correctly: {exception.Message}",
+        _ => exception.Message
+    };
 
     private static string FormatReviewSummary(IReadOnlyList<AudioTranscriptionReviewRegion> regions)
     {
