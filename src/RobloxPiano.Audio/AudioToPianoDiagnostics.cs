@@ -65,7 +65,8 @@ internal sealed class AudioToPianoDiagnostics : IDisposable
         var diagnostics = result.Diagnostics;
         Write(
             "operation-complete",
-            $"elapsedMs={elapsed.Elapsed.TotalMilliseconds:0} decodedNotes={diagnostics.DecodedNotes} " +
+            $"elapsedMs={elapsed.Elapsed.TotalMilliseconds:0} inputStrategy={Quote(diagnostics.InputStrategy)} " +
+            $"separationMs={diagnostics.SeparationElapsed.TotalMilliseconds:0} decodedNotes={diagnostics.DecodedNotes} " +
             $"retainedNotes={diagnostics.NotesAfterSuppression} reviewRegions={diagnostics.ReviewRegions.Count} " +
             $"readiness={diagnostics.Quality.Readiness} trackEvents={result.Arrangement.Track.Events.Count} " +
             $"trackDurationMs={result.Arrangement.Track.TimelineDuration.TotalMilliseconds:0}");
