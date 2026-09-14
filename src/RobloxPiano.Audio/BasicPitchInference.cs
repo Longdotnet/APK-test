@@ -2,7 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 
 namespace RobloxPiano.Audio;
 
-public sealed record BasicPitchInferenceOptions(int MaxChunksPerBatch = 8)
+public sealed record BasicPitchInferenceOptions(int MaxChunksPerBatch = 1)
 {
     internal void Validate()
     {
@@ -112,10 +112,16 @@ public sealed class BasicPitchInferenceService : IDisposable
         this.options = options ?? new BasicPitchInferenceOptions();
         this.options.Validate();
 
+        // The production desktop path deliberately favors bounded memory over throughput.
+        // Spotify's reference inference invokes the model one audio window at a time, and
+        // ONNX Runtime's CPU arena/memory pattern may retain or pre-allocate large buffers
+        // after a Run. Long songs must therefore not turn an optimization into a client OOM.
         var sessionOptions = new SessionOptions
         {
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-            LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING
+            LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING,
+            EnableCpuMemArena = false,
+            EnableMemoryPattern = false
         };
         session = new InferenceSession(modelPath, sessionOptions);
         ValidateModelContract();

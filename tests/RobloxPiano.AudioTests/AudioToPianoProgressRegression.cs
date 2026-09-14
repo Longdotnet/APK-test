@@ -16,9 +16,10 @@ internal static class AudioToPianoProgressRegression
         var observed = new List<AudioToPianoTranscriptionProgress>();
         var progress = new InlineProgress<AudioToPianoTranscriptionProgress>(observed.Add);
 
-        using var service = new AudioToPianoTranscriptionService(
-            modelPath,
-            new BasicPitchInferenceOptions(MaxChunksPerBatch: 1));
+        // Intentionally use the production defaults. This fixture spans multiple Basic Pitch
+        // windows, so the test fails if the client silently returns to coarse multi-window
+        // batching that hides progress and raises native peak memory for long songs.
+        using var service = new AudioToPianoTranscriptionService(modelPath);
         var result = service.TranscribeNormalized(
             audio,
             "Progress fixture",
