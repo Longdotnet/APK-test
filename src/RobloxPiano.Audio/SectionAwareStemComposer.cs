@@ -20,7 +20,9 @@ public sealed record SectionAwareStemCompositionOptions(
     float BassBandMaximumFrequencyHz = 146.83f,
     float MinimumLeadBandFrequencyHz = 146.83f,
     float MinimumLeadToBassCorrelationRatio = 0.80f,
-    int MaximumLeadBoundaryLagSlack = 1)
+    int MaximumLeadBoundaryLagSlack = 1,
+    bool RequireLeadPitchContinuity = true,
+    float MaximumAdjacentLeadJumpSemitones = 19f)
 {
     public TimeSpan EffectiveWindowDuration => WindowDuration ?? TimeSpan.FromMilliseconds(400);
     public TimeSpan EffectiveAttack => Attack ?? TimeSpan.FromMilliseconds(80);
@@ -47,6 +49,7 @@ public sealed record SectionAwareStemCompositionOptions(
         if (MinimumLeadBandFrequencyHz >= MaximumLeadFrequencyHz) throw new ArgumentOutOfRangeException(nameof(MinimumLeadBandFrequencyHz));
         if (!float.IsFinite(MinimumLeadToBassCorrelationRatio) || MinimumLeadToBassCorrelationRatio is < 0f or > 2f) throw new ArgumentOutOfRangeException(nameof(MinimumLeadToBassCorrelationRatio));
         if (MaximumLeadBoundaryLagSlack is < 0 or > 8) throw new ArgumentOutOfRangeException(nameof(MaximumLeadBoundaryLagSlack));
+        if (!float.IsFinite(MaximumAdjacentLeadJumpSemitones) || MaximumAdjacentLeadJumpSemitones is < 1f or > 36f) throw new ArgumentOutOfRangeException(nameof(MaximumAdjacentLeadJumpSemitones));
     }
 }
 
@@ -55,6 +58,7 @@ public sealed record SectionAwareStemCompositionDiagnostics(
     int EnergyEligibleWindows,
     int RejectedNonMelodicWindows,
     int RejectedBassDominatedWindows,
+    int RejectedDiscontinuousLeadWindows,
     int FallbackWindows,
     TimeSpan FallbackDuration,
     float AccompanimentGain,
@@ -72,8 +76,9 @@ public sealed record SectionAwareStemCompositionResult(NormalizedAudio Audio, Se
 /// <summary>
 /// Keeps the Spleeter vocal stem authoritative while recovering instrumental hooks from separated accompaniment
 /// only across sustained vocal-weak regions. Energy alone is insufficient: fallback must contain lead-band
-/// periodicity and must not be dominated by bass-band periodicity. Boundary autocorrelation peaks are treated as
-/// bass smoothness aliases rather than credible lead pitch. Spleeter owns separation; Basic Pitch owns transcription.
+/// periodicity, must not be dominated by bass-band periodicity, and accepted lead pitches must form a locally
+/// plausible contour. Phrase gaps reset continuity so unrelated sections are not forced together. Spleeter owns
+/// separation; Basic Pitch owns transcription.
 /// </summary>
 public sealed class SectionAwareStemComposer
 {
@@ -90,6 +95,7 @@ public sealed class SectionAwareStemComposer
         var windowSamples = Math.Max(1, checked((int)Math.Round(options.EffectiveWindowDuration.TotalSeconds * sampleRate)));
         var windowCount = (vocals.Samples.Length + windowSamples - 1) / windowSamples;
         var eligible = new bool[windowCount];
+        var leadFrequencyHz = new double[windowCount];
         var energyEligibleWindows = 0;
         var rejectedNonMelodicWindows = 0;
         var rejectedBassDominatedWindows = 0;
@@ -114,18 +120,26 @@ public sealed class SectionAwareStemComposer
             }
 
             var analysis = AnalyzeMelodicWindow(accompaniment.Samples, start, accompanimentEnd, sampleRate, options, cancellationToken);
-            if (analysis.Accepted) eligible[window] = true;
+            if (analysis.Accepted)
+            {
+                eligible[window] = true;
+                leadFrequencyHz[window] = analysis.LeadFrequencyHz;
+            }
             else if (analysis.BassDominated) rejectedBassDominatedWindows++;
             else rejectedNonMelodicWindows++;
         }
+
+        var rejectedDiscontinuousLeadWindows = 0;
+        if (options.RequireMelodicFallback && options.RequireLeadPitchContinuity)
+            eligible = ApplyLeadPitchContinuity(eligible, leadFrequencyHz, options.MaximumAdjacentLeadJumpSemitones, out rejectedDiscontinuousLeadWindows);
 
         var active = RequireSustainedRuns(eligible, options.MinimumConsecutiveFallbackWindows);
         var fallbackWindows = active.Count(value => value);
         if (fallbackWindows == 0 || options.AccompanimentGain == 0f)
         {
             return new SectionAwareStemCompositionResult(vocals, new SectionAwareStemCompositionDiagnostics(
-                windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, 0, TimeSpan.Zero,
-                options.AccompanimentGain, Peak(vocals.Samples), 1f, vocals.Samples.Length, accompaniment.Samples.Length, vocals.Samples.Length));
+                windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, rejectedDiscontinuousLeadWindows,
+                0, TimeSpan.Zero, options.AccompanimentGain, Peak(vocals.Samples), 1f, vocals.Samples.Length, accompaniment.Samples.Length, vocals.Samples.Length));
         }
 
         var output = new float[vocals.Samples.Length];
@@ -158,32 +172,71 @@ public sealed class SectionAwareStemComposer
         }
 
         return new SectionAwareStemCompositionResult(new NormalizedAudio(output, sampleRate), new SectionAwareStemCompositionDiagnostics(
-            windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, fallbackWindows,
-            TimeSpan.FromSeconds(fallbackWindows * options.EffectiveWindowDuration.TotalSeconds), options.AccompanimentGain, peak,
+            windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, rejectedDiscontinuousLeadWindows,
+            fallbackWindows, TimeSpan.FromSeconds(fallbackWindows * options.EffectiveWindowDuration.TotalSeconds), options.AccompanimentGain, peak,
             normalizationGain, vocals.Samples.Length, accompaniment.Samples.Length, output.Length));
     }
 
     private static MelodicWindowAnalysis AnalyzeMelodicWindow(float[] samples, int start, int end, int sampleRate, SectionAwareStemCompositionOptions options, CancellationToken cancellationToken)
     {
-        if (end - start < 8) return new MelodicWindowAnalysis(false, false);
+        if (end - start < 8) return new MelodicWindowAnalysis(false, false, 0d);
         var stride = Math.Max(1, sampleRate / options.MelodicAnalysisTargetSampleRate);
         var effectiveRate = sampleRate / (double)stride;
         var nyquistSafeMaximum = Math.Min(options.MaximumLeadFrequencyHz, (float)(effectiveRate * 0.45d));
-        if (nyquistSafeMaximum <= options.MinimumLeadFrequencyHz) return new MelodicWindowAnalysis(false, false);
+        if (nyquistSafeMaximum <= options.MinimumLeadFrequencyHz) return new MelodicWindowAnalysis(false, false, 0d);
         var decimatedCount = Math.Max(0, (end - start + stride - 1) / stride);
-        if (decimatedCount < 8) return new MelodicWindowAnalysis(false, false);
+        if (decimatedCount < 8) return new MelodicWindowAnalysis(false, false, 0d);
 
         var leadMinimumFrequency = Math.Max(options.MinimumLeadFrequencyHz, options.MinimumLeadBandFrequencyHz);
         var leadPeak = BestNormalizedAutocorrelation(samples, start, end, stride, effectiveRate, leadMinimumFrequency, nyquistSafeMaximum, decimatedCount, cancellationToken);
-        if (leadPeak.Correlation < options.MinimumMelodicAutocorrelation) return new MelodicWindowAnalysis(false, false);
-        if (!options.RejectBassDominatedFallback) return new MelodicWindowAnalysis(true, false);
+        if (leadPeak.Correlation < options.MinimumMelodicAutocorrelation || leadPeak.Lag <= 0) return new MelodicWindowAnalysis(false, false, 0d);
+        var leadFrequencyHz = effectiveRate / leadPeak.Lag;
+        if (!options.RejectBassDominatedFallback) return new MelodicWindowAnalysis(true, false, leadFrequencyHz);
 
         var bassMaximumFrequency = Math.Min(options.BassBandMaximumFrequencyHz, leadMinimumFrequency);
         var bassPeak = BestNormalizedAutocorrelation(samples, start, end, stride, effectiveRate, options.BassBandMinimumFrequencyHz, bassMaximumFrequency, decimatedCount, cancellationToken);
         var boundaryAlias = leadPeak.Lag >= 0 && leadPeak.Lag <= leadPeak.MinimumLag + options.MaximumLeadBoundaryLagSlack;
         var materiallyWeakerThanBass = leadPeak.Correlation < bassPeak.Correlation * options.MinimumLeadToBassCorrelationRatio;
         var bassDominated = bassPeak.Correlation >= options.MinimumMelodicAutocorrelation && (boundaryAlias || materiallyWeakerThanBass);
-        return new MelodicWindowAnalysis(!bassDominated, bassDominated);
+        return new MelodicWindowAnalysis(!bassDominated, bassDominated, bassDominated ? 0d : leadFrequencyHz);
+    }
+
+    private static bool[] ApplyLeadPitchContinuity(bool[] eligible, double[] leadFrequencyHz, float maximumAdjacentJumpSemitones, out int rejectedWindows)
+    {
+        var result = (bool[])eligible.Clone();
+        rejectedWindows = 0;
+        var runStart = 0;
+
+        while (runStart < eligible.Length)
+        {
+            while (runStart < eligible.Length && (!eligible[runStart] || leadFrequencyHz[runStart] <= 0d)) runStart++;
+            if (runStart >= eligible.Length) break;
+
+            var runEnd = runStart + 1;
+            var coherent = true;
+            while (runEnd < eligible.Length && eligible[runEnd] && leadFrequencyHz[runEnd] > 0d)
+            {
+                if (SemitoneDistance(leadFrequencyHz[runEnd - 1], leadFrequencyHz[runEnd]) > maximumAdjacentJumpSemitones)
+                    coherent = false;
+                runEnd++;
+            }
+
+            if (!coherent)
+            {
+                Array.Fill(result, false, runStart, runEnd - runStart);
+                rejectedWindows += runEnd - runStart;
+            }
+
+            runStart = runEnd + 1;
+        }
+
+        return result;
+    }
+
+    private static double SemitoneDistance(double firstFrequencyHz, double secondFrequencyHz)
+    {
+        if (firstFrequencyHz <= 0d || secondFrequencyHz <= 0d) return double.PositiveInfinity;
+        return 12d * Math.Abs(Math.Log2(secondFrequencyHz / firstFrequencyHz));
     }
 
     private static AutocorrelationPeak BestNormalizedAutocorrelation(float[] samples, int start, int end, int stride, double effectiveRate, float minimumFrequencyHz, float maximumFrequencyHz, int decimatedCount, CancellationToken cancellationToken)
@@ -251,6 +304,6 @@ public sealed class SectionAwareStemComposer
 
     private static float SmoothingAlpha(TimeSpan duration, int sampleRate) => duration <= TimeSpan.Zero ? 1f : (float)(1d - Math.Exp(-1d / (duration.TotalSeconds * sampleRate)));
     private static float Peak(float[] samples) { var peak = 0f; foreach (var sample in samples) peak = Math.Max(peak, Math.Abs(sample)); return peak; }
-    private readonly record struct MelodicWindowAnalysis(bool Accepted, bool BassDominated);
+    private readonly record struct MelodicWindowAnalysis(bool Accepted, bool BassDominated, double LeadFrequencyHz);
     private readonly record struct AutocorrelationPeak(double Correlation, int Lag, int MinimumLag);
 }
