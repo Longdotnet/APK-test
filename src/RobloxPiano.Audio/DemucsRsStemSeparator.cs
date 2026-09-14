@@ -47,6 +47,8 @@ internal static class DemucsRsStemSeparator
     internal const string EngineVersion = "0.3.4";
     internal const string ModelId = "htdemucs";
     internal const string EngineArchiveSha256 = "67E77186295A00758DF0B760F3345FD0B9081B328F923ECC35307F6190F472D1";
+    internal const string ModelSha256 = "CA38614BEC948773A30AD406B4CF415FEA45B8843AB317D02DACDD21623E741B";
+    internal const long ModelBytes = 84_030_352;
     private const string EngineArchiveUrl = "https://github.com/nikhilunni/demucs-rs/releases/download/v0.3.4/demucs-x86_64-pc-windows-msvc.zip";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(5) };
     private static readonly SemaphoreSlim InstallGate = new(1, 1);
@@ -71,6 +73,8 @@ internal static class DemucsRsStemSeparator
 
         status?.Invoke("Preparing the local Demucs stem separator...");
         var executable = await EnsureEngineAsync(status, cancellationToken).ConfigureAwait(false);
+        PrepareModelCache(status);
+
         var work = Path.Combine(Path.GetTempPath(), "RobloxPiano", "demucs", Guid.NewGuid().ToString("N"));
         var output = Path.Combine(work, "stems");
         Directory.CreateDirectory(output);
@@ -122,6 +126,8 @@ internal static class DemucsRsStemSeparator
                 throw new InvalidOperationException(
                     $"Demucs source separation failed with exit code {process.ExitCode}. {detail}".Trim());
             }
+
+            VerifyModelCache();
 
             var vocals = Path.Combine(output, "vocals.wav");
             var other = Path.Combine(output, "other.wav");
@@ -210,6 +216,57 @@ internal static class DemucsRsStemSeparator
         finally
         {
             InstallGate.Release();
+        }
+    }
+
+    private static string ModelCachePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "demucs-rs",
+        "htdemucs.safetensors");
+
+    private static void PrepareModelCache(Action<string>? status)
+    {
+        var path = ModelCachePath;
+        if (!File.Exists(path))
+        {
+            status?.Invoke("The pinned Demucs model will download once on first separation...");
+            return;
+        }
+
+        if (HasExpectedModelIdentity(path))
+            return;
+
+        status?.Invoke("Cached Demucs model failed provenance validation; refreshing it...");
+        File.Delete(path);
+    }
+
+    private static void VerifyModelCache()
+    {
+        var path = ModelCachePath;
+        if (!File.Exists(path))
+            throw new InvalidDataException("Demucs completed without leaving the expected cached htdemucs model.");
+        if (!HasExpectedModelIdentity(path))
+        {
+            TryDelete(path);
+            throw new InvalidDataException(
+                $"Demucs model provenance check failed. Expected {ModelBytes} bytes / SHA-256 {ModelSha256}.");
+        }
+    }
+
+    private static bool HasExpectedModelIdentity(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Length != ModelBytes)
+                return false;
+            using var stream = File.OpenRead(path);
+            var actual = Convert.ToHexString(SHA256.HashData(stream));
+            return actual.Equals(ModelSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 
