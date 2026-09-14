@@ -16,7 +16,7 @@ internal static class BassDominanceFallbackRegression
         const int sampleRate = 4000;
         var vocals = new float[sampleRate * 2];
         var accompaniment = new float[vocals.Length];
-        AddTone(accompaniment, sampleRate, 40, 0.05d, 1.95d, 0.28f); // E2: strong bass periodicity, not lead truth.
+        AddTone(accompaniment, sampleRate, 40, 0.05d, 1.95d, 0.28f);
 
         var result = Compose(vocals, accompaniment, sampleRate);
 
@@ -34,8 +34,8 @@ internal static class BassDominanceFallbackRegression
         const int sampleRate = 4000;
         var vocals = new float[sampleRate * 2];
         var accompaniment = new float[vocals.Length];
-        AddTone(accompaniment, sampleRate, 64, 0.05d, 1.95d, 0.26f); // E4 lead/hook.
-        AddTone(accompaniment, sampleRate, 40, 0.05d, 1.95d, 0.07f); // E2 restrained bass underneath.
+        AddTone(accompaniment, sampleRate, 64, 0.05d, 1.95d, 0.26f);
+        AddTone(accompaniment, sampleRate, 40, 0.05d, 1.95d, 0.06f);
 
         var result = Compose(vocals, accompaniment, sampleRate);
 
@@ -50,7 +50,7 @@ internal static class BassDominanceFallbackRegression
         const int sampleRate = 4000;
         var vocals = new float[sampleRate];
         var accompaniment = new float[vocals.Length];
-        AddTone(accompaniment, sampleRate, 43, 0d, 1d, 0.24f); // G2.
+        AddTone(accompaniment, sampleRate, 43, 0d, 1d, 0.24f);
 
         var result = new SectionAwareStemComposer().Compose(
             new NormalizedAudio(vocals, sampleRate),
@@ -62,10 +62,7 @@ internal static class BassDominanceFallbackRegression
     }
 
     private static SectionAwareStemCompositionResult Compose(float[] vocals, float[] accompaniment, int sampleRate) =>
-        new SectionAwareStemComposer().Compose(
-            new NormalizedAudio(vocals, sampleRate),
-            new NormalizedAudio(accompaniment, sampleRate),
-            Options());
+        new SectionAwareStemComposer().Compose(new NormalizedAudio(vocals, sampleRate), new NormalizedAudio(accompaniment, sampleRate), Options());
 
     private static SectionAwareStemCompositionOptions Options() => new(
         WindowDuration: TimeSpan.FromMilliseconds(400),
@@ -105,27 +102,17 @@ internal static class BassDominanceFallbackRegression
 
     private static void Run(string name, Action action)
     {
-        try
-        {
-            action();
-            Console.WriteLine($"PASS {name}");
-        }
-        catch (Exception exception)
-        {
-            Console.Error.WriteLine($"FAIL {name}: {exception}");
-            Environment.ExitCode = 1;
-        }
+        try { action(); Console.WriteLine($"PASS {name}"); }
+        catch (Exception exception) { Console.Error.WriteLine($"FAIL {name}: {exception}"); Environment.ExitCode = 1; }
     }
 
     private static void Equal<T>(T expected, T actual)
     {
-        if (!EqualityComparer<T>.Default.Equals(expected, actual))
-            throw new InvalidOperationException($"Expected {expected}, got {actual}.");
+        if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new InvalidOperationException($"Expected {expected}, got {actual}.");
     }
 
     private static void True(bool value, string? message = null)
     {
-        if (!value)
-            throw new InvalidOperationException(message ?? "Expected condition to be true.");
+        if (!value) throw new InvalidOperationException(message ?? "Expected condition to be true.");
     }
 }
