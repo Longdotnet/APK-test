@@ -81,10 +81,10 @@ public sealed record SectionAwareStemCompositionResult(NormalizedAudio Audio, Se
 /// only across sustained vocal-weak regions. Energy alone is insufficient: fallback must contain lead-band
 /// periodicity, must not be dominated by bass-band periodicity, and accepted lead pitches must form a locally
 /// plausible contour. When pitch-guided fallback is enabled, accepted windows are converted to a deterministic
-/// monophonic guide at the selected lead pitch, scaled from that window's accompaniment RMS. This prevents the
-/// rest of the accompaniment chord, bass and percussion waveform from becoming Basic Pitch note truth. Phrase
-/// gaps reset continuity so unrelated sections are not forced together. Spleeter owns separation; Basic Pitch
-/// owns transcription.
+/// monophonic guide at the nearest equal-tempered piano pitch, scaled from that window's accompaniment RMS. This
+/// removes residual chord/bass/percussion waveform before Basic Pitch while matching Roblox piano's semitone
+/// output domain. Phrase gaps reset continuity so unrelated sections are not forced together. Spleeter owns
+/// separation; Basic Pitch owns transcription.
 /// </summary>
 public sealed class SectionAwareStemComposer
 {
@@ -150,9 +150,16 @@ public sealed class SectionAwareStemComposer
                 0, 0, TimeSpan.Zero, options.AccompanimentGain, Peak(vocals.Samples), 1f, vocals.Samples.Length, accompaniment.Samples.Length, vocals.Samples.Length));
         }
 
-        var pitchGuidedFallbackWindows = options.UsePitchGuidedFallback && options.RequireMelodicFallback
-            ? active.Select((value, index) => value && leadFrequencyHz[index] > 0d).Count(value => value)
-            : 0;
+        var guideFrequencyHz = new double[windowCount];
+        if (options.UsePitchGuidedFallback && options.RequireMelodicFallback)
+        {
+            for (var window = 0; window < windowCount; window++)
+            {
+                if (active[window] && leadFrequencyHz[window] > 0d)
+                    guideFrequencyHz[window] = QuantizeToPianoFrequency(leadFrequencyHz[window]);
+            }
+        }
+        var pitchGuidedFallbackWindows = guideFrequencyHz.Count(frequency => frequency > 0d);
 
         var output = new float[vocals.Samples.Length];
         var attackAlpha = SmoothingAlpha(options.EffectiveAttack, sampleRate);
@@ -172,7 +179,7 @@ public sealed class SectionAwareStemComposer
             {
                 if (options.UsePitchGuidedFallback && options.RequireMelodicFallback)
                 {
-                    var frequency = leadFrequencyHz[window];
+                    var frequency = guideFrequencyHz[window];
                     if (frequency > 0d)
                     {
                         var amplitude = Math.Min(1d, accompanimentRmsByWindow[window] * Math.Sqrt(2d));
@@ -204,6 +211,13 @@ public sealed class SectionAwareStemComposer
             windowCount, energyEligibleWindows, rejectedNonMelodicWindows, rejectedBassDominatedWindows, rejectedDiscontinuousLeadWindows,
             fallbackWindows, pitchGuidedFallbackWindows, TimeSpan.FromSeconds(fallbackWindows * options.EffectiveWindowDuration.TotalSeconds), options.AccompanimentGain, peak,
             normalizationGain, vocals.Samples.Length, accompaniment.Samples.Length, output.Length));
+    }
+
+    private static double QuantizeToPianoFrequency(double frequencyHz)
+    {
+        if (!double.IsFinite(frequencyHz) || frequencyHz <= 0d) return 0d;
+        var midi = Math.Round(69d + (12d * Math.Log2(frequencyHz / 440d)), MidpointRounding.AwayFromZero);
+        return 440d * Math.Pow(2d, (midi - 69d) / 12d);
     }
 
     private static MelodicWindowAnalysis AnalyzeMelodicWindow(float[] samples, int start, int end, int sampleRate, SectionAwareStemCompositionOptions options, CancellationToken cancellationToken)
