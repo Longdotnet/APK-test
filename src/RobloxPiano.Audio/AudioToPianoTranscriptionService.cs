@@ -1,15 +1,19 @@
 namespace RobloxPiano.Audio;
 
+public sealed record AudioSourceSeparationOptions(bool Enabled = true);
+
 public sealed record AudioToPianoTranscriptionOptions(
     AudioIngestOptions? Ingest = null,
     BasicPitchNoteDecoderOptions? Decoder = null,
     BasicPitchHarmonicSuppressionOptions? HarmonicSuppression = null,
     RobloxPianoArrangementOptions? Arrangement = null,
     AudioTranscriptionQualityOptions? Quality = null,
-    AudioTranscriptionReviewRegionOptions? ReviewRegions = null);
+    AudioTranscriptionReviewRegionOptions? ReviewRegions = null,
+    AudioSourceSeparationOptions? SourceSeparation = null);
 
 public enum AudioToPianoTranscriptionStage
 {
+    SourceSeparation,
     Ingest,
     Inference,
     Decode,
@@ -58,9 +62,11 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     public AudioTranscriptionQualityAssessment BaseQuality { get; init; } = Quality;
     public IReadOnlyList<AudioTranscriptionReviewRegion> ReviewRegions { get; init; } = Array.Empty<AudioTranscriptionReviewRegion>();
     public TimeSpan ReviewElapsed { get; init; }
+    public TimeSpan SeparationElapsed { get; init; }
+    public string InputStrategy { get; init; } = "full-mix";
     public bool RequiresReview => Quality.RequiresReview || ReviewRegions.Count != 0;
     public int NotesAfterSuppression => HarmonicSuppression.RetainedNotes;
-    public TimeSpan TotalElapsed => IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed + ReviewElapsed;
+    public TimeSpan TotalElapsed => SeparationElapsed + IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed + ReviewElapsed;
 }
 
 public sealed record AudioToPianoTranscriptionResult(
@@ -72,9 +78,9 @@ public sealed record AudioToPianoTranscriptionResult(
 
 /// <summary>
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
-/// The service composes deterministic ingest, Basic Pitch inference, note decoding, conservative harmonic suppression
-/// and arranger layers; it does not schedule input or mutate playback state. Quality classification and every
-/// suppression/review decision remain fail-visible in diagnostics.
+/// Full-song MP3 input is separated before pitch transcription by default so drums/bass/accompaniment
+/// do not compete with the lead melody. Basic Pitch remains authoritative only for the pitched stem it
+/// receives; note decoding/arrangement and Roblox playback truth remain deterministic RobloxPiano code.
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
@@ -116,18 +122,49 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         options ??= new AudioToPianoTranscriptionOptions();
 
-        Report(progress, AudioToPianoTranscriptionStage.Ingest, 0d, "Decoding and normalizing audio...");
-        var started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var audio = ingest.DecodeFile(path, NormalizeIngestOptions(options.Ingest), cancellationToken);
-        var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
-        Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction, "Audio normalized for transcription.");
-        return TranscribeNormalizedCore(
-            audio,
-            title ?? Path.GetFileNameWithoutExtension(path),
-            options,
-            ingestElapsed,
-            progress,
-            cancellationToken);
+        DemucsSeparatedStems? separated = null;
+        var ingestPath = path;
+        var inputStrategy = "full-mix";
+        var separationElapsed = TimeSpan.Zero;
+        try
+        {
+            if (ShouldUseSourceSeparation(path, options))
+            {
+                Report(progress, AudioToPianoTranscriptionStage.SourceSeparation, 0.01d,
+                    "Preparing local source separation for the full song...");
+                var separationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                separated = DemucsRsStemSeparator.Separate(
+                    path,
+                    message => Report(progress, AudioToPianoTranscriptionStage.SourceSeparation, 0.08d, message),
+                    cancellationToken);
+                separationElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(separationStarted);
+                ingestPath = separated.VocalsPath;
+                inputStrategy = $"demucs-rs/{DemucsRsStemSeparator.EngineVersion}:{DemucsRsStemSeparator.ModelId}:vocals";
+                Report(progress, AudioToPianoTranscriptionStage.SourceSeparation, 0.10d,
+                    "Lead-vocal stem separated. Building the piano melody from the cleaner source...");
+            }
+
+            Report(progress, AudioToPianoTranscriptionStage.Ingest, separated is null ? 0d : 0.10d,
+                separated is null ? "Decoding and normalizing audio..." : "Decoding and normalizing the separated lead stem...");
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var audio = ingest.DecodeFile(ingestPath, NormalizeIngestOptions(options.Ingest), cancellationToken);
+            var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+            Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction,
+                separated is null ? "Audio normalized for transcription." : "Separated lead stem normalized for transcription.");
+            return TranscribeNormalizedCore(
+                audio,
+                title ?? Path.GetFileNameWithoutExtension(path),
+                options,
+                ingestElapsed,
+                progress,
+                cancellationToken,
+                inputStrategy,
+                separationElapsed);
+        }
+        finally
+        {
+            separated?.Dispose();
+        }
     }
 
     public AudioToPianoTranscriptionResult TranscribeStream(
@@ -154,7 +191,15 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         var audio = ingest.DecodeStream(stream, NormalizeIngestOptions(options.Ingest), cancellationToken);
         var ingestElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
         Report(progress, AudioToPianoTranscriptionStage.Ingest, InferenceStartFraction, "Audio normalized for transcription.");
-        return TranscribeNormalizedCore(audio, title, options, ingestElapsed, progress, cancellationToken);
+        return TranscribeNormalizedCore(
+            audio,
+            title,
+            options,
+            ingestElapsed,
+            progress,
+            cancellationToken,
+            "stream",
+            TimeSpan.Zero);
     }
 
     public AudioToPianoTranscriptionResult TranscribeNormalized(
@@ -175,7 +220,15 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         ArgumentNullException.ThrowIfNull(audio);
         cancellationToken.ThrowIfCancellationRequested();
         options ??= new AudioToPianoTranscriptionOptions();
-        return TranscribeNormalizedCore(audio, title, options, TimeSpan.Zero, progress, cancellationToken);
+        return TranscribeNormalizedCore(
+            audio,
+            title,
+            options,
+            TimeSpan.Zero,
+            progress,
+            cancellationToken,
+            "normalized-input",
+            TimeSpan.Zero);
     }
 
     private AudioToPianoTranscriptionResult TranscribeNormalizedCore(
@@ -184,13 +237,18 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         AudioToPianoTranscriptionOptions options,
         TimeSpan ingestElapsed,
         IProgress<AudioToPianoTranscriptionProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string inputStrategy,
+        TimeSpan separationElapsed)
     {
         if (audio.SampleRate != BasicPitchInferenceService.RequiredSampleRate)
             throw new ArgumentException($"Audio-to-Piano requires {BasicPitchInferenceService.RequiredSampleRate} Hz normalized audio.", nameof(audio));
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Inference, InferenceStartFraction, "Listening for notes with Basic Pitch...");
+        Report(progress, AudioToPianoTranscriptionStage.Inference, InferenceStartFraction,
+            inputStrategy.StartsWith("demucs-rs/", StringComparison.Ordinal)
+                ? "Listening for the lead melody in the separated vocal stem..."
+                : "Listening for notes with Basic Pitch...");
         var inferenceProgress = progress is null
             ? null
             : new InlineProgress<BasicPitchInferenceProgress>(value => ReportInferenceProgress(progress, value));
@@ -274,7 +332,9 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         {
             BaseQuality = baseQuality,
             ReviewRegions = reviewRegions,
-            ReviewElapsed = reviewElapsed
+            ReviewElapsed = reviewElapsed,
+            SeparationElapsed = separationElapsed,
+            InputStrategy = inputStrategy
         };
         var result = new AudioToPianoTranscriptionResult(arrangement, diagnostics)
         {
@@ -287,6 +347,31 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         };
         Report(progress, AudioToPianoTranscriptionStage.Completed, 1d, "Piano version created.");
         return result;
+    }
+
+    private static bool ShouldUseSourceSeparation(string path, AudioToPianoTranscriptionOptions options)
+    {
+        if (options.SourceSeparation is not null)
+            return options.SourceSeparation.Enabled;
+
+        var disabled = Environment.GetEnvironmentVariable("ROBLOXPIANO_DISABLE_SOURCE_SEPARATION");
+        if (disabled is not null && (disabled.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || disabled.Equals("true", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var forced = Environment.GetEnvironmentVariable("ROBLOXPIANO_ENABLE_SOURCE_SEPARATION");
+        if (forced is not null && (forced.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || forced.Equals("true", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        // Keep deterministic/offline CI fixtures unchanged while making the normal desktop MP3 path
+        // melody-first. WAV remains available for synthetic/reference fixtures unless explicitly enabled.
+        var isCi = Environment.GetEnvironmentVariable("CI")?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
+        return !isCi && Path.GetExtension(path).Equals(".mp3", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FormatReviewRegionReason(AudioTranscriptionReviewRegion region)
