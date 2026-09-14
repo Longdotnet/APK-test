@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.65
+version: 0.40.66
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,25 +15,24 @@ SHA256: `{{SHA256}}`
 - **Support Bundle** remains the preferred way to preserve correlated Runtime Input and client diagnostic evidence when troubleshooting playback.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Audio-to-Piano OSS Phase 58 — adaptive full-song density
+## Audio-to-Piano OSS Phase 59 — section-aware quality calibration
 
-- Dense mixed-audio clusters no longer fill every available Roblox chord slot with weak accompaniment merely because the hard cap has room.
-- Phase-57 confidence-gated melody protection remains authoritative inside the arranger; adaptive density only filters non-melody accompaniment when a cluster already exceeds the configured hard cap.
-- Accompaniment must pass conservative absolute and relative Basic Pitch activation floors before consuming a remaining slot. Sparse verse/arpeggio clusters at or below the hard cap are never thinned.
-- Strong dense harmony can still fill the configured cap, while weak bleed/harmonic clutter is discarded before canonical `PerformanceTrack` creation.
-- `AdaptiveDensityDrops` exposes removals beyond mandatory hard-cap overflow; callers may disable adaptive density for fixed-cap parity/debugging.
-- Regression coverage protects sparse-section retention, weak-clutter reduction, strong-harmony retention, disabled-policy parity and invalid-threshold fail-closed behavior.
+- Melody continuity across adjacent onset clusters now has a relative confidence guard: a nearby but materially weaker voice cannot capture the protected melody solely because it is closer in pitch to the previous section.
+- The continuity guard remains permissive enough for credible melodic motion and exposes `MelodyContinuityConfidenceRejects` when the confidence gate changes the old proximity-only choice.
+- Adaptive accompaniment density is now calibrated against the strongest non-melody accompaniment rather than the protected melody. A dominant vocal/melody activation can no longer raise the relative threshold so high that moderate but coherent harmony is discarded.
+- A deterministic full-song section corpus covers sparse verse, arpeggio/transition, dense chorus, dominant-melody harmony and weak mixed-audio clutter. The gate requires complete labeled melody retention, complete labeled strong-harmony retention and complete labeled clutter suppression for the fixture.
+- Existing hard density caps, sparse-section no-thinning behavior, octave/range policy, note timing/duration, same-key ownership repair and canonical `PerformanceTrack` output remain deterministic.
 
 ## OSS / packaging boundary
 
-- Spotify Basic Pitch remains the transcription/model-semantics source; decoded note amplitude in the 0..1 range is reused as bounded deterministic evidence for accompaniment selection.
+- Spotify Basic Pitch remains the transcription/model-semantics source. Its documented mixed/polyphonic limitations are handled with deterministic confidence policy rather than pretending every simultaneous activation is piano truth.
 - Microsoft ONNX Runtime, NAudio and DryWetMIDI boundaries remain unchanged.
-- Phase 58 adds no database, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime, and introduces no new third-party license or NOTICE obligation.
+- Phase 59 adds no database, Python runtime, PyTorch, ffmpeg, Demucs model, new NuGet package or native runtime, and introduces no new third-party license or NOTICE obligation.
 
 ## Authority and quality contract
 
-- Adaptive density may decide which already-decoded accompaniment notes survive a dense cluster, but `RobloxPiano.Core.PerformanceTrack` remains canonical playback truth.
-- Generated piano targets recognizable melody, useful harmony, original timing and Roblox-playable density; it does not claim waveform-perfect equivalence to a mixed recording.
+- Section-aware confidence calibration only decides which already-decoded notes survive deterministic arrangement; `RobloxPiano.Core.PerformanceTrack` remains canonical playback truth.
+- Generated piano targets recognizable melody, useful harmony, original timing/sections and Roblox-playable density; it does not claim waveform-perfect equivalence to a mixed recording.
 - Low-confidence/lossy arrangements continue to surface review diagnostics instead of silently claiming high confidence.
 - Existing real-model Basic Pitch E2E, generated-MIDI parity, review persistence integrity and production smoke coverage remain gates.
 
@@ -45,6 +44,6 @@ SHA256: `{{SHA256}}`
 ## Client procedure
 
 1. Open **Create Piano Version** and choose owned/local audio you are authorized to use.
-2. Transcribe and preview normally. Sparse passages remain intact; dense mixed passages now prioritize the selected melody and strong harmony instead of using weak notes just to fill the chord cap.
+2. Transcribe and preview normally. Section transitions now resist weak continuity capture, while dominant melodies no longer starve moderate accompaniment under dense mixed-audio conditions.
 3. Review any surfaced low-confidence/lossy regions and Apply / Defer / Resume repairs as needed.
 4. Add the generated result to **Sheet Library** when satisfied. Roblox playback remains subject to the separate Runtime Input field gate.
