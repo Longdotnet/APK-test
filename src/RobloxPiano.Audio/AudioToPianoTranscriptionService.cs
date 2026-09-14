@@ -2,7 +2,8 @@ namespace RobloxPiano.Audio;
 
 public sealed record AudioSourceSeparationOptions(
     bool Enabled = true,
-    SectionAwareStemCompositionOptions? SectionAwareComposition = null);
+    SectionAwareStemCompositionOptions? SectionAwareComposition = null,
+    SparseHarmonySelectionOptions? SparseHarmony = null);
 
 public sealed record AudioToPianoTranscriptionOptions(
     AudioIngestOptions? Ingest = null,
@@ -20,6 +21,7 @@ public enum AudioToPianoTranscriptionStage
     Inference,
     Decode,
     HarmonicSuppression,
+    HarmonyExtraction,
     Arrange,
     Quality,
     Completed
@@ -67,9 +69,15 @@ public sealed record AudioToPianoTranscriptionDiagnostics(
     public TimeSpan SeparationElapsed { get; init; }
     public string InputStrategy { get; init; } = "full-mix";
     public SectionAwareStemCompositionDiagnostics? StemComposition { get; init; }
+    public SparseHarmonySelectionDiagnostics? SparseHarmony { get; init; }
+    public int HarmonyDecodedNotes { get; init; }
+    public TimeSpan HarmonyInferenceElapsed { get; init; }
+    public TimeSpan HarmonyDecodeElapsed { get; init; }
+    public TimeSpan HarmonySuppressionElapsed { get; init; }
+    public TimeSpan HarmonySelectionElapsed { get; init; }
     public bool RequiresReview => Quality.RequiresReview || ReviewRegions.Count != 0;
     public int NotesAfterSuppression => HarmonicSuppression.RetainedNotes;
-    public TimeSpan TotalElapsed => SeparationElapsed + IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + ArrangeElapsed + QualityElapsed + ReviewElapsed;
+    public TimeSpan TotalElapsed => SeparationElapsed + IngestElapsed + InferenceElapsed + DecodeElapsed + SuppressionElapsed + HarmonyInferenceElapsed + HarmonyDecodeElapsed + HarmonySuppressionElapsed + HarmonySelectionElapsed + ArrangeElapsed + QualityElapsed + ReviewElapsed;
 }
 
 public sealed record AudioToPianoTranscriptionResult(
@@ -82,8 +90,8 @@ public sealed record AudioToPianoTranscriptionResult(
 /// <summary>
 /// Production orchestration boundary for client-owned audio -> canonical Roblox piano PerformanceTrack.
 /// Full-song MP3/WAV input is separated before pitch transcription by default. The vocal stem stays authoritative,
-/// while sustained vocal-weak sections may admit restrained separated accompaniment so instrumental hooks are not
-/// erased. Basic Pitch and deterministic RobloxPiano post-processing still own note/performance truth.
+/// sustained vocal-weak sections may admit a pitch-guided instrumental lead, and the separated accompaniment is
+/// transcribed independently into sparse lead-protected harmony. Third-party separation never owns playable truth.
 /// </summary>
 public sealed class AudioToPianoTranscriptionService : IDisposable
 {
@@ -95,6 +103,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
     private readonly SectionAwareStemComposer sectionAwareStemComposer = new();
     private readonly BasicPitchNoteDecoder decoder = new();
     private readonly BasicPitchHarmonicSuppressor harmonicSuppressor = new();
+    private readonly SparseHarmonySelector sparseHarmonySelector = new();
     private readonly RobloxPianoArranger arranger = new();
     private readonly AudioTranscriptionQualityEvaluator qualityEvaluator = new();
     private readonly AudioTranscriptionReviewRegionAnalyzer reviewRegionAnalyzer = new();
@@ -127,6 +136,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         options ??= new AudioToPianoTranscriptionOptions();
 
         DemucsSeparatedStems? separated = null;
+        NormalizedAudio? separatedAccompaniment = null;
         var inputStrategy = "full-mix";
         var separationElapsed = TimeSpan.Zero;
         SectionAwareStemCompositionDiagnostics? stemComposition = null;
@@ -149,7 +159,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             Report(progress, AudioToPianoTranscriptionStage.Ingest, separated is null ? 0d : 0.10d,
                 separated is null
                     ? "Decoding and normalizing audio..."
-                    : "Decoding separated vocals and accompaniment for section-aware lead selection...");
+                    : "Decoding separated vocals and accompaniment for lead and harmony analysis...");
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             var ingestOptions = NormalizeIngestOptions(options.Ingest);
             NormalizedAudio audio;
@@ -162,6 +172,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
                 var vocals = ingest.DecodeFile(separated.VocalsPath, ingestOptions, cancellationToken);
                 var accompanimentPath = ResolveSeparatedAccompanimentPath(separated);
                 var accompaniment = ingest.DecodeFile(accompanimentPath, ingestOptions, cancellationToken);
+                separatedAccompaniment = accompaniment;
                 var composition = sectionAwareStemComposer.Compose(
                     vocals,
                     accompaniment,
@@ -181,7 +192,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
                     ? "Audio normalized for transcription."
                     : stemComposition?.UsedAccompanimentFallback == true
                         ? $"Lead source ready; recovered about {stemComposition.FallbackDuration.TotalSeconds:0.0}s of sustained instrumental sections."
-                        : "Lead-vocal stem is strong across the song; accompaniment fallback was not needed.");
+                        : "Lead-vocal stem is strong across the song; instrumental lead fallback was not needed.");
             return TranscribeNormalizedCore(
                 audio,
                 title ?? Path.GetFileNameWithoutExtension(path),
@@ -191,7 +202,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
                 cancellationToken,
                 inputStrategy,
                 separationElapsed,
-                stemComposition);
+                stemComposition,
+                separatedAccompaniment);
         }
         finally
         {
@@ -232,7 +244,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             cancellationToken,
             "stream",
             TimeSpan.Zero,
-            stemComposition: null);
+            stemComposition: null,
+            separatedAccompaniment: null);
     }
 
     public AudioToPianoTranscriptionResult TranscribeNormalized(
@@ -262,7 +275,8 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             cancellationToken,
             "normalized-input",
             TimeSpan.Zero,
-            stemComposition: null);
+            stemComposition: null,
+            separatedAccompaniment: null);
     }
 
     private AudioToPianoTranscriptionResult TranscribeNormalizedCore(
@@ -274,10 +288,13 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         CancellationToken cancellationToken,
         string inputStrategy,
         TimeSpan separationElapsed,
-        SectionAwareStemCompositionDiagnostics? stemComposition)
+        SectionAwareStemCompositionDiagnostics? stemComposition,
+        NormalizedAudio? separatedAccompaniment)
     {
         if (audio.SampleRate != BasicPitchInferenceService.RequiredSampleRate)
             throw new ArgumentException($"Audio-to-Piano requires {BasicPitchInferenceService.RequiredSampleRate} Hz normalized audio.", nameof(audio));
+        if (separatedAccompaniment is not null && separatedAccompaniment.SampleRate != audio.SampleRate)
+            throw new ArgumentException("Separated accompaniment must share the normalized Basic Pitch sample rate.", nameof(separatedAccompaniment));
 
         cancellationToken.ThrowIfCancellationRequested();
         Report(progress, AudioToPianoTranscriptionStage.Inference, InferenceStartFraction,
@@ -292,7 +309,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         var inferenceElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Decode, InferenceEndFraction, "Turning model activations into note events...");
+        Report(progress, AudioToPianoTranscriptionStage.Decode, InferenceEndFraction, "Turning model activations into lead-note events...");
         started = System.Diagnostics.Stopwatch.GetTimestamp();
         var decodedNotes = decoder.Decode(raw, options.Decoder, cancellationToken);
         var decodeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
@@ -300,21 +317,76 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             throw new InvalidDataException("Basic Pitch produced no playable note events for this audio.");
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.HarmonicSuppression, 0.78d, "Removing weak harmonic duplicates conservatively...");
+        Report(progress, AudioToPianoTranscriptionStage.HarmonicSuppression, 0.76d, "Removing weak harmonic duplicates from the lead conservatively...");
         started = System.Diagnostics.Stopwatch.GetTimestamp();
         var suppression = harmonicSuppressor.Suppress(decodedNotes, options.HarmonicSuppression, cancellationToken);
         var suppressionElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
         if (suppression.Notes.Count == 0)
             throw new InvalidDataException("Basic Pitch harmonic suppression removed every decoded note; review the source or suppression policy.");
 
+        IReadOnlyList<BasicPitchTranscribedNote> arrangementNotes = suppression.Notes;
+        SparseHarmonySelectionDiagnostics? sparseHarmonyDiagnostics = null;
+        var harmonyDecodedNotes = 0;
+        var harmonyInferenceElapsed = TimeSpan.Zero;
+        var harmonyDecodeElapsed = TimeSpan.Zero;
+        var harmonySuppressionElapsed = TimeSpan.Zero;
+        var harmonySelectionElapsed = TimeSpan.Zero;
+        if (separatedAccompaniment is not null && (options.SourceSeparation?.SparseHarmony?.Enabled ?? true))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, AudioToPianoTranscriptionStage.HarmonyExtraction, 0.80d,
+                "Listening to the separated accompaniment for sparse supporting harmony...");
+            started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var harmonyRaw = inference.Infer(separatedAccompaniment, progress: null, cancellationToken);
+            harmonyInferenceElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var harmonyDecoded = decoder.Decode(harmonyRaw, CreateHarmonyDecoderOptions(options.Decoder), cancellationToken);
+            harmonyDecodeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+            harmonyDecodedNotes = harmonyDecoded.Count;
+
+            if (harmonyDecoded.Count != 0)
+            {
+                started = System.Diagnostics.Stopwatch.GetTimestamp();
+                var harmonySuppression = harmonicSuppressor.Suppress(harmonyDecoded, options.HarmonicSuppression, cancellationToken);
+                harmonySuppressionElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+
+                started = System.Diagnostics.Stopwatch.GetTimestamp();
+                var harmony = sparseHarmonySelector.Select(
+                    suppression.Notes,
+                    harmonySuppression.Notes,
+                    options.SourceSeparation?.SparseHarmony,
+                    cancellationToken);
+                harmonySelectionElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+                sparseHarmonyDiagnostics = harmony.Diagnostics;
+
+                if (harmony.Notes.Count != 0)
+                {
+                    arrangementNotes = suppression.Notes
+                        .Concat(harmony.Notes)
+                        .OrderBy(note => note.Start)
+                        .ThenBy(note => note.MidiNote)
+                        .ThenBy(note => note.End)
+                        .ThenByDescending(note => note.Amplitude)
+                        .ToArray();
+                    inputStrategy += $":sparse-harmony={harmony.Notes.Count}";
+                }
+                else
+                {
+                    inputStrategy += ":sparse-harmony=0";
+                }
+            }
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Arrange, 0.84d, "Arranging notes for the Roblox piano range...");
+        Report(progress, AudioToPianoTranscriptionStage.Arrange, 0.88d, "Arranging protected melody plus sparse harmony for the Roblox piano range...");
         started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var arrangement = arranger.Arrange(title, suppression.Notes, options.Arrangement, cancellationToken);
+        var arrangement = arranger.Arrange(title, arrangementNotes, options.Arrangement, cancellationToken);
         var arrangeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
         cancellationToken.ThrowIfCancellationRequested();
-        Report(progress, AudioToPianoTranscriptionStage.Quality, 0.94d, "Checking confidence and review regions...");
+        Report(progress, AudioToPianoTranscriptionStage.Quality, 0.95d, "Checking confidence and review regions...");
         started = System.Diagnostics.Stopwatch.GetTimestamp();
         var quality = qualityEvaluator.Evaluate(
             audio.Duration,
@@ -329,7 +401,7 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         started = System.Diagnostics.Stopwatch.GetTimestamp();
         var reviewRegions = reviewRegionAnalyzer.Analyze(
             audio.Duration,
-            suppression.Notes,
+            arrangementNotes,
             arrangement.Track,
             options.ReviewRegions,
             cancellationToken);
@@ -370,11 +442,17 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
             ReviewElapsed = reviewElapsed,
             SeparationElapsed = separationElapsed,
             InputStrategy = inputStrategy,
-            StemComposition = stemComposition
+            StemComposition = stemComposition,
+            SparseHarmony = sparseHarmonyDiagnostics,
+            HarmonyDecodedNotes = harmonyDecodedNotes,
+            HarmonyInferenceElapsed = harmonyInferenceElapsed,
+            HarmonyDecodeElapsed = harmonyDecodeElapsed,
+            HarmonySuppressionElapsed = harmonySuppressionElapsed,
+            HarmonySelectionElapsed = harmonySelectionElapsed
         };
         var result = new AudioToPianoTranscriptionResult(arrangement, diagnostics)
         {
-            NoteEvidence = suppression.Notes
+            NoteEvidence = arrangementNotes
                 .OrderBy(note => note.Start)
                 .ThenBy(note => note.MidiNote)
                 .ThenBy(note => note.End)
@@ -385,13 +463,28 @@ public sealed class AudioToPianoTranscriptionService : IDisposable
         return result;
     }
 
+    private static BasicPitchNoteDecoderOptions CreateHarmonyDecoderOptions(BasicPitchNoteDecoderOptions? primary)
+    {
+        primary ??= new BasicPitchNoteDecoderOptions();
+        return new BasicPitchNoteDecoderOptions(
+            OnsetThreshold: Math.Max(0.56f, primary.OnsetThreshold),
+            FrameThreshold: Math.Max(0.36f, primary.FrameThreshold),
+            InferOnsets: primary.InferOnsets,
+            MinimumNoteLengthFrames: Math.Max(7, primary.MinimumNoteLengthFrames),
+            EnergyToleranceFrames: Math.Max(8, primary.EnergyToleranceFrames),
+            UseMelodiaRecovery: false,
+            IncludePitchBends: false,
+            MinimumFrequencyHz: Math.Max(65.41d, primary.MinimumFrequencyHz ?? 0d),
+            MaximumFrequencyHz: Math.Min(1046.50d, primary.MaximumFrequencyHz ?? double.MaxValue));
+    }
+
     private static string ResolveSeparatedAccompanimentPath(DemucsSeparatedStems separated)
     {
         var path = Path.Combine(separated.WorkingDirectory, "accompaniment.wav");
         if (!File.Exists(path))
         {
             throw new InvalidDataException(
-                "Spleeter completed without the expected accompaniment stem required for section-aware melody recovery.");
+                "Spleeter completed without the expected accompaniment stem required for section-aware melody recovery and sparse harmony.");
         }
 
         return path;
