@@ -1,6 +1,6 @@
 ---
 schema: 1
-version: 0.40.72
+version: 0.40.73
 ---
 # Roblox Piano v{{VERSION}}
 
@@ -15,23 +15,38 @@ SHA256: `{{SHA256}}`
 - **Support Bundle** remains the preferred playback/support evidence export path.
 - Legacy and **Legacy x2** remain protected regression/perceptual baselines.
 
-## Full-song MP3 -> recognizable piano
+## Full-song MP3/WAV -> recognizable piano
 
-- Normal desktop MP3 Create Piano Version now uses `sherpa-onnx v1.13.8` with the Spleeter 2-stem FP16 vocal model before Basic Pitch, replacing the multi-minute CPU HTDemucs path.
-- Separated vocals are fed directly into Basic Pitch; accompaniment is not reintroduced into lead-note truth, so drums/bass cannot dominate the generated melody.
+- Normal desktop MP3/WAV Create Piano Version uses `sherpa-onnx v1.13.8` with the Spleeter 2-stem FP16 model before Basic Pitch.
+- The vocal stem remains authoritative for lead melody. The separated accompaniment is admitted only across sustained vocal-weak regions so instrumental intros, outros and hooks are less likely to disappear.
+- Section fallback uses 400 ms analysis windows and requires at least two consecutive eligible windows (about 0.8 seconds). Accompaniment is restrained to 0.24 gain, with 80 ms attack, 140 ms release and 0.98 peak protection.
+- Short breaths and isolated accompaniment/percussion bursts do not unlock fallback. There is no wholesale raw-full-mix fallback.
+- Basic Pitch still runs once over the composed melody-focused source; canonical `PerformanceTrack` remains the playback truth.
 - First use downloads the pinned Windows sherpa-onnx runtime and Spleeter FP16 model archive into local caches. No Python, PyTorch, Node, Visual Studio, .NET SDK or manual model setup is required.
-- The Spleeter archive is fail-closed pinned to the actual GitHub release asset: 35,271,738 bytes / SHA-256 `d54561979bd2e08a51e7dbd99ac36bb47564e089eefd403636dbca93e811bba2`.
-- This release fixes a first-run blocker where sherpa-onnx's companion `checksum.txt` advertises stale bytes (`c6c5...`) that no longer match the official release asset served by GitHub.
-## Quality evidence
+- The Spleeter archive remains fail-closed pinned to 35,271,738 bytes / SHA-256 `d54561979bd2e08a51e7dbd99ac36bb47564e089eefd403636dbca93e811bba2`.
 
-- On a real 17.3-second CC0 mixed-song fixture from Free Music Archive, raw full-mix Basic Pitch produced 20 events and 3 low-activation review regions.
-- Warm-cache Spleeter vocals-first reduced that to 1 review region while preserving the full 17.3-second timeline, with 28 decoded/events in the vocals-only path.
-- Spleeter separation measured about 2-5 seconds on the local 8-logical-CPU Windows machine, versus about 108 seconds for CPU HTDemucs on the same song. The production separator therefore stays in the practical client latency class while still improving the low-confidence signal over raw full mix.
+## Musical quality evidence
+
+- Pinned real Basic Pitch A/B on separated melody/hook evidence keeps vocal melody identity at **3/3 -> 3/3** while recovering instrumental hook pitches from **0/2 -> 2/2**.
+- The same A/B grows decoded notes from **3 -> 7**, within the bounded anti-note-spray budget, and enables fallback for only **6/12 windows (2.4 s of a 4.8 s fixture)** rather than contaminating the whole song with accompaniment.
+- Existing real 17.3-second CC0 mixed-song evidence remains protected: the Spleeter-first path previously reduced low-activation review regions from 3 to 1 while preserving the full timeline.
+- Spleeter separation remains roughly 2-5 seconds warm-cache on the measured 8-logical-CPU Windows machine, versus roughly 108 seconds for the earlier CPU HTDemucs path.
+
+## Diagnostics and cost
+
+- Create Piano diagnostics now identify `vocal-priority+section-fallback`, fallback windows/duration/gain and separation elapsed time without logging private audio.
+- This release adds no separator model/runtime download and no additional Basic Pitch inference. It does decode the existing accompaniment stem and performs one bounded O(N) section-composition pass before inference.
+- For long songs the extra managed PCM working set is visible: at 22,050 Hz mono float, each four-minute full-length buffer is about 20 MiB. No-fallback composition reuses the vocal buffer; active fallback needs an additional output buffer.
+
 ## Validation
 
-- Audio OSS gate validates pinned Basic Pitch model readiness, stem fusion, decode/arrange regressions, generated MIDI parity and real-model quality evidence.
-- Production gate validates the Windows client build, self-contained single-EXE publish, STA UI startup, Windows input ABI and packaged audio model/ONNX runtime smoke tests.
+- Audio OSS gate validates pinned Basic Pitch readiness, decode/arrange regressions, generated MIDI parity, section-gating safety and the real-model hook-recovery A/B.
+- Production gate validates deterministic regressions, Windows client build, self-contained single-EXE publish, clean-machine smoke, STA UI startup, Windows input ABI and packaged Basic Pitch/ONNX smoke tests.
+
+## Remaining Phase-0 quality gap
+
+This is a production recognizability improvement, not the end of Phase 0. Broader legally usable full-song coverage is still required, especially weak-vocal, percussion-heavy, bass-heavy and fully instrumental songs. Instrumental songs may need deterministic dominant-melody source selection rather than treating accompaniment as a generic fallback.
 
 ## Troubleshooting
 
-Create Piano Version diagnostics report the input strategy and separation elapsed time without logging private audio. If source separation fails, the operation remains fail-visible instead of silently reverting to dense raw-full-mix transcription.
+Source-separation or accompaniment-stem failures remain fail-visible instead of silently reverting to dense raw-full-mix transcription.
