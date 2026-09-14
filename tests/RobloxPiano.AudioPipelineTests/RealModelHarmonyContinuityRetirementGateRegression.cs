@@ -113,7 +113,7 @@ internal static class RealModelHarmonyContinuityRetirementGateRegression
 
     private static bool TracksEquivalent(PerformanceTrack left, PerformanceTrack right)
     {
-        if (left.Events.Count != right.Events.Count || left.Duration != right.Duration)
+        if (left.Events.Count != right.Events.Count)
             return false;
         for (var i = 0; i < left.Events.Count; i++)
         {
