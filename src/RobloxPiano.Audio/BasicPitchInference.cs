@@ -146,9 +146,19 @@ public sealed class BasicPitchInferenceService : IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         var plan = BasicPitchChunkPlan.Create(audio.Samples.Length);
-        var notes = new List<float>();
-        var onsets = new List<float>();
-        var contours = new List<float>();
+        var expectedFrames = checked((int)Math.Floor(
+            audio.Samples.LongLength * (AnnotationFramesPerSecond / (double)RequiredSampleRate)));
+        if (expectedFrames <= 0)
+            throw new InvalidDataException("Basic Pitch input is too short to produce an annotation frame.");
+
+        // Allocate the authoritative final tensors once. The previous implementation accumulated
+        // the entire song in three List<float> instances and then copied all of them into three new
+        // arrays at the end, temporarily doubling the managed activation footprint on long songs.
+        // Each bounded ONNX batch is now copied directly into its final destination and disposed.
+        var notes = new float[checked(expectedFrames * NoteBins)];
+        var onsets = new float[checked(expectedFrames * NoteBins)];
+        var contours = new float[checked(expectedFrames * ContourBins)];
+        var writtenFrames = 0;
         progress?.Report(new BasicPitchInferenceProgress(0, plan.ChunkCount));
 
         for (var firstChunk = 0; firstChunk < plan.ChunkCount; firstChunk += options.MaxChunksPerBatch)
@@ -164,24 +174,30 @@ public sealed class BasicPitchInferenceService : IDisposable
             if (outputs.Length != 3)
                 throw new InvalidDataException($"Basic Pitch returned {outputs.Length} outputs; expected 3.");
 
-            AppendUnwrapped(outputs[0], batchSize, NoteBins, notes);
-            AppendUnwrapped(outputs[1], batchSize, NoteBins, onsets);
-            AppendUnwrapped(outputs[2], batchSize, ContourBins, contours);
+            var noteFrames = CopyUnwrapped(outputs[0], batchSize, NoteBins, notes, writtenFrames);
+            var onsetFrames = CopyUnwrapped(outputs[1], batchSize, NoteBins, onsets, writtenFrames);
+            var contourFrames = CopyUnwrapped(outputs[2], batchSize, ContourBins, contours, writtenFrames);
+            if (noteFrames != onsetFrames || noteFrames != contourFrames)
+            {
+                throw new InvalidDataException(
+                    $"Basic Pitch output frame counts diverged: notes={noteFrames}, onsets={onsetFrames}, contours={contourFrames}.");
+            }
+            writtenFrames = noteFrames;
 
             var completedChunks = checked(firstChunk + batchSize);
             progress?.Report(new BasicPitchInferenceProgress(completedChunks, plan.ChunkCount));
         }
 
-        var expectedFrames = Math.Min(
-            checked((int)Math.Floor(audio.Samples.LongLength * (AnnotationFramesPerSecond / (double)RequiredSampleRate))),
-            notes.Count / NoteBins);
-        if (expectedFrames <= 0)
-            throw new InvalidDataException("Basic Pitch input is too short to produce an annotation frame.");
+        if (writtenFrames != expectedFrames)
+        {
+            throw new InvalidDataException(
+                $"Basic Pitch unwrapped output contains {writtenFrames} frames; expected exactly {expectedFrames}.");
+        }
 
         return new BasicPitchRawOutput(
-            Trim(notes, expectedFrames, NoteBins),
-            Trim(onsets, expectedFrames, NoteBins),
-            Trim(contours, expectedFrames, ContourBins));
+            new BasicPitchTensor(notes, expectedFrames, NoteBins),
+            new BasicPitchTensor(onsets, expectedFrames, NoteBins),
+            new BasicPitchTensor(contours, expectedFrames, ContourBins));
     }
 
     private void ValidateModelContract()
@@ -213,7 +229,12 @@ public sealed class BasicPitchInferenceService : IDisposable
         return input;
     }
 
-    private static void AppendUnwrapped(OrtValue value, int expectedBatch, int expectedBins, List<float> destination)
+    private static int CopyUnwrapped(
+        OrtValue value,
+        int expectedBatch,
+        int expectedBins,
+        float[] destination,
+        int destinationFrame)
     {
         var typeAndShape = value.GetTensorTypeAndShape();
         var shape = typeAndShape.Shape;
@@ -223,35 +244,30 @@ public sealed class BasicPitchInferenceService : IDisposable
         var shortFrames = checked((int)shape[1]);
         if (shortFrames <= OverlappingFrames || (OverlappingFrames & 1) != 0)
             throw new InvalidDataException($"Basic Pitch output has invalid time dimension {shortFrames}.");
+        if (destination.Length % expectedBins != 0)
+            throw new InvalidDataException("Basic Pitch destination tensor shape is inconsistent with its bin count.");
 
         var trim = OverlappingFrames / 2;
-        var usableFrames = shortFrames - OverlappingFrames;
         var source = value.GetTensorDataAsSpan<float>();
         var expectedElements = checked(expectedBatch * shortFrames * expectedBins);
         if (source.Length != expectedElements)
             throw new InvalidDataException($"Basic Pitch tensor contains {source.Length} values; expected {expectedElements}.");
 
-        destination.EnsureCapacity(checked(destination.Count + expectedBatch * usableFrames * expectedBins));
-        for (var batch = 0; batch < expectedBatch; batch++)
+        var destinationFrames = destination.Length / expectedBins;
+        for (var batch = 0; batch < expectedBatch && destinationFrame < destinationFrames; batch++)
         {
             var batchOffset = checked(batch * shortFrames * expectedBins);
-            for (var frame = trim; frame < shortFrames - trim; frame++)
+            for (var frame = trim; frame < shortFrames - trim && destinationFrame < destinationFrames; frame++)
             {
-                var offset = checked(batchOffset + frame * expectedBins);
-                for (var bin = 0; bin < expectedBins; bin++)
-                    destination.Add(source[offset + bin]);
+                var sourceOffset = checked(batchOffset + frame * expectedBins);
+                var destinationOffset = checked(destinationFrame * expectedBins);
+                source.Slice(sourceOffset, expectedBins)
+                    .CopyTo(destination.AsSpan(destinationOffset, expectedBins));
+                destinationFrame++;
             }
         }
-    }
 
-    private static BasicPitchTensor Trim(List<float> source, int frames, int bins)
-    {
-        var count = checked(frames * bins);
-        if (source.Count < count)
-            throw new InvalidDataException($"Basic Pitch unwrapped output contains {source.Count} values; expected at least {count}.");
-        var values = new float[count];
-        source.CopyTo(0, values, 0, count);
-        return new BasicPitchTensor(values, frames, bins);
+        return destinationFrame;
     }
 
     public void Dispose()
