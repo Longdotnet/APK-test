@@ -1,7 +1,8 @@
 using System.Diagnostics;
-using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace RobloxPiano.Audio;
 
@@ -38,24 +39,34 @@ internal sealed class DemucsSeparatedStems : IDisposable
 }
 
 /// <summary>
-/// Compatibility-named production adapter that now uses the CPU-only demucs-native-rs Windows build.
-/// The previous demucs-rs Vulkan release stalled for more than 30 minutes on a real client machine
-/// without producing a stem, so production deliberately avoids Vulkan here.
+/// Compatibility-named production adapter for the fast source-separation path.
+/// The implementation deliberately uses sherpa-onnx Spleeter 2-stem FP16 instead of HTDemucs:
+/// the client needs a clean lead-vocal stem quickly, not studio-grade four-stem separation.
 /// </summary>
 internal static class DemucsRsStemSeparator
 {
-    internal const string EngineVersion = "cpu-native-0.1.0-rc3";
-    internal const string ModelId = "htdemucs";
-    internal const string EngineArchiveSha256 = "B7806BD39A9ABEB39E2F9254A91539B80EF9A0B148B95DE405ED6683E4A13394";
-    internal const string ModelSha256 = "8193504CDFB3943ADAF039B8ACB524A46E87EBF232C383AC7A32C80A6578423E";
-    internal const long ModelBytes = 84_030_696;
+    internal const string EngineVersion = "sherpa-onnx-1.13.8";
+    internal const string ModelId = "spleeter-2stems-fp16-vocals-only";
 
-    private const string EngineArchiveUrl = "https://github.com/eclipse005/demucs-native-rs/releases/download/v0.1.0-rc3/demucs-native-v0.1.0-rc3-windows-x64-cpu.zip";
-    private const string ModelUrl = "https://huggingface.co/set-soft/audio_separation/resolve/main/Demucs/htdemucs.safetensors";
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private const string EngineArchiveName = "sherpa-onnx-v1.13.8-win-x64-shared-MD-Release-no-tts.tar.bz2";
+    private const string EngineArchiveUrl =
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/" + EngineArchiveName;
+    private const long EngineArchiveBytes = 19_164_933;
+    private const string EngineArchiveSha256 =
+        "876E6B89B8CF84A3A1B375A397507F2CFE9C227C2A945411A11A668475FCB5D3";
+
+    private const string ModelArchiveName = "sherpa-onnx-spleeter-2stems-fp16.tar.bz2";
+    private const string ModelArchiveUrl =
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/" + ModelArchiveName;
+    private const string ModelChecksumUrl =
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/checksum.txt";
+    private const long ModelArchiveBytes = 35_271_738;
+
+    private const int SeparatorSampleRate = 44_100;
+    private const double TargetRealTimeFactor = 0.09d;
+    private static readonly TimeSpan MaximumSeparationRuntime = TimeSpan.FromSeconds(45);
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(3) };
     private static readonly SemaphoreSlim InstallGate = new(1, 1);
-    private static readonly TimeSpan MaximumSeparationRuntime = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan MaximumNoCpuProgress = TimeSpan.FromMinutes(2);
 
     public static DemucsSeparatedStems Separate(
         string sourcePath,
@@ -73,54 +84,57 @@ internal static class DemucsRsStemSeparator
         if (!File.Exists(fullPath))
             throw new FileNotFoundException("Audio selected for source separation was not found.", fullPath);
         if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
-            throw new PlatformNotSupportedException("CPU source separation requires Windows x64.");
+            throw new PlatformNotSupportedException("Fast source separation requires Windows x64.");
 
-        status?.Invoke("Preparing the CPU-only Demucs separator...");
-        var executable = await EnsureEngineAsync(status, cancellationToken).ConfigureAwait(false);
-        var modelPath = await EnsureModelAsync(status, cancellationToken).ConfigureAwait(false);
+        status?.Invoke("Preparing fast Spleeter vocal separation...");
+        var runtime = await EnsureRuntimeAsync(status, cancellationToken).ConfigureAwait(false);
 
-        var work = Path.Combine(Path.GetTempPath(), "RobloxPiano", "demucs-cpu", Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(
+            Path.GetTempPath(),
+            "RobloxPiano",
+            "spleeter-fast",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+
         var inputWav = Path.Combine(work, "input.wav");
-        var output = Path.Combine(work, "stems");
-        Directory.CreateDirectory(output);
+        var vocalsWav = Path.Combine(work, "vocals.wav");
+        var accompanimentWav = Path.Combine(work, "accompaniment.wav");
+        var silentOtherWav = Path.Combine(work, "silent-other.wav");
 
         try
         {
-            status?.Invoke("Decoding the song to a local WAV for CPU separation...");
-            WriteInputWav(fullPath, inputWav, cancellationToken);
+            status?.Invoke("Decoding MP3 to 44.1 kHz stereo for fast separation...");
+            var sourceDuration = WriteInputWav(fullPath, inputWav, cancellationToken);
 
-            status?.Invoke("Loading HTDemucs on CPU...");
-            var start = new ProcessStartInfo(executable)
+            var threadCount = ResolveThreadCount();
+            status?.Invoke(
+                $"Fast Spleeter separation started on CPU ({threadCount} thread(s)); target is about 20 seconds for a 4-minute song...");
+
+            var start = new ProcessStartInfo(runtime.ExecutablePath)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
-                WorkingDirectory = work
+                WorkingDirectory = Path.GetDirectoryName(runtime.ExecutablePath)!
             };
-            start.ArgumentList.Add("-i");
-            start.ArgumentList.Add(inputWav);
-            start.ArgumentList.Add("-o");
-            start.ArgumentList.Add(output);
-            start.ArgumentList.Add("-m");
-            start.ArgumentList.Add(ModelId);
-            start.ArgumentList.Add("--model-dir");
-            start.ArgumentList.Add(Path.GetDirectoryName(modelPath)!);
-            start.ArgumentList.Add("--device");
-            start.ArgumentList.Add("cpu");
-            start.ArgumentList.Add("-s");
-            start.ArgumentList.Add("vocals,other");
+            start.ArgumentList.Add($"--spleeter-vocals={runtime.VocalsModelPath}");
+            start.ArgumentList.Add($"--spleeter-accompaniment={runtime.AccompanimentModelPath}");
+            start.ArgumentList.Add($"--num-threads={threadCount}");
+            start.ArgumentList.Add("--provider=cpu");
+            start.ArgumentList.Add($"--input-wav={inputWav}");
+            start.ArgumentList.Add($"--output-vocals-wav={vocalsWav}");
+            start.ArgumentList.Add($"--output-accompaniment-wav={accompanimentWav}");
 
             using var process = Process.Start(start)
-                ?? throw new InvalidOperationException("Could not start the CPU Demucs separator process.");
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+                ?? throw new InvalidOperationException("Could not start the fast Spleeter separator process.");
             using var registration = cancellationToken.Register(() => KillProcessTreeBestEffort(process));
 
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
             var stopwatch = Stopwatch.StartNew();
-            var lastCpu = TryGetCpu(process);
-            var lastCpuProgressAt = stopwatch.Elapsed;
-            status?.Invoke("CPU stem separation started...");
+            var expected = TimeSpan.FromSeconds(
+                Math.Max(2d, sourceDuration.TotalSeconds * TargetRealTimeFactor));
 
             while (!process.HasExited)
             {
@@ -129,27 +143,16 @@ internal static class DemucsRsStemSeparator
                 {
                     KillProcessTreeBestEffort(process);
                     throw new TimeoutException(
-                        $"CPU source separation exceeded {MaximumSeparationRuntime.TotalMinutes:0} minutes and was stopped.");
+                        $"Fast vocal separation exceeded {MaximumSeparationRuntime.TotalSeconds:0} seconds and was stopped because it missed the Create Piano performance budget.");
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
                 if (process.HasExited)
                     break;
 
-                var currentCpu = TryGetCpu(process);
-                if (currentCpu > lastCpu + TimeSpan.FromMilliseconds(100))
-                {
-                    lastCpu = currentCpu;
-                    lastCpuProgressAt = stopwatch.Elapsed;
-                }
-                else if (stopwatch.Elapsed - lastCpuProgressAt >= MaximumNoCpuProgress)
-                {
-                    KillProcessTreeBestEffort(process);
-                    throw new TimeoutException(
-                        "CPU source separation stopped consuming CPU for two minutes and was terminated as stalled.");
-                }
-
-                status?.Invoke($"CPU stem separation is active - elapsed {FormatElapsed(stopwatch.Elapsed)}...");
+                var estimated = Math.Min(95d, 100d * stopwatch.Elapsed.TotalSeconds / expected.TotalSeconds);
+                status?.Invoke(
+                    $"Fast vocal separation ~{estimated:0}% (estimate) - elapsed {stopwatch.Elapsed.TotalSeconds:0}s...");
             }
 
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
@@ -161,106 +164,84 @@ internal static class DemucsRsStemSeparator
             {
                 var detail = Tail(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr, 6000);
                 throw new InvalidOperationException(
-                    $"CPU Demucs source separation failed with exit code {process.ExitCode}. {detail}".Trim());
+                    $"Spleeter source separation failed with exit code {process.ExitCode}. {detail}".Trim());
             }
 
-            var vocals = Path.Combine(output, "vocals.wav");
-            var other = Path.Combine(output, "other.wav");
-            if (!File.Exists(vocals) || !File.Exists(other))
-            {
-                throw new InvalidDataException(
-                    "CPU Demucs completed without producing the expected vocals/other stems.");
-            }
+            ValidateSeparatedVocals(inputWav, vocalsWav);
+            CreateMinimalSilentOther(silentOtherWav);
 
-            status?.Invoke("CPU stems ready. Building the piano melody...");
-            return new DemucsSeparatedStems(work, vocals, other);
+            status?.Invoke(
+                $"Fast vocal stem ready in {stopwatch.Elapsed.TotalSeconds:0.0}s. Building the piano melody...");
+            return new DemucsSeparatedStems(work, vocalsWav, silentOtherWav);
         }
         catch
         {
-            try
-            {
-                if (Directory.Exists(work))
-                    Directory.Delete(work, recursive: true);
-            }
-            catch
-            {
-                // Preserve the original separation failure.
-            }
+            TryDeleteDirectory(work);
             throw;
         }
     }
 
-    private static void WriteInputWav(string sourcePath, string targetPath, CancellationToken cancellationToken)
+    private static TimeSpan WriteInputWav(
+        string sourcePath,
+        string targetPath,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var reader = new AudioFileReader(sourcePath);
-        using var writer = new WaveFileWriter(targetPath, reader.WaveFormat);
-        var buffer = new byte[128 * 1024];
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var read = reader.Read(buffer, 0, buffer.Length);
-            if (read == 0)
-                break;
-            writer.Write(buffer, 0, read);
-        }
+        if (reader.WaveFormat.Channels is < 1 or > 2)
+            throw new InvalidDataException(
+                $"Fast source separation supports mono/stereo audio; source reports {reader.WaveFormat.Channels} channels.");
+
+        ISampleProvider samples = reader;
+        if (samples.WaveFormat.Channels == 1)
+            samples = new MonoToStereoSampleProvider(samples);
+        if (samples.WaveFormat.SampleRate != SeparatorSampleRate)
+            samples = new WdlResamplingSampleProvider(samples, SeparatorSampleRate);
+
+        WaveFileWriter.CreateWaveFile16(targetPath, samples);
+        cancellationToken.ThrowIfCancellationRequested();
+        return reader.TotalTime;
     }
 
-    private static async Task<string> EnsureEngineAsync(Action<string>? status, CancellationToken cancellationToken)
+    private static async Task<RuntimeFiles> EnsureRuntimeAsync(
+        Action<string>? status,
+        CancellationToken cancellationToken)
     {
-        var overridePath = Environment.GetEnvironmentVariable("ROBLOXPIANO_DEMUCS_CPU_EXE");
-        if (!string.IsNullOrWhiteSpace(overridePath))
-        {
-            var fullOverride = Path.GetFullPath(overridePath);
-            if (!File.Exists(fullOverride))
-                throw new FileNotFoundException("ROBLOXPIANO_DEMUCS_CPU_EXE points to a missing executable.", fullOverride);
-            return fullOverride;
-        }
-
         var root = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RobloxPiano",
             "tools",
-            "demucs-native",
-            $"v{EngineVersion}");
-        var executable = Path.Combine(root, "demucs-native.exe");
-        if (File.Exists(executable))
-            return executable;
+            "sherpa-onnx",
+            "v1.13.8");
+        var modelRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RobloxPiano",
+            "models",
+            "spleeter-2stems-fp16");
+
+        var existing = TryResolveRuntime(root, modelRoot);
+        if (existing is not null)
+            return existing;
 
         await InstallGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (File.Exists(executable))
-                return executable;
+            existing = TryResolveRuntime(root, modelRoot);
+            if (existing is not null)
+                return existing;
 
             Directory.CreateDirectory(root);
-            status?.Invoke("Downloading the pinned CPU separator (one-time setup)...");
-            var archiveBytes = await Http.GetByteArrayAsync(EngineArchiveUrl, cancellationToken).ConfigureAwait(false);
-            var actualHash = Convert.ToHexString(SHA256.HashData(archiveBytes));
-            if (!actualHash.Equals(EngineArchiveSha256, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidDataException(
-                    $"CPU separator provenance check failed. Expected SHA-256 {EngineArchiveSha256}, got {actualHash}.");
-            }
+            Directory.CreateDirectory(modelRoot);
 
-            var archivePath = Path.Combine(root, $"demucs-native-{Guid.NewGuid():N}.zip");
-            var temporaryExe = Path.Combine(root, $"demucs-native-{Guid.NewGuid():N}.exe");
-            try
-            {
-                await File.WriteAllBytesAsync(archivePath, archiveBytes, cancellationToken).ConfigureAwait(false);
-                using var archive = ZipFile.OpenRead(archivePath);
-                var entry = archive.Entries.SingleOrDefault(item =>
-                    Path.GetFileName(item.FullName).Equals("demucs-native.exe", StringComparison.OrdinalIgnoreCase))
-                    ?? throw new InvalidDataException("Pinned CPU separator archive does not contain demucs-native.exe.");
-                entry.ExtractToFile(temporaryExe, overwrite: true);
-                File.Move(temporaryExe, executable, overwrite: true);
-            }
-            finally
-            {
-                TryDelete(archivePath);
-                TryDelete(temporaryExe);
-            }
+            status?.Invoke("Downloading fast sherpa-onnx Windows runtime (one-time setup)...");
+            await InstallEngineAsync(root, cancellationToken).ConfigureAwait(false);
 
-            return executable;
+            status?.Invoke("Downloading Spleeter FP16 vocal model (one-time setup)...");
+            await InstallModelsAsync(modelRoot, cancellationToken).ConfigureAwait(false);
+
+            return TryResolveRuntime(root, modelRoot)
+                ?? throw new InvalidDataException(
+                    "Fast source-separation runtime installed without the expected executable/models.");
         }
         finally
         {
@@ -268,76 +249,269 @@ internal static class DemucsRsStemSeparator
         }
     }
 
-    private static async Task<string> EnsureModelAsync(Action<string>? status, CancellationToken cancellationToken)
+    private static RuntimeFiles? TryResolveRuntime(string engineRoot, string modelRoot)
     {
-        var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "demucs-rs");
-        Directory.CreateDirectory(root);
-        var path = Path.Combine(root, "htdemucs.safetensors");
-        if (HasExpectedModelIdentity(path))
-            return path;
+        var executable = Directory.Exists(engineRoot)
+            ? Directory.EnumerateFiles(
+                    engineRoot,
+                    "sherpa-onnx-offline-source-separation.exe",
+                    SearchOption.AllDirectories)
+                .FirstOrDefault()
+            : null;
+        var vocals = Directory.Exists(modelRoot)
+            ? Directory.EnumerateFiles(
+                    modelRoot,
+                    "vocals.fp16.onnx",
+                    SearchOption.AllDirectories)
+                .FirstOrDefault()
+            : null;
+        var accompaniment = Directory.Exists(modelRoot)
+            ? Directory.EnumerateFiles(
+                    modelRoot,
+                    "accompaniment.fp16.onnx",
+                    SearchOption.AllDirectories)
+                .FirstOrDefault()
+            : null;
 
-        TryDelete(path);
-        var temporary = Path.Combine(root, $"htdemucs-{Guid.NewGuid():N}.tmp");
-        status?.Invoke("Downloading the pinned HTDemucs model (one-time setup)...");
+        if (executable is null || vocals is null || accompaniment is null)
+            return null;
+
+        if (new FileInfo(vocals).Length < 15_000_000
+            || new FileInfo(accompaniment).Length < 15_000_000)
+        {
+            return null;
+        }
+
+        return new RuntimeFiles(executable, vocals, accompaniment);
+    }
+
+    private static async Task InstallEngineAsync(
+        string root,
+        CancellationToken cancellationToken)
+    {
+        var archivePath = Path.Combine(
+            Path.GetDirectoryName(root)!,
+            $"{EngineArchiveName}.{Guid.NewGuid():N}.tmp");
         try
         {
-            await using (var source = await Http.GetStreamAsync(ModelUrl, cancellationToken).ConfigureAwait(false))
-            await using (var destination = new FileStream(
-                temporary,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                128 * 1024,
-                useAsync: true))
-            {
-                await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
-            }
+            await DownloadToFileAsync(
+                EngineArchiveUrl,
+                archivePath,
+                EngineArchiveBytes,
+                EngineArchiveSha256,
+                cancellationToken).ConfigureAwait(false);
 
-            if (!HasExpectedModelIdentity(temporary))
+            TryDeleteDirectory(root);
+            Directory.CreateDirectory(root);
+            await ExtractTarBz2Async(archivePath, root, cancellationToken).ConfigureAwait(false);
+
+            if (!Directory.EnumerateFiles(
+                    root,
+                    "sherpa-onnx-offline-source-separation.exe",
+                    SearchOption.AllDirectories).Any())
             {
                 throw new InvalidDataException(
-                    $"HTDemucs model provenance check failed. Expected {ModelBytes} bytes / SHA-256 {ModelSha256}.");
+                    "Pinned sherpa-onnx archive does not contain sherpa-onnx-offline-source-separation.exe.");
             }
-
-            File.Move(temporary, path, overwrite: true);
-            return path;
         }
         finally
         {
-            TryDelete(temporary);
+            TryDelete(archivePath);
         }
     }
 
-    private static bool HasExpectedModelIdentity(string path)
+    private static async Task InstallModelsAsync(
+        string root,
+        CancellationToken cancellationToken)
     {
+        var archivePath = Path.Combine(
+            Path.GetDirectoryName(root)!,
+            $"{ModelArchiveName}.{Guid.NewGuid():N}.tmp");
         try
         {
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length != ModelBytes)
-                return false;
-            using var stream = File.OpenRead(path);
-            var actual = Convert.ToHexString(SHA256.HashData(stream));
-            return actual.Equals(ModelSha256, StringComparison.OrdinalIgnoreCase);
+            var expectedHash = await TryGetOfficialModelArchiveHashAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await DownloadToFileAsync(
+                ModelArchiveUrl,
+                archivePath,
+                ModelArchiveBytes,
+                expectedHash,
+                cancellationToken).ConfigureAwait(false);
+
+            TryDeleteDirectory(root);
+            Directory.CreateDirectory(root);
+            await ExtractTarBz2Async(archivePath, root, cancellationToken).ConfigureAwait(false);
+
+            if (TryResolveRuntime(
+                    Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "RobloxPiano",
+                        "tools",
+                        "sherpa-onnx",
+                        "v1.13.8"),
+                    root) is null)
+            {
+                throw new InvalidDataException(
+                    "Spleeter model archive does not contain valid FP16 vocals/accompaniment models.");
+            }
         }
-        catch
+        finally
         {
-            return false;
+            TryDelete(archivePath);
         }
     }
 
-    private static TimeSpan TryGetCpu(Process process)
+    private static async Task<string?> TryGetOfficialModelArchiveHashAsync(
+        CancellationToken cancellationToken)
     {
         try
         {
-            process.Refresh();
-            return process.TotalProcessorTime;
+            var text = await Http.GetStringAsync(ModelChecksumUrl, cancellationToken)
+                .ConfigureAwait(false);
+            var name = Regex.Escape(ModelArchiveName);
+            var match = Regex.Match(
+                text,
+                $@"(?im)(?<hash>[0-9a-f]{{64}})\s+\*?{name}\s*$");
+            if (!match.Success)
+            {
+                match = Regex.Match(
+                    text,
+                    $@"(?im){name}\s+(?<hash>[0-9a-f]{{64}})\s*$");
+            }
+
+            return match.Success ? match.Groups["hash"].Value : null;
         }
         catch
         {
-            return TimeSpan.Zero;
+            // GitHub currently exposes the model archive without an API digest.
+            // Exact byte length + extracted ONNX identities still guard truncation/corruption
+            // if the companion checksum asset is temporarily unavailable.
+            return null;
         }
+    }
+
+    private static async Task DownloadToFileAsync(
+        string url,
+        string destination,
+        long expectedBytes,
+        string? expectedSha256,
+        CancellationToken cancellationToken)
+    {
+        await using (var source = await Http.GetStreamAsync(url, cancellationToken)
+            .ConfigureAwait(false))
+        await using (var target = new FileStream(
+            destination,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            128 * 1024,
+            useAsync: true))
+        {
+            await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
+        }
+
+        var info = new FileInfo(destination);
+        if (info.Length != expectedBytes)
+        {
+            throw new InvalidDataException(
+                $"Downloaded asset has {info.Length} bytes; expected {expectedBytes}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(expectedSha256))
+            return;
+
+        await using var stream = File.OpenRead(destination);
+        var actual = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)
+            .ConfigureAwait(false));
+        if (!actual.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Downloaded asset SHA-256 mismatch. Expected {expectedSha256}, got {actual}.");
+        }
+    }
+
+    private static async Task ExtractTarBz2Async(
+        string archivePath,
+        string destination,
+        CancellationToken cancellationToken)
+    {
+        var systemTar = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "tar.exe");
+        var tar = File.Exists(systemTar) ? systemTar : "tar.exe";
+
+        var start = new ProcessStartInfo(tar)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add("-xf");
+        start.ArgumentList.Add(archivePath);
+        start.ArgumentList.Add("-C");
+        start.ArgumentList.Add(destination);
+
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("Could not start Windows tar.exe.");
+        using var registration = cancellationToken.Register(() => KillProcessTreeBestEffort(process));
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
+        using var extractionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        extractionTimeout.CancelAfter(TimeSpan.FromMinutes(1));
+        try
+        {
+            await process.WaitForExitAsync(extractionTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            KillProcessTreeBestEffort(process);
+            throw new TimeoutException("Windows tar.exe exceeded one minute while extracting the separator package.");
+        }
+
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            var detail = Tail(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr, 3000);
+            throw new InvalidOperationException(
+                $"Could not extract fast separator package with Windows tar.exe. {detail}".Trim());
+        }
+    }
+
+    private static int ResolveThreadCount()
+    {
+        var configured = Environment.GetEnvironmentVariable("ROBLOXPIANO_SPLEETER_THREADS");
+        if (int.TryParse(configured, out var requested) && requested is >= 1 and <= 8)
+            return requested;
+
+        return Math.Clamp(Environment.ProcessorCount / 2, 1, 4);
+    }
+
+    private static void ValidateSeparatedVocals(string inputWav, string vocalsWav)
+    {
+        if (!File.Exists(vocalsWav))
+            throw new InvalidDataException("Spleeter completed without producing vocals.wav.");
+
+        using var input = new WaveFileReader(inputWav);
+        using var vocals = new WaveFileReader(vocalsWav);
+        if (vocals.Length <= 44)
+            throw new InvalidDataException("Spleeter produced an empty vocal stem.");
+
+        if (Math.Abs((vocals.TotalTime - input.TotalTime).TotalSeconds) > 2d)
+        {
+            throw new InvalidDataException(
+                $"Spleeter vocal duration {vocals.TotalTime} does not match source duration {input.TotalTime}.");
+        }
+    }
+
+    private static void CreateMinimalSilentOther(string path)
+    {
+        using var writer = new WaveFileWriter(
+            path,
+            new WaveFormat(SeparatorSampleRate, 16, 2));
+        writer.Write(new byte[4], 0, 4);
     }
 
     private static void KillProcessTreeBestEffort(Process process)
@@ -351,11 +525,6 @@ internal static class DemucsRsStemSeparator
         {
         }
     }
-
-    private static string FormatElapsed(TimeSpan elapsed) =>
-        elapsed.TotalHours >= 1d
-            ? elapsed.ToString(@"h\:mm\:ss")
-            : elapsed.ToString(@"m\:ss");
 
     private static string Tail(string text, int maximumCharacters)
     {
@@ -378,4 +547,21 @@ internal static class DemucsRsStemSeparator
         {
         }
     }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed record RuntimeFiles(
+        string ExecutablePath,
+        string VocalsModelPath,
+        string AccompanimentModelPath);
 }
