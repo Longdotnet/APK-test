@@ -31,9 +31,11 @@ Cancellation is checked before every batch and again immediately after `Inferenc
 
 ## Boundedness and performance
 
-`BasicPitchInferenceOptions.MaxChunksPerBatch` remains the memory/concurrency bound. This phase does not increase the batch size, create parallel inference sessions, or load the full song as a single model tensor.
+`BasicPitchInferenceOptions.MaxChunksPerBatch` remains the memory/concurrency bound. Production defaults to one audio window per ONNX call, matching Spotify Basic Pitch's reference inference loop instead of speculatively batching several windows in the desktop client. Larger batches remain an explicit engineering option only; they must not silently become the production default without long-song memory evidence.
 
-The progress callback is invoked once before inference and once per completed batch. No callback is performed inside tensor element loops, so progress reporting is outside the hot inner-copy path.
+The production CPU session also disables ONNX Runtime's CPU memory arena and memory-pattern optimization. Those optimizations may retain or pre-allocate large buffers for repeated shapes; the desktop Create Piano Version path instead prioritizes a bounded working set on ordinary client machines. Graph optimization remains enabled.
+
+The progress callback is invoked once before inference and once per completed batch. With the production one-window batch this also gives the WinForms client fine-grained forward progress during long songs instead of long periods that look frozen. No callback is performed inside tensor element loops, so progress reporting is outside the hot inner-copy path.
 
 This phase does not claim full streaming file decode; NAudio ingest and its existing duration limits remain separate concerns.
 
@@ -49,13 +51,9 @@ This change is confined to `RobloxPiano.Audio` and Audio regression coverage. It
 
 Progress is observational only. It cannot mutate transcription output or playback truth.
 
-## OSS and licensing
-
-The implementation continues to use the existing pinned Spotify Basic Pitch model semantics and Microsoft ONNX Runtime session/tensor APIs. No new package, model, native binary, copied source, or redistributed asset is introduced by this phase, so existing Basic Pitch / ONNX Runtime attribution and NOTICE obligations are unchanged.
-
 ## Validation
 
-The pinned-model regression now uses a multi-window piano-like fixture with one chunk per batch and verifies:
+The pinned-model regression uses a multi-window piano-like fixture through the production inference defaults and verifies:
 
 - multiple intermediate inference progress observations;
 - exact 15%-70% orchestration mapping;
@@ -65,5 +63,7 @@ The pinned-model regression now uses a multi-window piano-like fixture with one 
 - cancellation after a completed inference batch never reaches Decode or `Completed`;
 - pre-cancelled work emits no misleading progress;
 - invalid inference progress values fail closed.
+
+This intentionally prevents test-only `MaxChunksPerBatch` settings from masking the production memory/progress contract again.
 
 Production and Audio exact-head/exact-main gates remain authoritative before merge.
