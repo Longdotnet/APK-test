@@ -205,27 +205,29 @@ public sealed class SectionAwareStemComposer
     {
         var result = (bool[])eligible.Clone();
         rejectedWindows = 0;
-        double previousFrequencyHz = 0d;
-        var hasPrevious = false;
+        var runStart = 0;
 
-        for (var window = 0; window < result.Length; window++)
+        while (runStart < eligible.Length)
         {
-            if (!eligible[window] || leadFrequencyHz[window] <= 0d)
+            while (runStart < eligible.Length && (!eligible[runStart] || leadFrequencyHz[runStart] <= 0d)) runStart++;
+            if (runStart >= eligible.Length) break;
+
+            var runEnd = runStart + 1;
+            var coherent = true;
+            while (runEnd < eligible.Length && eligible[runEnd] && leadFrequencyHz[runEnd] > 0d)
             {
-                hasPrevious = false;
-                previousFrequencyHz = 0d;
-                continue;
+                if (SemitoneDistance(leadFrequencyHz[runEnd - 1], leadFrequencyHz[runEnd]) > maximumAdjacentJumpSemitones)
+                    coherent = false;
+                runEnd++;
             }
 
-            var currentFrequencyHz = leadFrequencyHz[window];
-            if (hasPrevious && SemitoneDistance(previousFrequencyHz, currentFrequencyHz) > maximumAdjacentJumpSemitones)
+            if (!coherent)
             {
-                result[window] = false;
-                rejectedWindows++;
+                Array.Fill(result, false, runStart, runEnd - runStart);
+                rejectedWindows += runEnd - runStart;
             }
 
-            previousFrequencyHz = currentFrequencyHz;
-            hasPrevious = true;
+            runStart = runEnd + 1;
         }
 
         return result;
