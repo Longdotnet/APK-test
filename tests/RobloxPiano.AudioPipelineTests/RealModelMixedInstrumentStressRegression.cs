@@ -76,8 +76,8 @@ internal static class RealModelMixedInstrumentStressRegression
         Require(evidence.EventRetentionRatio <= 1.000001,
             $"Mixed stress arrangement unexpectedly increased event count: {evidence.EventRetentionRatio:F3}.");
 
-        Require(evidence.Sections.TryGetValue("chorus", out var chorus),
-            "Mixed stress fixture must report chorus quality evidence.");
+        if (!evidence.Sections.TryGetValue("chorus", out var chorus) || chorus is null)
+            throw new InvalidOperationException("Mixed stress fixture must report chorus quality evidence.");
         Require(chorus.RecognizedHarmonyNotes >= 4,
             $"Mixed stress chorus recognized too little harmony evidence: {chorus.RecognizedHarmonyNotes}.");
         Require(chorus.HarmonyRetention >= 0.75,
@@ -98,6 +98,7 @@ internal static class RealModelMixedInstrumentStressRegression
 
         var clutterCeiling = evidence.SourceFalsePositives >= 3 && evidence.ClutterSuppression < 0.10;
         var chorusCeiling = evidence.Sections.TryGetValue("chorus", out var chorus)
+            && chorus is not null
             && chorus.RecognizedHarmonyNotes >= 4
             && chorus.HarmonyRetention < 0.75;
         var retentionCeiling = evidence.MelodyRetention < 0.85
