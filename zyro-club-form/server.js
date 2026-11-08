@@ -44,6 +44,18 @@ app.use((req, res, next) => {
     }));
   });
 });
+// Respond immediately to Render's HTTP port probes; do not make them depend on static-file lookup.
+app.head("/", (_req, res) => {
+  res.status(200).end();
+});
+
+// Serve the public landing page explicitly at the backend's root URL.
+app.get("/", (_req, res, next) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"), (error) => {
+    if (error) next(error);
+  });
+});
+
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
 const rateWindow = new Map();
