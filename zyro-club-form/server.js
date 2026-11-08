@@ -17,13 +17,26 @@ app.use(express.json({ limit: "128kb" }));
 app.use((req, res, next) => {
   const incomingId = String(req.get("x-request-id") || "").trim();
   const requestId = /^[A-Za-z0-9._:-]{8,100}$/.test(incomingId) ? incomingId : crypto.randomUUID();
+  const cfRay = String(req.get("cf-ray") || req.get("rndr-id") || "").trim() || null;
   req.requestId = requestId;
+  req.cfRay = cfRay;
   res.setHeader("X-Request-Id", requestId);
   const startedAt = performance.now();
+
+  // Log at request arrival so a request that hangs is still visible in Render logs.
+  console.log(JSON.stringify({
+    event: "zyro_http_start",
+    requestId,
+    cfRay,
+    method: req.method,
+    path: req.path
+  }));
+
   res.on("finish", () => {
     console.log(JSON.stringify({
       event: "zyro_http_request",
       requestId,
+      cfRay,
       method: req.method,
       path: req.path,
       status: res.statusCode,
@@ -198,12 +211,26 @@ async function edgeFetch(pathname, options = {}) {
   return body;
 }
 
-app.get("/health", async (req, res) => {
+// Liveness: this endpoint must only report whether the Node.js process can answer HTTP.
+app.get("/health", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.status(200).json({ ok: true, service: "zyro-club-form" });
+});
+
+// Readiness: check Supabase separately; this must never delay the liveness endpoint.
+app.get("/ready", async (req, res) => {
   try {
-    await edgeFetch("/health", { requestId: req.requestId });
-    res.json({ ok: true, storage: "supabase" });
+    await edgeFetch("/health", { requestId: req.requestId, timeoutMs: 8000 });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, service: "zyro-club-form", dependencies: { supabase: true } });
   } catch (error) {
-    res.status(503).json({ ok: false, storage: "supabase", message: error.message });
+    res.setHeader("Cache-Control", "no-store");
+    res.status(503).json({
+      ok: false,
+      service: "zyro-club-form",
+      dependencies: { supabase: false },
+      requestId: req.requestId
+    });
   }
 });
 
