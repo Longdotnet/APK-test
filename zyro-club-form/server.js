@@ -43,6 +43,9 @@ app.use((req, res, next) => {
       durationMs: Math.round(performance.now() - startedAt)
     }));
   });
+
+  // Continue to the route/static handler.
+  next();
 });
 // Respond immediately to Render's HTTP port probes; do not make them depend on static-file lookup.
 app.head("/", (_req, res) => {
