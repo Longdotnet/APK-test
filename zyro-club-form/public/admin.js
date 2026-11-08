@@ -258,7 +258,7 @@ async function mailerApi(path, options = {}) {
     ...options,
     headers: authHeaders(options.headers || {}),
   }, {
-    timeoutMs: 15000,
+    timeoutMs: 20000,
     service: "render",
   });
 }
