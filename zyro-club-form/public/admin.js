@@ -1883,6 +1883,7 @@ async function loadData() {
   state.configRevision = 0;
   updatedLabel.textContent = state.updatedAt ? `Cập nhật ${new Date(state.updatedAt).toLocaleString("vi-VN")}` : "Đã đồng bộ";
   renderSettings();
+  renderRegistrations();
   markSaved(state.updatedAt, state.savedConfig);
   setSyncStatus("Đã đồng bộ", "success");
 }
