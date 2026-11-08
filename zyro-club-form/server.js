@@ -59,7 +59,7 @@ async function requireEdgeAdmin(req, res, next) {
     return res.status(401).json({ message: "Cần đăng nhập quản trị." });
   }
   try {
-    await edgeFetch("/email-settings", { headers: { Authorization: authorization }, requestId: req.requestId });
+    await edgeFetch("/email-settings", { headers: { Authorization: authorization }, requestId: req.requestId, timeoutMs: 8000 });
     next();
   } catch (error) {
     if (error.status === 401) res.set("WWW-Authenticate", 'Basic realm="ZYRO Admin"');
@@ -143,7 +143,7 @@ async function appsScriptRequest(payload, options = {}) {
 async function edgeFetch(pathname, options = {}) {
   const {
     requestId = crypto.randomUUID(),
-    timeoutMs = 10000,
+    timeoutMs = 30000,
     ...fetchOptions
   } = options;
   const startedAt = performance.now();
