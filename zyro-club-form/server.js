@@ -14,6 +14,23 @@ const mailerSharedSecret = String(process.env.MAILER_SHARED_SECRET || "").trim()
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "128kb" }));
+app.use((req, res, next) => {
+  const incomingId = String(req.get("x-request-id") || "").trim();
+  const requestId = /^[A-Za-z0-9._:-]{8,100}$/.test(incomingId) ? incomingId : crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  const startedAt = performance.now();
+  res.on("finish", () => {
+    console.log(JSON.stringify({
+      event: "zyro_http_request",
+      requestId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      durationMs: Math.round(performance.now() - startedAt)
+    }));
+  });
+});
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
 const rateWindow = new Map();
@@ -42,7 +59,7 @@ async function requireEdgeAdmin(req, res, next) {
     return res.status(401).json({ message: "Cần đăng nhập quản trị." });
   }
   try {
-    await edgeFetch("/email-settings", { headers: { Authorization: authorization } });
+    await edgeFetch("/email-settings", { headers: { Authorization: authorization }, requestId: req.requestId });
     next();
   } catch (error) {
     if (error.status === 401) res.set("WWW-Authenticate", 'Basic realm="ZYRO Admin"');
@@ -57,8 +74,11 @@ function mailerConfigurationError() {
   return error;
 }
 
-async function appsScriptRequest(payload) {
+async function appsScriptRequest(payload, options = {}) {
   if (!mailerWebAppUrl || !mailerSharedSecret) throw mailerConfigurationError();
+  const requestId = options.requestId || crypto.randomUUID();
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 30000;
+  const startedAt = performance.now();
 
   let response;
   try {
@@ -66,9 +86,25 @@ async function appsScriptRequest(payload) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...payload, secret: mailerSharedSecret }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
+    console.log(JSON.stringify({
+      event: "zyro_upstream_request",
+      requestId,
+      service: "google_apps_script",
+      action: payload.action,
+      status: response.status,
+      durationMs: Math.round(performance.now() - startedAt)
+    }));
   } catch (cause) {
+    console.warn(JSON.stringify({
+      event: "zyro_upstream_error",
+      requestId,
+      service: "google_apps_script",
+      action: payload.action,
+      durationMs: Math.round(performance.now() - startedAt),
+      error: cause?.name || "NetworkError"
+    }));
     const error = new Error("Không nhận được phản hồi từ Google Apps Script. Với yêu cầu gửi thư, hãy kiểm tra Gmail mục Đã gửi trước khi thử lại.");
     error.status = 502;
     error.deliveryStatus = payload.action === "send" ? "uncertain" : "pending";
@@ -105,26 +141,66 @@ async function appsScriptRequest(payload) {
 }
 
 async function edgeFetch(pathname, options = {}) {
-  const response = await fetch(`${apiUrl}${pathname}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  const {
+    requestId = crypto.randomUUID(),
+    timeoutMs = 10000,
+    ...fetchOptions
+  } = options;
+  const startedAt = performance.now();
+  let response;
+
+  try {
+    response = await fetch(`${apiUrl}${pathname}`, {
+      ...fetchOptions,
+      headers: {
+        "Content-Type": "application/json",
+        ...(fetchOptions.headers || {}),
+        "X-Request-Id": requestId,
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (cause) {
+    const timedOut = cause?.name === "TimeoutError" || cause?.name === "AbortError";
+    console.error(JSON.stringify({
+      event: "zyro_upstream_error",
+      requestId,
+      service: "supabase_edge",
+      method: fetchOptions.method || "GET",
+      path: pathname,
+      durationMs: Math.round(performance.now() - startedAt),
+      outcome: timedOut ? "timeout" : "network_error",
+      error: cause?.name || "NetworkError"
+    }));
+    const error = new Error(timedOut ? "Supabase API phản hồi quá thời gian chờ." : "Không kết nối được Supabase API.");
+    error.status = timedOut ? 504 : 502;
+    error.requestId = requestId;
+    error.cause = cause;
+    throw error;
+  }
+
   const body = await response.json().catch(() => ({}));
+  console.log(JSON.stringify({
+    event: "zyro_upstream_request",
+    requestId,
+    service: "supabase_edge",
+    method: fetchOptions.method || "GET",
+    path: pathname,
+    status: response.status,
+    durationMs: Math.round(performance.now() - startedAt)
+  }));
   if (!response.ok) {
     const error = new Error(body.message || `ZYRO API error ${response.status}`);
     error.status = response.status;
     error.body = body;
+    error.requestId = requestId;
     throw error;
   }
   return body;
 }
 
-app.get("/health", async (_req, res) => {
+app.get("/health", async (req, res) => {
   try {
-    await edgeFetch("/health");
+    await edgeFetch("/health", { requestId: req.requestId });
     res.json({ ok: true, storage: "supabase" });
   } catch (error) {
     res.status(503).json({ ok: false, storage: "supabase", message: error.message });
@@ -146,7 +222,8 @@ app.use("/api/admin", (req, res, next) => {
   if (origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id");
+    res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -159,7 +236,7 @@ app.get("/api/admin/email-settings", requireEdgeAdmin, async (req, res) => {
     return res.json({ configured: false, senderEmail: "", remainingDailyQuota: null });
   }
   try {
-    const settings = await appsScriptRequest({ action: "status" });
+    const settings = await appsScriptRequest({ action: "status" }, { requestId: req.requestId, timeoutMs: 8000 });
     res.setHeader("Cache-Control", "no-store");
     res.json({
       senderEmail: settings.senderEmail || "",
@@ -173,7 +250,7 @@ app.get("/api/admin/email-settings", requireEdgeAdmin, async (req, res) => {
 
 app.post("/api/admin/email-settings/test", requireEdgeAdmin, async (req, res) => {
   try {
-    const result = await appsScriptRequest({ action: "status" });
+    const result = await appsScriptRequest({ action: "status" }, { requestId: req.requestId, timeoutMs: 8000 });
     res.json({
       ok: true,
       message: "Kết nối Google Apps Script thành công.",
@@ -195,7 +272,7 @@ app.post("/api/admin/email-settings/test-send", requireEdgeAdmin, async (req, re
       subject: "Kiểm tra email ZYRO Volleyball Club",
       html: "<p>Đây là email thử để xác nhận Google Apps Script Mail Relay của <strong>ZYRO Volleyball Club</strong> hoạt động.</p>",
       idempotencyKey: "test-" + crypto.randomUUID(),
-    });
+    }, { requestId: req.requestId });
     res.json({
       ok: true,
       message: "Google đã tiếp nhận yêu cầu gửi email thử. Hãy kiểm tra hộp thư đến và Spam.",
@@ -224,7 +301,7 @@ app.post("/api/admin/send-email", requireEdgeAdmin, async (req, res) => {
       subject,
       html,
       idempotencyKey,
-    });
+    }, { requestId: req.requestId });
     res.json({ ok: true, messageId: result.messageId || null, remainingDailyQuota: result.remainingDailyQuota ?? null });
   } catch (error) {
     res.status(502).json({
@@ -238,7 +315,7 @@ app.post("/api/registrations", submitRateLimit, async (req, res, next) => {
   try {
     const result = validateRegistration(req.body);
     if (!result.ok) return res.status(400).json({ message: "Kiểm tra lại thông tin nhé.", errors: result.errors });
-    const item = await edgeFetch("/registrations", { method: "POST", body: JSON.stringify(result.data) });
+    const item = await edgeFetch("/registrations", { method: "POST", body: JSON.stringify(result.data), requestId: req.requestId });
     res.status(201).json({ id: item.id, message: "Đã nhận đăng ký." });
   } catch (error) {
     next(error);
@@ -250,6 +327,7 @@ app.get("/api/admin/registrations", requireAdmin, async (req, res, next) => {
   try {
     res.json(await edgeFetch("/registrations", {
       headers: { Authorization: req.headers.authorization },
+      requestId: req.requestId,
     }));
   } catch (error) {
     next(error);
@@ -264,6 +342,7 @@ app.patch("/api/admin/registrations/:id", requireAdmin, async (req, res, next) =
       method: "PATCH",
       body: JSON.stringify({ status: req.body.status }),
       headers: { Authorization: req.headers.authorization },
+      requestId: req.requestId,
     }));
   } catch (error) {
     next(error);
@@ -275,6 +354,7 @@ app.get("/api/admin/zalo-mapping/groups", requireAdmin, async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json(await edgeFetch("/zalo-mapping/groups", {
       headers: { Authorization: req.headers.authorization },
+      requestId: req.requestId,
     }));
   } catch (error) {
     const status = Number(error.status);
@@ -293,7 +373,7 @@ app.get("/api/admin/zalo-mapping/groups/:connectionId/:groupId/members", require
     res.setHeader("Cache-Control", "no-store");
     res.json(await edgeFetch(
       `/zalo-mapping/groups/${encodeURIComponent(connectionId)}/${encodeURIComponent(groupId)}/members`,
-      { headers: { Authorization: req.headers.authorization } },
+      { headers: { Authorization: req.headers.authorization }, requestId: req.requestId },
     ));
   } catch (error) {
     const status = Number(error.status);
@@ -307,6 +387,7 @@ app.get("/api/admin/zalo-mapping/registrations", requireAdmin, async (req, res) 
     res.setHeader("Cache-Control", "no-store");
     res.json(await edgeFetch("/zalo-mapping/registrations", {
       headers: { Authorization: req.headers.authorization },
+      requestId: req.requestId,
     }));
   } catch (error) {
     const status = Number(error.status);
@@ -322,6 +403,7 @@ app.post("/api/admin/zalo-mapping/sync", requireAdmin, async (req, res) => {
       method: "POST",
       body: JSON.stringify(req.body || {}),
       headers: { Authorization: req.headers.authorization },
+      requestId: req.requestId,
     }));
   } catch (error) {
     const status = Number(error.status);
@@ -330,9 +412,16 @@ app.post("/api/admin/zalo-mapping/sync", requireAdmin, async (req, res) => {
   }
 });
 
-app.use((error, _req, res, _next) => {
-  console.error(error);
-  res.status(500).json({ message: "Có lỗi máy chủ. Vui lòng thử lại sau." });
+app.use((error, req, res, _next) => {
+  console.error(JSON.stringify({
+    event: "zyro_request_error",
+    requestId: req.requestId || null,
+    status: Number(error?.status) || 500,
+    message: error?.message || "Unknown server error"
+  }));
+  const status = Number(error?.status);
+  res.status(Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500)
+    .json({ message: "Có lỗi máy chủ. Vui lòng thử lại sau.", requestId: req.requestId || null });
 });
 
 app.listen(port, "0.0.0.0", () => console.log(`ZYRO form running on http://localhost:${port}`));
