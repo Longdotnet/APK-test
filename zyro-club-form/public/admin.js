@@ -5,6 +5,8 @@ const mailerApiBase = "https://zyro-club-form.onrender.com/api/admin";
 
 const state = {
   auth: "",
+  loginTraceId: "",
+  traceSequence: 0,
   config: null,
   savedConfig: null,
   updatedAt: null,
@@ -175,34 +177,90 @@ function authHeaders(extra = {}) {
   return { Authorization: state.auth, ...extra };
 }
 
-async function api(path, options = {}, needsAuth = false) {
-  const response = await fetch(`${apiBase}${path}`, {
-    cache: "no-store",
-    ...options,
-    headers: needsAuth ? authHeaders(options.headers || {}) : (options.headers || {}),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.message || `HTTP ${response.status}`);
-    error.status = response.status;
-    throw error;
+function createRequestId() {
+  return window.crypto?.randomUUID?.()
+    || `zyro-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function fetchJsonWithTrace(url, options = {}, { timeoutMs = 12000, service = "supabase" } = {}) {
+  const requestId = state.loginTraceId
+    ? `${state.loginTraceId}-${++state.traceSequence}`
+    : createRequestId();
+  const target = new URL(url, window.location.href);
+  const requestUrl = new URL(target);
+  const headers = new Headers(options.headers || {});
+  if (service === "supabase") {
+    requestUrl.searchParams.set("_zyro_rid", requestId);
+  } else {
+    headers.set("X-Request-Id", requestId);
   }
-  return body;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = performance.now();
+
+  try {
+    const response = await fetch(requestUrl.toString(), {
+      cache: "no-store",
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    const durationMs = Math.round(performance.now() - startedAt);
+    const logEntry = { requestId, service, path: target.pathname, status: response.status, durationMs };
+
+    if (!response.ok) {
+      console.warn("[ZYRO trace]", { ...logEntry, outcome: "http_error" });
+      const error = new Error(body.message || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.requestId = requestId;
+      throw error;
+    }
+
+    console.info("[ZYRO trace]", { ...logEntry, outcome: "success" });
+    return body;
+  } catch (error) {
+    if (error?.requestId === requestId && Number.isInteger(error?.status)) throw error;
+    const timedOut = controller.signal.aborted;
+    const durationMs = Math.round(performance.now() - startedAt);
+    console.error("[ZYRO trace]", {
+      requestId,
+      service,
+      path: target.pathname,
+      durationMs,
+      outcome: timedOut ? "timeout" : "network_error",
+      error: error?.name || "NetworkError",
+    });
+    if (timedOut) {
+      const timeoutError = new Error(`Quá thời gian chờ phản hồi. Mã kiểm tra: ${requestId}`);
+      timeoutError.code = "ETIMEDOUT";
+      timeoutError.requestId = requestId;
+      throw timeoutError;
+    }
+    error.requestId = requestId;
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function api(path, options = {}, needsAuth = false) {
+  const headers = needsAuth ? authHeaders(options.headers || {}) : (options.headers || {});
+  return fetchJsonWithTrace(`${apiBase}${path}`, { ...options, headers }, {
+    timeoutMs: 12000,
+    service: "supabase",
+  });
 }
 
 async function mailerApi(path, options = {}) {
-  const response = await fetch(mailerApiBase + path, {
-    cache: "no-store",
+  return fetchJsonWithTrace(mailerApiBase + path, {
     ...options,
     headers: authHeaders(options.headers || {}),
+  }, {
+    timeoutMs: 15000,
+    service: "render",
   });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.message || "Không kết nối được dịch vụ email.");
-    error.status = response.status;
-    throw error;
-  }
-  return body;
 }
 
 function setMailSenderMessage(message, stateName = "") {
@@ -224,7 +282,7 @@ async function loadMailSenderSettings() {
       : "Chưa cấu hình Google Apps Script Mail Relay trên Render.";
   } catch (error) {
     mailSenderStatus.dataset.state = "error";
-    mailSenderStatus.textContent = error.message || "Chưa kết nối được Google Apps Script.";
+    mailSenderStatus.textContent = (error.message || "Chưa kết nối được Google Apps Script.") + (error.requestId ? ` · Mã: ${error.requestId}` : "");
   }
 }
 
@@ -1814,7 +1872,10 @@ function renderSettings() {
 }
 
 async function loadData() {
-  const configBody = await api("/config");
+  const [configBody] = await Promise.all([
+    api("/config"),
+    loadRegistrations({ throwOnError: true, silent: true }),
+  ]);
   state.config = clone(configBody.config);
   ensureEmailTemplates(state.config);
   state.savedConfig = clone(state.config);
@@ -1824,8 +1885,6 @@ async function loadData() {
   renderSettings();
   markSaved(state.updatedAt, state.savedConfig);
   setSyncStatus("Đã đồng bộ", "success");
-  await loadRegistrations({ throwOnError: true, silent: true });
-  await loadMailSenderSettings();
 }
 
 async function refreshAll() {
@@ -1903,20 +1962,33 @@ loginForm.addEventListener("submit", async (event) => {
   const loginButton = loginForm.querySelector("button[type='submit']");
   if (loginButton.disabled) return;
   loginButton.disabled = true;
-  loginButton.textContent = "Đang kiểm tra…";
-  loginStatus.textContent = "Đang kiểm tra…";
+  loginButton.textContent = "Đang xác thực…";
+  loginStatus.textContent = "Đang xác thực tài khoản và tải dữ liệu quản trị…";
   const formData = new FormData(loginForm);
+  state.loginTraceId = createRequestId();
+  state.traceSequence = 0;
   state.auth = `Basic ${btoa(`${formData.get("username")}:${formData.get("password")}`)}`;
+  console.info("[ZYRO login]", { event: "started", requestId: state.loginTraceId });
   try {
     await loadData();
     loginView.hidden = true;
     shell.hidden = false;
     loginForm.reset();
     loginStatus.textContent = "";
+    console.info("[ZYRO login]", { event: "success", requestId: state.loginTraceId });
+    void loadMailSenderSettings();
   } catch (error) {
     state.auth = "";
-    loginStatus.textContent = error.status === 401 ? "Sai tên đăng nhập hoặc mật khẩu." : "Không kết nối được hệ thống quản trị.";
+    const requestId = error.requestId || state.loginTraceId;
+    loginStatus.textContent = error.status === 401
+      ? `Sai tên đăng nhập hoặc mật khẩu. Mã kiểm tra: ${requestId}`
+      : `Không tải được hệ thống quản trị. Mã kiểm tra: ${requestId}`;
+    console.error("[ZYRO login]", {
+      event: "failed", requestId, status: error.status || null, code: error.code || null,
+    });
   } finally {
+    state.loginTraceId = "";
+    state.traceSequence = 0;
     loginButton.disabled = false;
     loginButton.textContent = "Đăng nhập";
   }
