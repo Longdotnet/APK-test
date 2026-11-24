@@ -173,6 +173,8 @@ test("mapping bridge validates legacy admin auth and stores only mapping metadat
   const edge = await readFile(new URL("supabase/functions/zyro-api/index.ts", root), "utf8");
   const migration = await readFile(new URL("supabase/migrations/20261124063000_zyro_mapping_bridge_links.sql", root), "utf8");
   assert.match(edge, /LEGACY_ZYRO_API_BASE_URL/);
+  assert.match(edge, /new URL\("email-settings", LEGACY_ZYRO_API_BASE_URL \+ "\/"\)/);
+  assert.match(edge, /new URL\(path\.replace\(\/\^\\\/\+\/, ""\), LEGACY_ZYRO_API_BASE_URL \+ "\/"\)/);
   assert.match(edge, /requestLegacyAdmin\(req, "\/zalo-mapping\/registrations"\)/);
   assert.match(edge, /from\("zyro_mapping_links"\)/);
   assert.match(edge, /mappingStore: "bridge"/);

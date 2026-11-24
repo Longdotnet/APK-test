@@ -305,8 +305,8 @@ async function isAdmin(req: Request) {
   if (!LEGACY_ZYRO_API_BASE_URL) return false;
   try {
     const baseUrl = new URL(LEGACY_ZYRO_API_BASE_URL);
-    if (baseUrl.protocol !== "https:" || baseUrl.pathname !== "/" || baseUrl.search || baseUrl.hash) return false;
-    const response = await fetch(new URL("email-settings", baseUrl.origin + "/"), {
+    if (baseUrl.protocol !== "https:" || baseUrl.search || baseUrl.hash || baseUrl.username || baseUrl.password) return false;
+    const response = await fetch(new URL("email-settings", LEGACY_ZYRO_API_BASE_URL + "/"), {
       headers: { authorization: auth, accept: "application/json" },
       signal: AbortSignal.timeout(8000),
     });
@@ -324,7 +324,10 @@ async function requestLegacyAdmin(req: Request, path: string, options: RequestIn
   const authorization = req.headers.get("authorization") ?? "";
   let response: Response;
   try {
-    response = await fetch(new URL(path.replace(/^\/+/, ""), baseUrl.origin + "/"), {
+    if (baseUrl.protocol !== "https:" || baseUrl.search || baseUrl.hash || baseUrl.username || baseUrl.password) {
+      throw mappingError("LEGACY_ZYRO_API_BASE_URL không hợp lệ.", 503);
+    }
+    response = await fetch(new URL(path.replace(/^\/+/, ""), LEGACY_ZYRO_API_BASE_URL + "/"), {
       ...options,
       headers: {
         accept: "application/json",
