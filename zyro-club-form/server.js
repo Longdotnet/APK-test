@@ -7,7 +7,7 @@ import { validateRegistration } from "./lib/validation.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const apiUrl = (process.env.ZYRO_API_URL || "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api").replace(/\/$/, "");
+const apiUrl = (process.env.ZYRO_API_URL || "https://jcprbomxlkkiodmjskmk.supabase.co/functions/v1/zyro-api").replace(/\/$/, "");
 const mailerWebAppUrl = String(process.env.MAILER_WEB_APP_URL || "").trim();
 const mailerSharedSecret = String(process.env.MAILER_SHARED_SECRET || "").trim();
 const allowedAdminOrigins = new Set([

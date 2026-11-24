@@ -1,6 +1,6 @@
 import { getZaloCandidates, latestRegistrationsByZaloName, normalizeZaloName } from "./zalo-mapping-core.js";
 
-const apiBase = "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api";
+const apiBase = "https://jcprbomxlkkiodmjskmk.supabase.co/functions/v1/zyro-api";
 const mailerApiBase = "https://zyro-club-form-v1gv.onrender.com/api/admin";
 
 const state = {

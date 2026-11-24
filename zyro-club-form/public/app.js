@@ -1,4 +1,4 @@
-const apiBase = "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api";
+const apiBase = "https://jcprbomxlkkiodmjskmk.supabase.co/functions/v1/zyro-api";
 const registrationEndpoint = `${apiBase}/registrations`;
 const configEndpoint = `${apiBase}/config`;
 
