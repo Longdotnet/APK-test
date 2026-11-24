@@ -159,7 +159,7 @@ function renderDecisionEmail(config: any, template: any, registration: any, reas
 }
 
 async function sendDecisionEmail(to: string, subject: string, html: string, idempotencyKey: string, authorization: string) {
-  const mailerUrl = text(Deno.env.get("ZYRO_MAILER_URL"), 500).replace(/\/$/, "") || "https://zyro-club-form.onrender.com";
+  const mailerUrl = text(Deno.env.get("ZYRO_MAILER_URL"), 500).replace(/\/$/, "") || "https://zyro-club-form-v1gv.onrender.com";
   if (!authorization.startsWith("Basic ")) throw new Error("Thiếu xác thực quản trị khi chuyển email đến Google Apps Script.");
   const response = await fetch(mailerUrl + "/api/admin/send-email", {
     method: "POST",

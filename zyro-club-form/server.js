@@ -13,6 +13,7 @@ const mailerSharedSecret = String(process.env.MAILER_SHARED_SECRET || "").trim()
 const allowedAdminOrigins = new Set([
   "https://zyro-volleyball-club.onrender.com",
   "https://zyro-club-form.onrender.com",
+  "https://zyro-club-form-v1gv.onrender.com",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   ...String(process.env.ADMIN_ALLOWED_ORIGINS || "")
