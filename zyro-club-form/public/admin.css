@@ -866,16 +866,16 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 
 .zalo-mapping-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
-  margin: 14px 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
 }
 
 .zalo-mapping-summary > div {
   display: grid;
   gap: 2px;
   min-width: 0;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: white;
@@ -884,11 +884,13 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 .zalo-mapping-summary strong { color: var(--navy); font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .zalo-mapping-summary span { color: var(--muted); font-size: 11px; }
 
+.zalo-data-actions { flex-wrap: wrap; }
+
 .zalo-mapping-note {
   display: grid;
   gap: 4px;
   margin-bottom: 14px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: #f8fafc;
@@ -900,10 +902,10 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 
 .zalo-map-row {
   display: grid;
-  grid-template-columns: 92px minmax(190px, 1fr) minmax(250px, 1.2fr) minmax(180px, .8fr);
-  gap: 14px;
+  grid-template-columns: 64px minmax(220px, 1fr) minmax(260px, 1.2fr) minmax(170px, .75fr);
+  gap: 12px;
   align-items: center;
-  padding: 14px;
+  padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: white;
@@ -915,7 +917,7 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 .zalo-map-identity { display: grid; gap: 5px; min-width: 0; }
 .zalo-map-identity > strong { overflow-wrap: anywhere; color: var(--text); font-size: 14px; }
 .zalo-map-identity > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
-.zalo-map-identity .zalo-map-goal { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.zalo-map-submitted { overflow-wrap: anywhere; }
 .zalo-map-form-status { width: fit-content; padding: 2px 7px; border-radius: 999px; background: var(--raised); color: var(--muted); font-size: 10px; }
 .zalo-map-form-status.status-approved { background: var(--positive-bg); color: var(--positive); }
 .zalo-map-form-status.status-rejected { background: var(--negative-bg); color: var(--negative); }

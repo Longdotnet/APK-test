@@ -10,9 +10,35 @@ const port = Number(process.env.PORT || 3000);
 const apiUrl = (process.env.ZYRO_API_URL || "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api").replace(/\/$/, "");
 const mailerWebAppUrl = String(process.env.MAILER_WEB_APP_URL || "").trim();
 const mailerSharedSecret = String(process.env.MAILER_SHARED_SECRET || "").trim();
+const allowedAdminOrigins = new Set([
+  "https://zyro-volleyball-club.onrender.com",
+  "https://zyro-club-form.onrender.com",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  ...String(process.env.ADMIN_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim().replace(/\/$/, ""))
+    .filter(Boolean),
+]);
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
+app.use("/api/admin", (req, res, next) => {
+  const origin = String(req.headers.origin || "").trim().replace(/\/$/, "");
+  if (origin && !allowedAdminOrigins.has(origin)) {
+    return res.status(403).json({ message: "Nguồn truy cập không được phép." });
+  }
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id");
+    res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+app.use("/api/admin/zalo-mapping/import", express.json({ limit: "512kb" }));
 app.use(express.json({ limit: "128kb" }));
 app.use((req, res, next) => {
   const incomingId = String(req.get("x-request-id") || "").trim();
@@ -249,29 +275,6 @@ app.get("/ready", async (req, res) => {
   }
 });
 
-const allowedAdminOrigins = new Set([
-  "https://zyro-volleyball-club.onrender.com",
-  "https://zyro-club-form.onrender.com",
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-]);
-
-app.use("/api/admin", (req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && !allowedAdminOrigins.has(origin)) {
-    return res.status(403).json({ message: "Nguồn truy cập không được phép." });
-  }
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id");
-    res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  }
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
 app.get("/api/admin/email-settings", requireEdgeAdmin, async (req, res) => {
   if (!mailerWebAppUrl || !mailerSharedSecret) {
     res.setHeader("Cache-Control", "no-store");
@@ -435,6 +438,22 @@ app.get("/api/admin/zalo-mapping/registrations", requireAdmin, async (req, res) 
     const status = Number(error.status);
     res.status(Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502)
       .json({ message: error.message || "Không tải được hồ sơ đăng ký để mapping." });
+  }
+});
+
+app.post("/api/admin/zalo-mapping/import", requireAdmin, async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await edgeFetch("/zalo-mapping/import", {
+      method: "POST",
+      body: JSON.stringify(req.body || {}),
+      headers: { Authorization: req.headers.authorization },
+      requestId: req.requestId,
+    }));
+  } catch (error) {
+    const status = Number(error.status);
+    res.status(Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502)
+      .json({ message: error.message || "Không import được danh sách Excel." });
   }
 });
 

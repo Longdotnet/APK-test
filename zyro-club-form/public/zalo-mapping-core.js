@@ -24,6 +24,36 @@ export function normalizeZaloName(value) {
     .toLocaleLowerCase("vi-VN");
 }
 
+function registrationTimestamp(registration) {
+  const timestamp = Date.parse(registration?.createdAt ?? registration?.created_at ?? "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+/**
+ * One person may submit the club form more than once. Mapping should always use
+ * the newest submission for the same normalized Zalo name and hide older rows.
+ */
+export function latestRegistrationsByZaloName(registrations) {
+  const latest = new Map();
+  const unnamed = [];
+
+  for (const registration of Array.isArray(registrations) ? registrations : []) {
+    const key = normalizeZaloName(registration?.zaloName ?? registration?.zalo_name);
+    if (!key) {
+      unnamed.push(registration);
+      continue;
+    }
+
+    const current = latest.get(key);
+    if (!current || registrationTimestamp(registration) > registrationTimestamp(current)) {
+      latest.set(key, registration);
+    }
+  }
+
+  return [...latest.values(), ...unnamed]
+    .sort((left, right) => registrationTimestamp(right) - registrationTimestamp(left));
+}
+
 function foldName(value) {
   return normalizeZaloName(value)
     .normalize("NFD")

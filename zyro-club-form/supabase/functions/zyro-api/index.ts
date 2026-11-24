@@ -456,6 +456,30 @@ function mapZaloMappingRegistration(r: any) {
   };
 }
 
+function normalizeZaloRegistrationName(value: unknown) {
+  return text(value, 80)
+    .normalize("NFC")
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("vi-VN");
+}
+
+function latestZaloRegistrationRows(rows: any[]) {
+  const latestByName = new Map<string, any>();
+  const unnamed: any[] = [];
+
+  for (const row of rows) {
+    const key = normalizeZaloRegistrationName(row?.zalo_name);
+    if (!key) {
+      unnamed.push(row);
+      continue;
+    }
+    // The query is ordered newest first, so the first row is the canonical submission.
+    if (!latestByName.has(key)) latestByName.set(key, row);
+  }
+
+  return [...latestByName.values(), ...unnamed];
+}
+
 const DRAFT_GENDER_BY_FORM: Record<string, string> = {
   male: "Male",
   female: "Female",
@@ -606,8 +630,9 @@ Deno.serve(async (req) => {
     const mappingMembersMatch = pathname.match(/\/zalo-mapping\/groups\/([^/]+)\/([^/]+)\/members$/);
     const isZaloMappingGroups = pathname === "/zalo-mapping/groups" || pathname.endsWith("/zyro-api/zalo-mapping/groups");
     const isZaloMappingRegistrations = pathname === "/zalo-mapping/registrations" || pathname.endsWith("/zyro-api/zalo-mapping/registrations");
+    const isZaloMappingImport = pathname === "/zalo-mapping/import" || pathname.endsWith("/zyro-api/zalo-mapping/import");
     const isZaloMappingSync = pathname === "/zalo-mapping/sync" || pathname.endsWith("/zyro-api/zalo-mapping/sync");
-    const isZaloMappingPath = isZaloMappingGroups || Boolean(mappingMembersMatch) || isZaloMappingRegistrations || isZaloMappingSync;
+    const isZaloMappingPath = isZaloMappingGroups || Boolean(mappingMembersMatch) || isZaloMappingRegistrations || isZaloMappingImport || isZaloMappingSync;
 
     if (isZaloMappingPath) {
       if (!(await isAdmin(req))) return unauthorized();
@@ -644,9 +669,68 @@ Deno.serve(async (req) => {
             .order("created_at", { ascending: false })
             .range(0, 999);
           if (error) throw error;
-          const registrations = (data ?? []).map(mapZaloMappingRegistration);
-          const total = count ?? registrations.length;
-          return json({ registrations, total, truncated: total > registrations.length });
+          const sourceRows = data ?? [];
+          const latestRows = latestZaloRegistrationRows(sourceRows);
+          const registrations = latestRows.map(mapZaloMappingRegistration);
+          const sourceTotal = count ?? sourceRows.length;
+          return json({
+            registrations,
+            total: registrations.length,
+            sourceTotal,
+            duplicatesHidden: Math.max(0, sourceRows.length - latestRows.length),
+            truncated: sourceTotal > sourceRows.length,
+          });
+        }
+
+        if (req.method === "POST" && isZaloMappingImport) {
+          const body = await req.json().catch(() => null);
+          const rows = Array.isArray(body?.registrations) ? body.registrations : [];
+          if (rows.length < 1 || rows.length > 500) {
+            return json({ message: "Mỗi lần import cần từ 1 đến 500 dòng dữ liệu." }, 400);
+          }
+
+          const { config } = await getConfigRow();
+          const options = config?.formOptions ?? {};
+          const allowed = (key: keyof typeof options) =>
+            new Set((Array.isArray(options[key]) ? options[key] : []).map((item: any) => item.id));
+          const inserts: any[] = [];
+
+          for (let index = 0; index < rows.length; index += 1) {
+            const row = rows[index];
+            const zaloName = text(row?.zaloName, 80);
+            const goal = text(row?.goal, 500);
+            const email = text(row?.email, 254).toLowerCase();
+            const invalidEmail = email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+            const invalidOption =
+              !allowed("duration").has(row?.duration) ||
+              !allowed("gender").has(row?.gender) ||
+              !allowed("position").has(row?.position) ||
+              !allowed("level").has(row?.level);
+
+            if (zaloName.length < 2 || goal.length < 3 || invalidEmail || invalidOption) {
+              return json({
+                message: `Dòng ${index + 2} có dữ liệu chưa hợp lệ. Kiểm tra tên Zalo, email, giới tính, vị trí, trình độ, thời gian tham gia và mong muốn.`,
+              }, 400);
+            }
+
+            inserts.push({
+              zalo_name: zaloName,
+              duration: row.duration,
+              gender: row.gender,
+              position: row.position,
+              level: row.level,
+              goal,
+              email: email || null,
+              status: "new",
+            });
+          }
+
+          const { data: imported, error: importError } = await supabase
+            .from("zyro_registrations")
+            .insert(inserts)
+            .select("id");
+          if (importError) throw importError;
+          return json({ ok: true, imported: imported?.length ?? 0 });
         }
 
         if (req.method === "POST" && isZaloMappingSync) {
@@ -693,7 +777,7 @@ Deno.serve(async (req) => {
 
           const { data: registrations, error: registrationError } = await supabase
             .from("zyro_registrations")
-            .select("id,zalo_name,gender,position,level,zalo_user_id,zalo_mapping_status")
+            .select("id,created_at,zalo_name,gender,position,level,zalo_user_id,zalo_mapping_status")
             .in("id", registrationIds);
           if (registrationError) throw registrationError;
           if ((registrations ?? []).length !== profiles.length) {
@@ -711,12 +795,31 @@ Deno.serve(async (req) => {
 
           const { data: existingMappings, error: existingMappingError } = await supabase
             .from("zyro_registrations")
-            .select("id,zalo_user_id")
+            .select("id,created_at,zalo_name,zalo_user_id")
             .in("zalo_user_id", zaloUserIds);
           if (existingMappingError) throw existingMappingError;
-          const duplicateMapping = (existingMappings ?? []).find((item: any) =>
-            profiles.some((requested: any) => requested.zaloUserId === item.zalo_user_id && requested.registrationId !== item.id)
-          );
+          const supersededMappingIds: string[] = [];
+          const duplicateMapping = (existingMappings ?? []).find((item: any) => {
+            const requested = profiles.find((profile: any) =>
+              profile.zaloUserId === item.zalo_user_id && profile.registrationId !== item.id
+            );
+            if (!requested) return false;
+            const target = registrationById.get(requested.registrationId) as any;
+            const sameFormIdentity =
+              normalizeZaloRegistrationName(item.zalo_name) !== "" &&
+              normalizeZaloRegistrationName(item.zalo_name) === normalizeZaloRegistrationName(target?.zalo_name);
+            const oldCreatedAt = Date.parse(item.created_at ?? "");
+            const targetCreatedAt = Date.parse(target?.created_at ?? "");
+            const targetIsNewer =
+              Number.isFinite(oldCreatedAt) &&
+              Number.isFinite(targetCreatedAt) &&
+              targetCreatedAt >= oldCreatedAt;
+            if (sameFormIdentity && targetIsNewer) {
+              supersededMappingIds.push(item.id);
+              return false;
+            }
+            return true;
+          });
           if (duplicateMapping) {
             return json({ message: "UID Zalo này đã được gắn với một hồ sơ Form khác. Hãy kiểm tra các đăng ký trùng trước khi đồng bộ." }, 409);
           }
@@ -738,6 +841,24 @@ Deno.serve(async (req) => {
               .maybeSingle();
             if (saveError) throw saveError;
             if (!saved) throw mappingError("Không lưu được một mapping đã xác nhận. Hãy tải lại danh sách trước khi thử lại.", 409);
+          }
+
+          if (supersededMappingIds.length) {
+            const { data: cleared, error: clearError } = await supabase
+              .from("zyro_registrations")
+              .update({
+                zalo_user_id: null,
+                zalo_group_id: null,
+                zalo_connection_id: null,
+                zalo_mapping_status: "unmapped",
+                zalo_mapped_at: null,
+                zalo_mapped_by: null,
+              })
+              .in("id", [...new Set(supersededMappingIds)])
+              .select("id");
+            if (clearError || (cleared ?? []).length !== new Set(supersededMappingIds).size) {
+              throw mappingError("Đã lưu UID cho bản form mới nhất nhưng chưa giải phóng được mapping ở bản form cũ. Hãy tải lại và thử đồng bộ lại.", 503);
+            }
           }
 
           const draftProfiles = profiles.map((item: any) => {
@@ -775,7 +896,12 @@ Deno.serve(async (req) => {
           return json({
             ok: true,
             remappedCount: remaps.length,
-            warning: remaps.length ? "UID cũ đã được thay bằng UID mới; hồ sơ cũ trong Draft không tự bị xóa." : null,
+            supersededMappingCount: new Set(supersededMappingIds).size,
+            warning: remaps.length
+              ? "UID cũ đã được thay bằng UID mới; hồ sơ cũ trong Draft không tự bị xóa."
+              : supersededMappingIds.length
+                ? "Mapping UID đã được chuyển sang bản form mới nhất; các bản form cũ vẫn được giữ làm lịch sử."
+                : null,
             results: profiles.map((item: any) => {
               const result = resultByUid.get(item.zaloUserId) as any;
               return {

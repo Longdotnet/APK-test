@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { getZaloCandidates, mapFormProfileToDraft, normalizeZaloName } from "../public/zalo-mapping-core.js";
+import {
+  getZaloCandidates,
+  latestRegistrationsByZaloName,
+  mapFormProfileToDraft,
+  normalizeZaloName,
+} from "../public/zalo-mapping-core.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -56,6 +61,16 @@ test("a saved UID missing from the selected group is stale and cannot be replace
   assert.equal(result.candidates[0].zaloUserId, "uid-2");
 });
 
+test("mapping keeps only the newest form submission for each normalized Zalo name", () => {
+  const registrations = [
+    { id: "old", zaloName: "  Nguyễn   An ", createdAt: "2026-11-20T08:00:00Z" },
+    { id: "other", zaloName: "Thanh Long", createdAt: "2026-11-21T08:00:00Z" },
+    { id: "new", zaloName: "nguyễn an", createdAt: "2026-11-24T08:00:00Z" },
+  ];
+  const latest = latestRegistrationsByZaloName(registrations);
+  assert.deepEqual(latest.map((item) => item.id), ["new", "other"]);
+});
+
 test("maps Form enum values to the exact Draft enum names", () => {
   assert.deepEqual(mapFormProfileToDraft({ gender: "male", position: "attacker", level: "newbie" }), {
     gender: "Male",
@@ -92,11 +107,45 @@ test("mapping endpoints remain behind Admin auth and the Draft shared key stays 
   ]);
   assert.match(server, /app\.get\("\/api\/admin\/zalo-mapping\/groups", requireAdmin/);
   assert.match(server, /app\.get\("\/api\/admin\/zalo-mapping\/registrations", requireAdmin/);
+  assert.match(server, /app\.post\("\/api\/admin\/zalo-mapping\/import", requireAdmin/);
   assert.match(server, /app\.post\("\/api\/admin\/zalo-mapping\/sync", requireAdmin/);
   assert.match(edge, /Deno\.env\.get\("DRAFT_API_BASE_URL"\)/);
   assert.match(edge, /Deno\.env\.get\("ZYRO_MAPPING_INTERNAL_KEY"\)/);
   assert.match(edge, /if \(isZaloMappingPath\) \{\s*if \(!\(await isAdmin\(req\)\)\) return unauthorized\(\);/);
   assert.doesNotMatch(admin, /ZYRO_MAPPING_INTERNAL_KEY|x-zyro-mapping-key/);
+});
+
+test("admin CORS handles production preflight before request body parsing", async () => {
+  const server = await readFile(new URL("server.js", root), "utf8");
+  const corsStart = server.indexOf('app.use("/api/admin"');
+  const jsonParser = server.indexOf("app.use(express.json");
+  assert.ok(corsStart >= 0 && corsStart < jsonParser, "admin CORS must run before JSON parsing");
+  assert.match(server, /https:\/\/zyro-volleyball-club\.onrender\.com/);
+  assert.match(server, /if \(req\.method === "OPTIONS"\) return res\.sendStatus\(204\)/);
+  assert.match(server, /ADMIN_ALLOWED_ORIGINS/);
+});
+
+test("mapping API returns latest-only registrations and accepts validated Excel imports", async () => {
+  const edge = await readFile(new URL("supabase/functions/zyro-api/index.ts", root), "utf8");
+  assert.match(edge, /function latestZaloRegistrationRows/);
+  assert.match(edge, /duplicatesHidden:/);
+  assert.match(edge, /const isZaloMappingImport =/);
+  assert.match(edge, /if \(req\.method === "POST" && isZaloMappingImport\)/);
+  assert.match(edge, /rows\.length < 1 \|\| rows\.length > 500/);
+  assert.match(edge, /status: "new"/);
+});
+
+test("mapping admin exposes local Excel import and export controls", async () => {
+  const [html, admin] = await Promise.all([
+    readFile(new URL("public/admin.html", root), "utf8"),
+    readFile(new URL("public/admin.js", root), "utf8"),
+  ]);
+  assert.match(html, /data-zalo-import>Import Excel/);
+  assert.match(html, /data-zalo-export>Export Excel/);
+  assert.match(html, /vendor\/exceljs\.min\.js\?v=4\.4\.0/);
+  assert.match(admin, /async function importZaloMappingExcel/);
+  assert.match(admin, /async function exportZaloMappingExcel/);
+  assert.match(admin, /latestRegistrationsByZaloName/);
 });
 
 test("mapping reads all registration statuses and sync validates a complete live directory before saving UIDs", async () => {
@@ -115,6 +164,9 @@ test("mapping reads all registration statuses and sync validates a complete live
   assert.match(syncHandler, /directory\?\.isComplete !== true/);
   assert.match(syncHandler, /directoryIdSet\.has\(uid\)/);
   assert.match(syncHandler, /new Set\(zaloUserIds\)\.size !== zaloUserIds\.length/);
+  assert.match(syncHandler, /supersededMappingIds/);
+  assert.match(syncHandler, /zalo_mapping_status: "unmapped"/);
+  assert.match(syncHandler, /Mapping UID đã được chuyển sang bản form mới nhất/);
   assert.match(syncHandler, /zalo_mapping_status: "confirmed"/);
   assert.match(syncHandler, /zalo_mapping_status: "synced"/);
   assert.doesNotMatch(syncHandler, /\.eq\("status"/);

@@ -136,10 +136,13 @@
         <div class="screen-title-row">
           <div>
             <h2>Đối chiếu thành viên Zalo</h2>
-            <p>Chọn nhóm, kiểm tra gợi ý theo tên và xác nhận UID trước khi đồng bộ hồ sơ sang Draft.</p>
+            <p>Mỗi tên Zalo chỉ lấy bản form mới nhất. Kiểm tra UID rồi đồng bộ hồ sơ sang Draft.</p>
           </div>
-          <div class="settings-actions">
-            <button class="secondary-button" type="button" data-zalo-load-groups>Tải nhóm Zalo</button>
+          <div class="settings-actions zalo-data-actions">
+            <input type="file" accept=".xlsx" data-zalo-import-input hidden>
+            <button class="secondary-button" type="button" data-zalo-import>Import Excel</button>
+            <button class="secondary-button" type="button" data-zalo-export>Export Excel</button>
+            <button class="secondary-button" type="button" data-zalo-load-groups>Tải lại nhóm</button>
             <button class="secondary-button" type="button" data-zalo-reload disabled>Tải lại danh bạ</button>
           </div>
         </div>
@@ -155,16 +158,15 @@
         </div>
 
         <div class="zalo-mapping-summary" aria-live="polite">
-          <div><strong data-zalo-count-total>0</strong><span>Hồ sơ Form</span></div>
-          <div><strong data-zalo-count-exact>0</strong><span>Khớp duy nhất</span></div>
+          <div><strong data-zalo-count-total>0</strong><span>Người mới nhất</span></div>
+          <div><strong data-zalo-count-hidden>0</strong><span>Bản cũ đã ẩn</span></div>
           <div><strong data-zalo-count-review>0</strong><span>Cần xác nhận</span></div>
-          <div><strong data-zalo-count-saved>0</strong><span>UID đã lưu</span></div>
-          <div><strong data-zalo-count-selected>0</strong><span>Được chọn</span></div>
+          <div><strong data-zalo-count-selected>0</strong><span>Sẵn sàng đồng bộ</span></div>
         </div>
 
         <div class="zalo-mapping-note">
-          <strong>Nguyên tắc mapping</strong>
-          <p>Khớp tên duy nhất được tự đề xuất. Tên trùng hoặc gần giống phải chọn đúng thành viên. UID đã lưu được ưu tiên hơn tên hiển thị mới. Mapping không phụ thuộc trạng thái duyệt; thời gian tham gia và mong muốn vẫn chỉ lưu trên Form.</p>
+          <strong>Đối chiếu theo UID</strong>
+          <p>Tên khớp duy nhất được đề xuất tự động. Tên trùng hoặc gần giống vẫn cần admin chọn đúng người; UID trong file Excel không được dùng để bỏ qua bước xác minh này.</p>
         </div>
 
         <div class="zalo-mapping-list" data-zalo-mapping-list>
@@ -484,7 +486,8 @@
     </footer>
   </aside>
 
-  <script src="/admin.js?v=20261108-login-tracing-2" type="module"></script>
+  <script src="/vendor/exceljs.min.js?v=4.4.0"></script>
+  <script src="/admin.js?v=20261124-latest-form-excel" type="module"></script>
 </body>
 </html>
 
