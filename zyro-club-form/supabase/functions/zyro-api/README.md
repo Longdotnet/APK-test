@@ -1,6 +1,6 @@
 # ZYRO API deployment note
 
-Project: `jcprbomxlkkiodmjskmk`
+Project: `grhdawkxnrkgkahegnnd`
 Function: `zyro-api`  
 `verify_jwt`: `false`; the function validates the existing Admin Basic Auth on protected routes. The public health check does not require an extra server secret.
 

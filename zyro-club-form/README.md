@@ -72,5 +72,5 @@ The Form-to-Draft request runs through the authenticated Node Admin routes and t
 
 Apply `supabase/migrations/20261103160715_zyro_registration_zalo_mapping.sql` before deploying the updated Edge Function. It adds the confirmed UID, selected group/connection, mapping state and audit fields to `public.zyro_registrations`; it does not add a unique UID constraint or change existing registration statuses. After configuring the secrets listed below, deploy the `zyro-api` Edge Function and the `zyro-club-form` Render service/static site together. Do not expose `ZYRO_MAPPING_INTERNAL_KEY` or `ZyroMapping__InternalKey` in Render static-site variables or browser JavaScript.
 
-The `zyro-api` Edge Function is deployed independently to Supabase project `jcprbomxlkkiodmjskmk`. Keep the SHA-256 hash of the ZYRO Admin password in the Supabase Function Secret `ADMIN_PASSWORD_SHA256`; the function reads it from the runtime environment and fails closed when it is missing. Never commit the hash or the plaintext password to GitHub.
+The production `zyro-api` Edge Function and historical ZYRO registrations live in Supabase project `grhdawkxnrkgkahegnnd`. The newer `jcprbomxlkkiodmjskmk` project is a clean fallback project and is not the production data source. Never repoint production to the fallback project unless the historical data has been migrated deliberately.
 

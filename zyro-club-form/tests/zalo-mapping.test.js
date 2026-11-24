@@ -148,6 +148,17 @@ test("mapping admin exposes local Excel import and export controls", async () =>
   assert.match(admin, /latestRegistrationsByZaloName/);
 });
 
+test("mapping UI keeps the historical Supabase project as source of truth", async () => {
+  const admin = await readFile(new URL("public/admin.js", root), "utf8");
+  const app = await readFile(new URL("public/app.js", root), "utf8");
+  assert.match(admin, /https:\/\/grhdawkxnrkgkahegnnd\.supabase\.co\/functions\/v1\/zyro-api/);
+  assert.match(app, /https:\/\/grhdawkxnrkgkahegnnd\.supabase\.co\/functions\/v1\/zyro-api/);
+  assert.match(admin, /api\("\/zalo-mapping\/groups", \{\}, true\)/);
+  assert.match(admin, /api\("\/zalo-mapping\/registrations", \{\}, true\)/);
+  assert.match(admin, /api\("\/registrations", \{/);
+  assert.doesNotMatch(admin, /mailerApi\("\/zalo-mapping\/import"/);
+});
+
 test("mapping reads all registration statuses and sync validates a complete live directory before saving UIDs", async () => {
   const edge = await readFile(new URL("supabase/functions/zyro-api/index.ts", root), "utf8");
   const readStart = edge.indexOf('if (req.method === "GET" && isZaloMappingRegistrations)');

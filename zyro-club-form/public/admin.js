@@ -1,6 +1,6 @@
 import { getZaloCandidates, latestRegistrationsByZaloName, normalizeZaloName } from "./zalo-mapping-core.js";
 
-const apiBase = "https://jcprbomxlkkiodmjskmk.supabase.co/functions/v1/zyro-api";
+const apiBase = "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api";
 const mailerApiBase = "https://zyro-club-form-v1gv.onrender.com/api/admin";
 
 const state = {
@@ -1495,7 +1495,7 @@ async function loadZaloMappingGroups() {
   renderZaloMapping();
   setZaloMappingMessage("Đang lấy danh sách nhóm Zalo từ Draft…", "loading");
   try {
-    const body = await mailerApi("/zalo-mapping/groups");
+    const body = await api("/zalo-mapping/groups", {}, true);
     state.zaloMapping.groups = Array.isArray(body.groups) ? body.groups : [];
     state.zaloMapping.loadedGroups = true;
     renderZaloMappingGroups();
@@ -1552,8 +1552,8 @@ async function loadZaloMappingData(group) {
   try {
     const memberPath = `/zalo-mapping/groups/${encodeURIComponent(group.connectionId)}/${encodeURIComponent(group.groupId)}/members`;
     const [directory, registrationBody] = await Promise.all([
-      mailerApi(memberPath),
-      mailerApi("/zalo-mapping/registrations"),
+      api(memberPath, {}, true),
+      api("/zalo-mapping/registrations", {}, true),
     ]);
     state.zaloMapping.directory = directory;
     state.zaloMapping.members = Array.isArray(directory.members) ? directory.members : [];
@@ -1703,7 +1703,7 @@ async function exportZaloMappingExcel() {
   zaloExportButton.disabled = true;
   const loadingToast = notify("Đang tạo file Excel…", "loading", 0);
   try {
-    const body = await mailerApi("/zalo-mapping/registrations");
+    const body = await api("/zalo-mapping/registrations", {}, true);
     const registrations = latestRegistrationsByZaloName(Array.isArray(body.registrations) ? body.registrations : []);
     const workbook = new window.ExcelJS.Workbook();
     workbook.creator = "ZYRO Club";
@@ -1814,12 +1814,18 @@ async function importZaloMappingExcel(file) {
     if (!importedRows.length) throw new Error("Không tìm thấy dòng thành viên hợp lệ trong file Excel.");
     if (importedRows.length > 500) throw new Error("Mỗi lần import tối đa 500 người.");
 
-    const result = await mailerApi("/zalo-mapping/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ registrations: importedRows }),
-    });
-    const imported = Number(result.imported) || importedRows.length;
+    let imported = 0;
+    for (const registration of importedRows) {
+      await api("/registrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(registration),
+      });
+      imported += 1;
+      if (imported % 25 === 0 || imported === importedRows.length) {
+        loadingToast.update(`Đang import ${imported}/${importedRows.length} người…`, "loading", 0);
+      }
+    }
     loadingToast.update(`Đã import ${imported} người. Nếu một tên Zalo đã có form cũ, bản vừa import sẽ là bản mới nhất.`, "success", 8000);
     void loadRegistrations({ keepSelection: true, silent: true });
     const group = state.zaloMapping.groups.find((item) => zaloGroupKey(item) === state.zaloMapping.selectedGroupKey);
@@ -1874,7 +1880,7 @@ async function syncZaloMappings() {
   renderZaloMapping();
   const loadingToast = notify(`Đang đồng bộ ${selectedRows.length} hồ sơ sang Draft…`, "loading", 0);
   try {
-    const body = await mailerApi("/zalo-mapping/sync", {
+    const body = await api("/zalo-mapping/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1886,7 +1892,7 @@ async function syncZaloMappings() {
           allowRemap: Boolean(row.originalUid && row.originalUid !== row.selectedUid),
         })),
       }),
-    });
+    }, true);
     const results = Array.isArray(body.results) ? body.results : [];
     if (!body.ok || results.length !== selectedRows.length) {
       throw new Error("Draft chưa trả về đủ kết quả đồng bộ cho các hồ sơ đã chọn.");
