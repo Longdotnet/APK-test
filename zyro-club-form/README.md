@@ -74,3 +74,5 @@ Apply `supabase/migrations/20261103160715_zyro_registration_zalo_mapping.sql` be
 
 The production `zyro-api` Edge Function and historical ZYRO registrations live in Supabase project `grhdawkxnrkgkahegnnd`. The newer `jcprbomxlkkiodmjskmk` project is a clean fallback project and is not the production data source. Never repoint production to the fallback project unless the historical data has been migrated deliberately.
 
+Mapping Zalo is intentionally split: form/config/registration data remains in `grhdawkxnrkgkahegnnd`, while `jcprbomxlkkiodmjskmk` acts only as the controllable Mapping bridge to the current Draft service. The bridge validates the same legacy Admin Basic credentials against the production Edge API, reads registrations from the production project, and stores only UID/group mapping metadata in `zyro_mapping_links`.
+

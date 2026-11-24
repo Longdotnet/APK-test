@@ -148,13 +148,14 @@ test("mapping admin exposes local Excel import and export controls", async () =>
   assert.match(admin, /latestRegistrationsByZaloName/);
 });
 
-test("mapping UI keeps the historical Supabase project as source of truth", async () => {
+test("mapping UI keeps historical form data on old Supabase and uses the bridge only for mapping", async () => {
   const admin = await readFile(new URL("public/admin.js", root), "utf8");
   const app = await readFile(new URL("public/app.js", root), "utf8");
   assert.match(admin, /https:\/\/grhdawkxnrkgkahegnnd\.supabase\.co\/functions\/v1\/zyro-api/);
+  assert.match(admin, /https:\/\/jcprbomxlkkiodmjskmk\.supabase\.co\/functions\/v1\/zyro-api/);
   assert.match(app, /https:\/\/grhdawkxnrkgkahegnnd\.supabase\.co\/functions\/v1\/zyro-api/);
   assert.match(admin, /mappingReadApi\("\/zalo-mapping\/groups"\)/);
-  assert.match(admin, /api\("\/zalo-mapping\/registrations", \{\}, true\)/);
+  assert.match(admin, /mappingApi\("\/zalo-mapping\/registrations"\)/);
   assert.match(admin, /api\("\/registrations", \{/);
   assert.doesNotMatch(admin, /mailerApi\("\/zalo-mapping\/import"/);
 });
@@ -164,8 +165,20 @@ test("mapping read calls retry transient Draft and bridge failures without retry
   assert.match(admin, /const transientMappingStatuses = new Set\(\[429, 502, 503, 504\]\)/);
   assert.match(admin, /async function mappingReadApi\(path, attempts = 3\)/);
   assert.match(admin, /mappingReadApi\(memberPath\)/);
-  assert.match(admin, /await api\("\/zalo-mapping\/sync", \{/);
+  assert.match(admin, /await mappingApi\("\/zalo-mapping\/sync", \{/);
   assert.doesNotMatch(admin, /mappingReadApi\("\/zalo-mapping\/sync"/);
+});
+
+test("mapping bridge validates legacy admin auth and stores only mapping metadata", async () => {
+  const edge = await readFile(new URL("supabase/functions/zyro-api/index.ts", root), "utf8");
+  const migration = await readFile(new URL("supabase/migrations/20261124063000_zyro_mapping_bridge_links.sql", root), "utf8");
+  assert.match(edge, /LEGACY_ZYRO_API_BASE_URL/);
+  assert.match(edge, /requestLegacyAdmin\(req, "\/zalo-mapping\/registrations"\)/);
+  assert.match(edge, /from\("zyro_mapping_links"\)/);
+  assert.match(edge, /mappingStore: "bridge"/);
+  assert.match(edge, /syncBridgeMappings\(req\)/);
+  assert.match(migration, /create table if not exists public\.zyro_mapping_links/);
+  assert.doesNotMatch(migration, /zyro_registrations/);
 });
 
 test("mapping reads all registration statuses and sync validates a complete live directory before saving UIDs", async () => {

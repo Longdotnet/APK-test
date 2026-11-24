@@ -1,6 +1,7 @@
 import { getZaloCandidates, latestRegistrationsByZaloName, normalizeZaloName } from "./zalo-mapping-core.js";
 
 const apiBase = "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api";
+const mappingApiBase = "https://jcprbomxlkkiodmjskmk.supabase.co/functions/v1/zyro-api";
 const mailerApiBase = "https://zyro-club-form-v1gv.onrender.com/api/admin";
 
 const state = {
@@ -256,13 +257,23 @@ async function api(path, options = {}, needsAuth = false) {
   });
 }
 
+async function mappingApi(path, options = {}) {
+  return fetchJsonWithTrace(mappingApiBase + path, {
+    ...options,
+    headers: authHeaders(options.headers || {}),
+  }, {
+    timeoutMs: 20000,
+    service: "supabase",
+  });
+}
+
 const transientMappingStatuses = new Set([429, 502, 503, 504]);
 
 async function mappingReadApi(path, attempts = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await api(path, {}, true);
+      return await mappingApi(path);
     } catch (error) {
       lastError = error;
       const status = Number(error?.status);
@@ -1572,7 +1583,7 @@ async function loadZaloMappingData(group) {
     const memberPath = `/zalo-mapping/groups/${encodeURIComponent(group.connectionId)}/${encodeURIComponent(group.groupId)}/members`;
     const [directory, registrationBody] = await Promise.all([
       mappingReadApi(memberPath),
-      api("/zalo-mapping/registrations", {}, true),
+      mappingApi("/zalo-mapping/registrations"),
     ]);
     state.zaloMapping.directory = directory;
     state.zaloMapping.members = Array.isArray(directory.members) ? directory.members : [];
@@ -1722,7 +1733,7 @@ async function exportZaloMappingExcel() {
   zaloExportButton.disabled = true;
   const loadingToast = notify("Đang tạo file Excel…", "loading", 0);
   try {
-    const body = await api("/zalo-mapping/registrations", {}, true);
+    const body = await mappingApi("/zalo-mapping/registrations");
     const registrations = latestRegistrationsByZaloName(Array.isArray(body.registrations) ? body.registrations : []);
     const workbook = new window.ExcelJS.Workbook();
     workbook.creator = "ZYRO Club";
@@ -1899,7 +1910,7 @@ async function syncZaloMappings() {
   renderZaloMapping();
   const loadingToast = notify(`Đang đồng bộ ${selectedRows.length} hồ sơ sang Draft…`, "loading", 0);
   try {
-    const body = await api("/zalo-mapping/sync", {
+    const body = await mappingApi("/zalo-mapping/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1911,7 +1922,7 @@ async function syncZaloMappings() {
           allowRemap: Boolean(row.originalUid && row.originalUid !== row.selectedUid),
         })),
       }),
-    }, true);
+    });
     const results = Array.isArray(body.results) ? body.results : [];
     if (!body.ok || results.length !== selectedRows.length) {
       throw new Error("Draft chưa trả về đủ kết quả đồng bộ cho các hồ sơ đã chọn.");
