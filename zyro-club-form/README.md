@@ -15,12 +15,15 @@ Admin: `http://localhost:3000/admin.html` (also available at `/admin`). The user
 
 ## Render
 
-The current Render workspace has two services on branch `zyro-club-form-deploy`:
+The ZYRO source of truth for this integration is repository
+`Longdotnet/APK-test`, branch `feature/zyro-draft-zalo-mapping`.
+
+The Render workspace has two services:
 
 - Static site `zyro-volleyball-club`, publishing `zyro-club-form/public` at `https://zyro-volleyball-club.onrender.com`.
 - Node Web Service `zyro-club-form`, running the Express server from `zyro-club-form`.
 
-Both services use the existing `Kauze-glitch/Big-Project` repository. Persistent registrations and site configuration live in Supabase, so content edits do not require rebuilding the public site.
+Both services should deploy from the repository/branch above. Persistent registrations and site configuration live in Supabase, so content edits do not require rebuilding the public site.
 
 Public form fields:
 - Zalo name
