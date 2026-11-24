@@ -12,6 +12,7 @@ const mailerWebAppUrl = String(process.env.MAILER_WEB_APP_URL || "").trim();
 const mailerSharedSecret = String(process.env.MAILER_SHARED_SECRET || "").trim();
 const allowedAdminOrigins = new Set([
   "https://zyro-volleyball-club.onrender.com",
+  "https://zyro-volleyball-club-v2.onrender.com",
   "https://zyro-club-form.onrender.com",
   "https://zyro-club-form-v1gv.onrender.com",
   "http://localhost:3000",
