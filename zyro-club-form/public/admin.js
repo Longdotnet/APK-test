@@ -256,6 +256,25 @@ async function api(path, options = {}, needsAuth = false) {
   });
 }
 
+const transientMappingStatuses = new Set([429, 502, 503, 504]);
+
+async function mappingReadApi(path, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await api(path, {}, true);
+    } catch (error) {
+      lastError = error;
+      const status = Number(error?.status);
+      const transient = transientMappingStatuses.has(status) || error?.code === "ETIMEDOUT" || !Number.isInteger(status);
+      if (!transient || attempt === attempts) throw error;
+      setZaloMappingMessage(`Draft/Zalo tạm thời chưa phản hồi. Đang thử lại ${attempt + 1}/${attempts}…`, "loading");
+      await new Promise((resolve) => window.setTimeout(resolve, 700 * (2 ** (attempt - 1))));
+    }
+  }
+  throw lastError;
+}
+
 async function mailerApi(path, options = {}) {
   return fetchJsonWithTrace(mailerApiBase + path, {
     ...options,
@@ -1495,7 +1514,7 @@ async function loadZaloMappingGroups() {
   renderZaloMapping();
   setZaloMappingMessage("Đang lấy danh sách nhóm Zalo từ Draft…", "loading");
   try {
-    const body = await api("/zalo-mapping/groups", {}, true);
+    const body = await mappingReadApi("/zalo-mapping/groups");
     state.zaloMapping.groups = Array.isArray(body.groups) ? body.groups : [];
     state.zaloMapping.loadedGroups = true;
     renderZaloMappingGroups();
@@ -1552,7 +1571,7 @@ async function loadZaloMappingData(group) {
   try {
     const memberPath = `/zalo-mapping/groups/${encodeURIComponent(group.connectionId)}/${encodeURIComponent(group.groupId)}/members`;
     const [directory, registrationBody] = await Promise.all([
-      api(memberPath, {}, true),
+      mappingReadApi(memberPath),
       api("/zalo-mapping/registrations", {}, true),
     ]);
     state.zaloMapping.directory = directory;

@@ -153,10 +153,19 @@ test("mapping UI keeps the historical Supabase project as source of truth", asyn
   const app = await readFile(new URL("public/app.js", root), "utf8");
   assert.match(admin, /https:\/\/grhdawkxnrkgkahegnnd\.supabase\.co\/functions\/v1\/zyro-api/);
   assert.match(app, /https:\/\/grhdawkxnrkgkahegnnd\.supabase\.co\/functions\/v1\/zyro-api/);
-  assert.match(admin, /api\("\/zalo-mapping\/groups", \{\}, true\)/);
+  assert.match(admin, /mappingReadApi\("\/zalo-mapping\/groups"\)/);
   assert.match(admin, /api\("\/zalo-mapping\/registrations", \{\}, true\)/);
   assert.match(admin, /api\("\/registrations", \{/);
   assert.doesNotMatch(admin, /mailerApi\("\/zalo-mapping\/import"/);
+});
+
+test("mapping read calls retry transient Draft and bridge failures without retrying sync writes", async () => {
+  const admin = await readFile(new URL("public/admin.js", root), "utf8");
+  assert.match(admin, /const transientMappingStatuses = new Set\(\[429, 502, 503, 504\]\)/);
+  assert.match(admin, /async function mappingReadApi\(path, attempts = 3\)/);
+  assert.match(admin, /mappingReadApi\(memberPath\)/);
+  assert.match(admin, /await api\("\/zalo-mapping\/sync", \{/);
+  assert.doesNotMatch(admin, /mappingReadApi\("\/zalo-mapping\/sync"/);
 });
 
 test("mapping reads all registration statuses and sync validates a complete live directory before saving UIDs", async () => {
