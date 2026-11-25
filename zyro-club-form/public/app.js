@@ -1,3 +1,5 @@
+import { translate, normalizeLanguage, hasTranslation } from "./i18n.js?v=20261125-languages";
+
 const apiBase = "https://grhdawkxnrkgkahegnnd.supabase.co/functions/v1/zyro-api";
 const registrationEndpoint = `${apiBase}/registrations`;
 const configEndpoint = `${apiBase}/config`;
@@ -16,6 +18,58 @@ const submitButton = document.querySelector("[data-submit]");
 const status = document.querySelector("[data-form-status]");
 const goal = document.querySelector("#goal");
 const count = document.querySelector("[data-count]");
+const languageButtons = [...document.querySelectorAll("[data-language]")];
+const sourceTexts = new WeakMap();
+const sourceAttributes = new WeakMap();
+const languageStorageKey = "zyro.public.language";
+let language = "vi";
+try {
+  language = normalizeLanguage(localStorage.getItem(languageStorageKey));
+} catch { /* Storage may be disabled. */ }
+
+function localizeTextNode(node) {
+  if (node.parentElement?.closest("[data-no-translate]")) return;
+  const original = sourceTexts.get(node) ?? node.nodeValue;
+  const key = original.trim();
+  if (!hasTranslation(key)) return;
+  sourceTexts.set(node, original);
+  node.nodeValue = original.replace(key, translate(key, language));
+}
+
+function localize(root = document.body) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) localizeTextNode(walker.currentNode);
+  root.querySelectorAll("[aria-label], [placeholder], meta[name=description]").forEach((element) => {
+    const originals = sourceAttributes.get(element) ?? {};
+    for (const attr of ["aria-label", "placeholder", "content"]) {
+      const original = originals[attr] ?? element.getAttribute(attr);
+      if (original === null || !hasTranslation(original)) continue;
+      originals[attr] = original;
+      element.setAttribute(attr, translate(original, language));
+    }
+    sourceAttributes.set(element, originals);
+  });
+}
+
+function localizedText(element, original) {
+  element.textContent = original;
+  if (element.firstChild) localizeTextNode(element.firstChild);
+}
+
+function applyLanguage(next) {
+  language = normalizeLanguage(next);
+  document.documentElement.lang = language;
+  localize(document.body);
+  localize(document.head);
+  languageButtons.forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.language === language));
+  });
+  try { localStorage.setItem(languageStorageKey, language); } catch { /* Optional preference. */ }
+}
+
+languageButtons.forEach((button) => {
+  button.addEventListener("click", () => applyLanguage(button.dataset.language));
+});
 
 document.documentElement.classList.add("js");
 
@@ -109,7 +163,12 @@ function renderConfig(config) {
     const container = document.querySelector(`[data-options="${name}"]`);
     const options = optionGroups[name];
     if (!container || !Array.isArray(options) || !options.length) continue;
-    container.replaceChildren(...options.map((option) => makeChoice(name, option, name === "duration")));
+    const selected = container.querySelector("input:checked")?.value;
+    container.replaceChildren(...options.map((option) => {
+      const choice = makeChoice(name, option, name === "duration");
+      choice.querySelector("input").checked = option.id === selected;
+      return choice;
+    }));
   }
 
   const contacts = document.querySelector("[data-contacts]");
@@ -122,7 +181,15 @@ function renderConfig(config) {
       link.rel = "noreferrer";
 
       const name = document.createElement("span");
-      name.textContent = contact.role ? `${contact.name} · ${contact.role}` : contact.name;
+      const contactName = document.createElement("span");
+      contactName.dataset.noTranslate = "";
+      contactName.textContent = contact.name;
+      name.append(contactName);
+      if (contact.role) {
+        const role = document.createElement("span");
+        role.textContent = contact.role;
+        name.append(" · ", role);
+      }
       const phone = document.createElement("strong");
       phone.textContent = contact.phone;
       link.append(name, phone);
@@ -130,6 +197,7 @@ function renderConfig(config) {
     }));
     contacts.hidden = config.contacts.length === 0;
   }
+  localize();
 }
 
 async function loadConfig() {
@@ -151,7 +219,7 @@ function value(name) {
 
 function setError(name, message = "") {
   const target = document.querySelector(`[data-error-for="${name}"]`);
-  if (target) target.textContent = message;
+  if (target) localizedText(target, message);
 }
 
 function validateStep(index) {
@@ -197,7 +265,7 @@ function renderStep(index, shouldFocus = true) {
   });
   progressBall.style.left = `${12.5 + currentStep * 25}%`;
   stepLabel.textContent = `${currentStep + 1} / ${steps.length}`;
-  stepTitle.textContent = titles[currentStep];
+  localizedText(stepTitle, titles[currentStep]);
   backButton.hidden = currentStep === 0;
   nextButton.hidden = currentStep === steps.length - 1;
   submitButton.hidden = currentStep !== steps.length - 1;
@@ -233,7 +301,7 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!validateStep(3)) return;
   submitButton.disabled = true;
-  submitButton.textContent = "Đang gửi...";
+  localizedText(submitButton, "Đang gửi...");
   status.textContent = "";
 
   const payload = {
@@ -264,12 +332,14 @@ form.addEventListener("submit", async (event) => {
       block: "center"
     });
   } catch (error) {
-    status.textContent = error.message || "Có lỗi khi gửi. Vui lòng thử lại.";
+    const message = error.message || "Có lỗi khi gửi. Vui lòng thử lại.";
+    localizedText(status, hasTranslation(message) || language === "vi" ? message : "Có lỗi khi gửi. Vui lòng thử lại.");
   } finally {
     submitButton.disabled = false;
-    submitButton.textContent = "Gửi đăng ký";
+    localizedText(submitButton, "Gửi đăng ký");
   }
 });
 
-await loadConfig();
 renderStep(0, false);
+applyLanguage(language);
+await loadConfig();

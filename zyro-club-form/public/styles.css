@@ -84,6 +84,67 @@ a { color: inherit; }
   text-decoration: none;
 }
 
+.language-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-soft);
+}
+
+.language-switch button {
+  display: inline-flex;
+  min-width: 58px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.language-switch button[aria-pressed="true"] {
+  background: white;
+  color: var(--navy);
+  border-color: #aabed7;
+  box-shadow: 0 1px 3px rgba(11, 45, 95, .1);
+}
+
+.language-switch button:hover { background: white; }
+.language-switch svg { width: 25px; height: 17px; border-radius: 2px; flex: none; overflow: hidden; }
+
+html[lang="th"] {
+  --font-display: "Noto Sans Thai", Tahoma, sans-serif;
+  --font-text: "Noto Sans Thai", Tahoma, sans-serif;
+}
+
+html[lang="th"] .hero h1,
+html[lang="th"] .signup-intro h2,
+html[lang="th"] .form-step legend,
+html[lang="th"] .success-panel h3 {
+  max-width: 100%;
+  line-height: 1.24;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+}
+
+html[lang="th"] .hero h1 { font-size: clamp(2.8rem, 6vw, 5.2rem); }
+html[lang="th"] .signup-intro h2,
+html[lang="th"] .success-panel h3 { font-size: clamp(2rem, 4.5vw, 3.6rem); }
+html[lang="th"] .form-step legend { font-size: clamp(1.8rem, 3.2vw, 3rem); }
+html[lang="th"] .club-principles h2 { line-height: 1.35; font-size: 1.55rem; }
+html[lang="en"] .hero h1 { max-width: none; font-size: clamp(4rem, 7vw, 7.2rem); }
+html[lang="en"] .form-step legend { overflow-wrap: anywhere; }
+
 .hero {
   position: relative;
   display: grid;
@@ -751,6 +812,7 @@ textarea {
   .site-header {
     min-height: 68px;
     padding-inline: 14px;
+    gap: 8px;
   }
 
   .brand-link {
@@ -763,6 +825,10 @@ textarea {
     padding-inline: 13px;
     font-size: 13px;
   }
+
+  .language-switch { gap: 1px; padding: 3px; }
+  .language-switch button { min-width: 44px; padding: 4px; gap: 2px; flex-direction: column; font-size: 10px; line-height: 1; }
+  .language-switch svg { width: 24px; height: 16px; }
 
   .hero,
   .club-principles,
@@ -868,6 +934,12 @@ textarea {
 
   .success-panel { padding: 34px 18px 38px; }
   .admin-links { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 520px) {
+  .site-header .header-cta { display: none; }
+  .site-header .brand-link { flex: 0 1 118px; min-width: 82px; }
+  html[lang="en"] .hero h1 { font-size: clamp(3.5rem, 13vw, 5.2rem); }
 }
 
 @media (prefers-reduced-motion: reduce) {

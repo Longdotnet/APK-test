@@ -8,14 +8,25 @@
   <title>ZYRO Volleyball Club — Đăng ký thành viên</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=20261125-languages">
 </head>
 <body>
   <header class="site-header">
     <a class="brand-link" href="#top" aria-label="ZYRO Volleyball Club">
       <img src="/assets/zyro-logo.webp" alt="ZYRO Volleyball Club" width="420" height="288">
     </a>
+    <div class="language-switch" role="group" aria-label="Chọn ngôn ngữ">
+      <button type="button" data-language="vi" aria-label="Tiếng Việt" title="Tiếng Việt" aria-pressed="true">
+        <svg viewBox="0 0 30 20" aria-hidden="true"><path fill="#da251d" d="M0 0h30v20H0z"/><path fill="#ff0" d="m15 4 1.8 4.1 4.5.4-3.4 3 1 4.5-3.9-2.4-3.9 2.4 1-4.5-3.4-3 4.5-.4z"/></svg><span>VI</span>
+      </button>
+      <button type="button" data-language="en" aria-label="English" title="English" aria-pressed="false">
+        <svg viewBox="0 0 30 20" aria-hidden="true"><path fill="#012169" d="M0 0h30v20H0z"/><path stroke="#fff" stroke-width="5" d="m0 0 30 20m0-20L0 20"/><path stroke="#c8102e" stroke-width="2" d="m0 0 30 20m0-20L0 20"/><path stroke="#fff" stroke-width="7" d="M15 0v20M0 10h30"/><path stroke="#c8102e" stroke-width="4" d="M15 0v20M0 10h30"/></svg><span>EN</span>
+      </button>
+      <button type="button" data-language="th" aria-label="ภาษาไทย" title="ภาษาไทย" aria-pressed="false">
+        <svg viewBox="0 0 30 20" aria-hidden="true"><path fill="#a51931" d="M0 0h30v20H0z"/><path fill="#fff" d="M0 3h30v14H0z"/><path fill="#2d2a4a" d="M0 6h30v8H0z"/></svg><span>TH</span>
+      </button>
+    </div>
     <a class="header-cta" href="#signup">Đăng ký tham gia</a>
   </header>
 
@@ -183,6 +194,6 @@
     </section>
   </main>
 
-  <script src="/app.js" type="module"></script>
+  <script src="/app.js?v=20261125-languages" type="module"></script>
 </body>
 </html>
